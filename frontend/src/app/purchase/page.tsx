@@ -74,6 +74,11 @@ function PurchaseContent() {
 
   const createOrder = async (m: string) => {
     setMethod(m);
+    // 卡密走「充值余额」，不是订单支付：不建单，直接展开卡密输入面板
+    if (m === 'card') {
+      setProcessing(false);
+      return;
+    }
     setProcessing(true);
     try {
       const res = await api.post('/orders', {
@@ -89,24 +94,19 @@ function PurchaseContent() {
             }
           : {}),
       });
-      setOrder(res.data.data);
-
-      // Card: no gateway needed
-      if (m === 'card') {
-        setProcessing(false);
-        return;
-      }
+      const newOrder = res.data.data;
+      setOrder(newOrder);
 
       // Balance: pay directly, skip QR
       if (m === 'balance') {
-        const payRes = await api.post(`/orders/${res.data.data.id}/pay/balance`);
+        const payRes = await api.post(`/orders/${newOrder.id}/pay/balance`);
         toast.success(t('purchase.paySuccess') || '支付成功！正在创建节点...');
         setTimeout(() => router.push('/user/nodes'), 1500);
         return;
       }
 
       // Gateway (WeChat / Alipay): get real QR content
-      const payRes = await api.post(`/payments/orders/${res.data.data.id}`, { method: m });
+      const payRes = await api.post(`/payments/orders/${newOrder.id}`, { method: m });
       const qr = payRes.data.data?.qrContent;
       if (!qr) {
         throw new Error('支付网关未返回二维码内容，请确认支付已配置');
@@ -114,10 +114,14 @@ function PurchaseContent() {
       setPayQr(qr);
       setProcessing(false);
       // Start polling for payment confirmation
-      startPolling(res.data.data.orderNo);
+      startPolling(newOrder.orderNo);
     } catch (err: any) {
+      // 下单或拉起支付失败：回到支付方式选择，避免卡在空白页（还没支付就不显示支付方式）
       toast.error(getErrorMessage(err));
       setProcessing(false);
+      setMethod('');
+      setOrder(null);
+      setPayQr(null);
     }
   };
 
@@ -304,8 +308,8 @@ function PurchaseContent() {
         </div>
       )}
 
-      {/* Balance confirmation loading */}
-      {order && method === 'balance' && !payQr && (
+      {/* Balance / gateway setup loading — 已下单但支付信息尚未就绪时的过渡态 */}
+      {order && processing && !payQr && (
         <div className="mt-6 text-center">
           <Loader2 className="mx-auto h-8 w-8 animate-spin text-primary" />
           <p className="mt-3 text-muted-foreground">{t('common.loading')}</p>
