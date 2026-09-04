@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 export default function PlansPage() {
   const [plans, setPlans] = useState<any[]>([]);
+  const [servers, setServers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
@@ -21,6 +22,7 @@ export default function PlansPage() {
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
     traffic: '0', deviceLimit: '1', description: '', protocols: 'vless,vmess',
+    serverIds: [] as number[],
   });
 
   const fetchPlans = () => {
@@ -30,11 +32,18 @@ export default function PlansPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchPlans(); }, []);
+  // 同时加载服务器列表用于套餐绑定
+  const fetchServers = () => {
+    api.get('/servers')
+      .then((res) => setServers(res.data.data))
+      .catch(() => toast.error('服务器列表加载失败，无法绑定'));
+  };
+
+  useEffect(() => { fetchPlans(); fetchServers(); }, []);
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless,vmess' });
+    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless,vmess', serverIds: [] });
     setDialogOpen(true);
   };
 
@@ -46,13 +55,28 @@ export default function PlansPage() {
       duration: String(plan.duration), traffic: String(plan.traffic || 0),
       deviceLimit: String(plan.deviceLimit), description: plan.description || '',
       protocols: plan.protocols.join(','),
+      serverIds: plan.serverIds || [],
     });
     setDialogOpen(true);
+  };
+
+  // 切换服务器勾选
+  const toggleServer = (id: number) => {
+    setForm((f) => ({
+      ...f,
+      serverIds: f.serverIds.includes(id)
+        ? f.serverIds.filter((x) => x !== id)
+        : [...f.serverIds, id],
+    }));
   };
 
   const save = async () => {
     if (!form.name || !form.price) {
       toast.error('名称和价格必填');
+      return;
+    }
+    if (form.serverIds.length === 0) {
+      toast.error('请至少绑定一台服务器，否则用户无法购买');
       return;
     }
     const payload = {
@@ -65,6 +89,7 @@ export default function PlansPage() {
       deviceLimit: Number(form.deviceLimit),
       description: form.description || null,
       protocols: form.protocols.split(',').map((s) => s.trim()).filter(Boolean),
+      serverIds: form.serverIds,
       type: 'TIME_BASED',
       status: 'ACTIVE',
     };
@@ -108,6 +133,15 @@ export default function PlansPage() {
       render: (p: any) => Number(p.traffic) > 0 ? `${(Number(p.traffic)/1024/1024/1024)}GB` : '不限',
     },
     { key: 'protocols', header: '协议', render: (p: any) => p.protocols.join('/') },
+    {
+      key: 'servers', header: '绑定服务器',
+      render: (p: any) => {
+        const ids = p.serverIds || [];
+        if (ids.length === 0) return <span className="text-rose-500 text-xs font-medium">未绑定</span>;
+        const names = ids.map((id: number) => servers.find((s) => s.id === id)?.name).filter(Boolean);
+        return <span className="text-xs">{names.length ? names.join('、') : `服务器#${ids.join('#')}`}</span>;
+      },
+    },
     { key: 'status', header: '状态', render: (p: any) => <StatusBadge status={p.status} /> },
     {
       key: 'actions', header: '操作',
@@ -170,6 +204,38 @@ export default function PlansPage() {
             <div className="space-y-2">
               <Label>支持协议（逗号分隔）</Label>
               <Input value={form.protocols} onChange={(e) => setForm({ ...form, protocols: e.target.value })} />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <Label>绑定服务器（可选多台）</Label>
+              {servers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  还没有可用服务器，请先到「服务器管理」添加并连接 XUI 面板。
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2 rounded-md border border-input p-3">
+                  {servers.map((s: any) => {
+                    const checked = form.serverIds.includes(s.id);
+                    const online = s.sessionId || s.status === 'ACTIVE';
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => toggleServer(s.id)}
+                        className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                          checked
+                            ? 'border-primary bg-primary/10 text-primary font-medium'
+                            : 'border-input text-foreground hover:bg-accent'
+                        }`}
+                      >
+                        {s.flag || ''} {s.name} {!online && <span className="opacity-50">(离线)</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                用户购买该套餐后，将在这几台服务器上自动创建节点。至少绑定一台。
+              </p>
             </div>
             <div className="space-y-2 col-span-2">
               <Label>描述</Label>
