@@ -13,7 +13,7 @@ services:
       POSTGRES_USER: nodeadmin
       POSTGRES_PASSWORD: ${DB_PASS:-nodepassword}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -32,7 +32,7 @@ services:
     container_name: nodeshop-redis
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6379:6379"
+      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -53,7 +53,7 @@ services:
     container_name: nodeshop-backend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3001:3001"
+      - "3001:3001"
     env_file:
       - .env
     depends_on:
@@ -76,7 +76,7 @@ services:
     container_name: nodeshop-frontend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:3001/api
     depends_on:
@@ -96,7 +96,7 @@ services:
     container_name: nodeshop-admin
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3002:3002"
+      - "3002:3002"
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:3001/api
     depends_on:
