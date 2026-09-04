@@ -30,8 +30,10 @@ else
     yum install -y yum-utils && yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
     yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   else
-    # Debian/Ubuntu: 使用官方一键脚本
-    apt-get update -qq && apt-get install -y -qq ca-certificates curl git
+    # 清理之前可能残留的坏 Docker 源
+    rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+    apt-get update -qq 2>/dev/null || true
+    apt-get install -y -qq ca-certificates curl git 2>/dev/null || true
     curl -fsSL https://get.docker.com | sh
   fi
   systemctl enable docker && systemctl start docker
