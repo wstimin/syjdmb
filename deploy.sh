@@ -55,6 +55,7 @@ DAEMON
     systemctl daemon-reload && systemctl restart docker
     ok "镜像加速已配置"
   fi
+fi
 
 # --- 2. 克隆/更新代码 ---
 if [ -d "$INSTALL_DIR/.git" ]; then
