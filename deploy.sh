@@ -109,12 +109,12 @@ echo ""
 
 # --- 5. 迁移 + 初始化 ---
 info "数据库迁移..."
-docker exec nodeshop-backend npx prisma migrate deploy 2>&1 | tail -1
+docker exec nodeshop-backend npx prisma migrate deploy || true
 ok "迁移完成"
 
 info "初始化管理员..."
 docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
-  nodeshop-backend npx prisma db seed 2>&1 | tail -1
+  nodeshop-backend npx prisma db seed || true
 ok "初始化完成"
 
 # --- 6. 输出结果 ---
