@@ -405,11 +405,11 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    // Suspend in XUI
+    // Suspend in XUI — 3-x-ui v3.6.0 中客户端以 email 为唯一标识
     try {
       await this.serverService.updateClient(
         inbound.serverId,
-        inbound.inboundId,
+        inbound.email,
         { enable: false },
       );
     } catch (e) {
@@ -426,10 +426,11 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
+    // Resume in XUI — 3-x-ui v3.6.0 中客户端以 email 为唯一标识
     try {
       await this.serverService.updateClient(
         inbound.serverId,
-        inbound.inboundId,
+        inbound.email,
         { enable: true },
       );
     } catch (e) {
