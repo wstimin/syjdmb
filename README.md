@@ -99,32 +99,31 @@ XUI_PANELS='[{"name":"Server 1","url":"http://your-panel:54321","username":"admi
 
 > ⚠️ 种子脚本不预置任何演示套餐（套餐由管理员在后台手动创建，保证真实可售卖）。
 
-## 生产部署（一键部署）
+## 生产部署（一键安装）
 
-在 Linux 服务器上执行一条命令即可完成全部部署：
+在 **Linux 服务器（root）** 上执行下面这一条命令即可完成全部安装：
 
 ```bash
-git clone https://github.com/wstimin/syjdmb.git && cd syjdmb && sudo bash deploy.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy.sh)
 ```
 
 脚本自动完成：
-1. 安装 Docker + Docker Compose
-2. 克隆项目代码
-3. 生成随机 JWT 密钥和数据库密码
-4. 构建并启动全部 5 个服务（PostgreSQL、Redis、Backend、Frontend、Admin）
-5. 执行数据库迁移和初始化（管理员账号 + 系统设置）
-6. 输出访问地址和登录凭据
+1. 让你输入管理员邮箱和密码（有默认值，回车即可）
+2. 自动安装 Docker + Docker Compose
+3. 自动克隆项目代码
+4. 生成随机 JWT 密钥和数据库密码
+5. 构建并启动全部 5 个服务（PostgreSQL、Redis、Backend、Frontend、Admin）
+6. 自动执行数据库迁移和初始化（创建管理员账号）
+7. 输出访问地址和登录凭据
+
+> 无需预先安装任何东西（除 root 权限），脚本会从头装好，全程只在你输入账号时停下。
 
 部署完成后访问：
 - 前端用户端：`http://服务器IP:3000`
 - 管理后台：`http://服务器IP:3002`
 - API 文档：`http://服务器IP:3001/docs`
 
-### 更新部署
-
-```bash
-cd /opt/nodeshop && sudo bash deploy.sh
-```
+**更新/重装**：直接在服务器上再跑一次上面的命令即可。
 
 ### 常用运维命令
 

@@ -1,7 +1,10 @@
 #!/bin/bash
 # ============================================
-# NodeShop 一键部署脚本
-# 用法: sudo bash deploy.sh
+# NodeShop 一键安装脚本
+# 用法（任意目录，root 下运行）:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy.sh)
+# 或:
+#   curl -fsSL .../deploy.sh -o install.sh && bash install.sh
 # ============================================
 set -euo pipefail
 
@@ -16,7 +19,7 @@ ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; exit 1; }
 
-[ "$(id -u)" -ne 0 ] && err "请使用 root 运行: sudo bash deploy.sh"
+[ "$(id -u)" -ne 0 ] && err "请使用 root 运行"
 
 # ==========================================
 # 步骤 1：交互式配置
