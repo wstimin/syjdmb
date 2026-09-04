@@ -92,15 +92,20 @@ ok ".env 已生成"
 
 # --- 4. 构建启动 ---
 info "构建并启动服务（首次约 5-10 分钟）..."
-docker compose up -d --build --force-recreate 2>&1 | tail -3
+docker compose up -d --build --force-recreate
 
 # 等待 PG 就绪
-info "等待数据库..."
+info "等待数据库就绪..."
 for i in $(seq 1 30); do
-  docker exec nodeshop-db pg_isready -U nodeadmin -d nodeshop &>/dev/null && break
+  if docker exec nodeshop-db pg_isready -U nodeadmin -d nodeshop &>/dev/null; then
+    ok "数据库就绪"
+    break
+  fi
+  [ $i -eq 30 ] && err "数据库启动超时"
   sleep 2
+  echo -ne "\r  等待中... ${i}/30"
 done
-ok "数据库就绪"
+echo ""
 
 # --- 5. 迁移 + 初始化 ---
 info "数据库迁移..."
