@@ -1,37 +1,47 @@
 #!/bin/bash
 # ============================================
-# NodeShop 一键部署 — 零交互
+# NodeShop 一键部署脚本
 # 用法: sudo bash deploy.sh
 # ============================================
 set -euo pipefail
 
-# ============ 配置（可按需修改） ============
+# ============ 默认配置 ============
 REPO_URL="https://github.com/wstimin/syjdmb.git"
 INSTALL_DIR="/opt/nodeshop"
-DEFAULT_ADMIN_EMAIL="admin@nodeshop.com"
-DEFAULT_ADMIN_PASS="admin123456"
-# ============================================
+# ==================================
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${CYAN}[INFO]${NC} $*"; }
 ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
+warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; exit 1; }
 
-[ "$(id -u)" -ne 0 ] && err "请使用 root: sudo bash deploy.sh"
+[ "$(id -u)" -ne 0 ] && err "请使用 root 运行: sudo bash deploy.sh"
 
-# --- 1.5 交互式配置管理员 ---
+# ==========================================
+# 步骤 1：交互式配置
+# ==========================================
 echo ""
-echo -e "${CYAN}══════════════════════════════════════════════${NC}"
-echo -e "${CYAN}  📧 管理员账号配置${NC}"
-echo -e "${CYAN}══════════════════════════════════════════════${NC}"
-read -rp "  管理员邮箱 [${DEFAULT_ADMIN_EMAIL}]: " ADMIN_EMAIL
-ADMIN_EMAIL="${ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}"
-read -rp "  管理员密码 [${DEFAULT_ADMIN_PASS}]: " ADMIN_PASS
-ADMIN_PASS="${ADMIN_PASS:-$DEFAULT_ADMIN_PASS}"
+echo -e "${CYAN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${CYAN}║       NodeShop 一键部署                  ║${NC}"
+echo -e "${CYAN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 
-# --- 1. 安装依赖 ---
-info "检查环境..."
+read -rp "  管理员邮箱 [admin@nodeshop.com]: " ADMIN_EMAIL
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@nodeshop.com}"
+
+read -rp "  管理员密码 [admin123456]: " ADMIN_PASS
+ADMIN_PASS="${ADMIN_PASS:-admin123456}"
+
+echo ""
+echo -e "  邮箱: ${GREEN}${ADMIN_EMAIL}${NC}"
+echo -e "  密码: ${GREEN}${ADMIN_PASS}${NC}"
+echo ""
+
+# ==========================================
+# 步骤 2：安装 Docker
+# ==========================================
+info "检查 Docker..."
 if command -v docker &>/dev/null && docker compose version &>/dev/null; then
   ok "Docker 已就绪"
 else
@@ -41,7 +51,6 @@ else
     yum install -y yum-utils && yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
     yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   else
-    # 清理之前可能残留的坏 Docker 源
     rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg 2>/dev/null || true
     apt-get update -qq 2>/dev/null || true
     apt-get install -y -qq ca-certificates curl git 2>/dev/null || true
@@ -51,7 +60,7 @@ else
   ok "Docker 安装完成"
 fi
 
-# 配置 Docker 镜像加速（国内服务器，始终检查）
+# Docker 镜像加速（国内服务器）
 if ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
   info "配置 Docker 镜像加速..."
   mkdir -p /etc/docker
@@ -68,7 +77,9 @@ DAEMON
   ok "镜像加速已配置"
 fi
 
-# --- 2. 克隆/更新代码 ---
+# ==========================================
+# 步骤 3：拉取代码
+# ==========================================
 if [ -d "$INSTALL_DIR/.git" ]; then
   info "更新代码..."
   cd "$INSTALL_DIR" && git pull origin master 2>/dev/null || true
@@ -80,7 +91,9 @@ else
 fi
 ok "代码就绪"
 
-# --- 3. 生成 .env ---
+# ==========================================
+# 步骤 4：生成 .env
+# ==========================================
 DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
 JWT_SEC=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 48)
 SERVER_IP=$(hostname -I | awk '{print $1}')
@@ -93,7 +106,6 @@ BACKEND_PORT=3001
 JWT_SECRET="${JWT_SEC}"
 JWT_EXPIRES_IN="15m"
 JWT_REFRESH_EXPIRES_IN="7d"
-NEXT_PUBLIC_API_URL=http://backend:3001/api
 FRONTEND_URL="http://${SERVER_IP}:3000"
 ADMIN_URL="http://${SERVER_IP}:3002"
 APP_URL="http://${SERVER_IP}:3001"
@@ -102,49 +114,101 @@ XUI_PANELS="[]"
 EOF
 ok ".env 已生成"
 
-# --- 4. 构建启动 ---
-info "构建并启动服务（首次约 5-10 分钟）..."
-docker compose up -d --build --force-recreate
+# ==========================================
+# 步骤 5：清理旧环境（避免密码冲突）
+# ==========================================
+info "清理旧容器和数据卷..."
+docker compose down -v 2>/dev/null || true
+ok "旧环境已清理"
 
-# 等待 PG 就绪
+# ==========================================
+# 步骤 6：构建并启动
+# ==========================================
+info "构建并启动服务（首次约 5-10 分钟）..."
+docker compose up -d --build
+
+# ==========================================
+# 步骤 7：等待 PostgreSQL 就绪
+# ==========================================
 info "等待数据库就绪..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
   if docker exec nodeshop-db pg_isready -U nodeadmin -d nodeshop &>/dev/null; then
     ok "数据库就绪"
     break
   fi
-  [ $i -eq 30 ] && err "数据库启动超时"
+  [ $i -eq 60 ] && err "数据库启动超时"
   sleep 2
-  echo -ne "\r  等待中... ${i}/30"
+  echo -ne "\r  等待中... ${i}/60"
 done
 echo ""
 
-# --- 5. 迁移 + 初始化 ---
-info "数据库迁移..."
-docker exec nodeshop-backend npx prisma migrate deploy || true
+# ==========================================
+# 步骤 8：等待后端启动
+# ==========================================
+info "等待后端服务启动..."
+for i in $(seq 1 60); do
+  # 检查后端是否在监听 3001 端口
+  if docker exec nodeshop-backend sh -c "wget -q -O /dev/null http://localhost:3001 2>/dev/null || true" 2>/dev/null; then
+    ok "后端服务已就绪"
+    break
+  fi
+  # 备用检查：进程是否存在
+  if docker exec nodeshop-backend pgrep -f "node dist/main.js" &>/dev/null; then
+    ok "后端服务已就绪"
+    break
+  fi
+  [ $i -eq 60 ] && warn "后端可能未完全启动，继续尝试 seed..."
+  sleep 3
+  echo -ne "\r  等待中... ${i}/60"
+done
+echo ""
+
+# ==========================================
+# 步骤 9：数据库迁移
+# ==========================================
+info "执行数据库迁移..."
+docker exec nodeshop-backend npx prisma migrate deploy 2>&1 || true
 ok "迁移完成"
 
-info "初始化管理员..."
-docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
-  nodeshop-backend npx ts-node prisma/seed.ts || true
-ok "初始化完成"
+# ==========================================
+# 步骤 10：初始化管理员
+# ==========================================
+info "创建管理员账号..."
+SEED_OUTPUT=$(docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
+  nodeshop-backend npx ts-node prisma/seed.ts 2>&1) || true
+echo "$SEED_OUTPUT"
+if echo "$SEED_OUTPUT" | grep -q "Admin created"; then
+  ok "管理员创建成功"
+else
+  warn "管理员可能已存在或创建失败，尝试手动 seed..."
+  docker exec nodeshop-backend npx ts-node prisma/seed.ts 2>&1 || true
+fi
 
-# --- 6. 输出结果 ---
+# ==========================================
+# 步骤 11：验证服务状态
+# ==========================================
 echo ""
-echo -e "${GREEN}══════════════════════════════════════════════${NC}"
-echo -e "${GREEN}    ✅ NodeShop 部署完成！${NC}"
-echo -e "${GREEN}══════════════════════════════════════════════${NC}"
+info "检查服务状态..."
+docker compose ps
+
+# ==========================================
+# 完成
+# ==========================================
+echo ""
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║       ✅ NodeShop 部署完成！             ║${NC}"
+echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  🌐 前端:      http://${SERVER_IP}:3000"
 echo -e "  ⚙️  管理后台:  http://${SERVER_IP}:3002"
-echo -e "  📡 API 文档:  http://${SERVER_IP}:3001/docs"
+echo -e "  📡 API:       http://${SERVER_IP}:3001/api"
 echo ""
 echo -e "  📧 管理员:    ${ADMIN_EMAIL}"
 echo -e "  🔑 密码:      ${ADMIN_PASS}"
 echo ""
 echo -e "  ${CYAN}常用命令:${NC}"
-echo -e "    日志:  docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f backend"
-echo -e "    重启:  docker compose -f ${INSTALL_DIR}/docker-compose.yml restart"
-echo -e "    停止:  docker compose -f ${INSTALL_DIR}/docker-compose.yml down"
-echo -e "    更新:  cd ${INSTALL_DIR} && bash deploy.sh"
-echo -e "${GREEN}══════════════════════════════════════════════${NC}"
+echo -e "    查看日志:  docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f"
+echo -e "    重启服务:  docker compose -f ${INSTALL_DIR}/docker-compose.yml restart"
+echo -e "    停止服务:  docker compose -f ${INSTALL_DIR}/docker-compose.yml down"
+echo -e "    更新部署:  cd ${INSTALL_DIR} && bash deploy.sh"
+echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
