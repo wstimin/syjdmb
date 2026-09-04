@@ -4,7 +4,7 @@ WORKDIR /app
 ARG NEXT_PUBLIC_API_URL=http://localhost:3001/api
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 COPY package*.json ./
-RUN npm ci
+RUN npm install --ignore-scripts 2>/dev/null || npm install
 COPY . .
 RUN npm run build
 

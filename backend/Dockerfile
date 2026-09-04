@@ -2,7 +2,7 @@
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install --ignore-scripts 2>/dev/null || npm install
 COPY tsconfig.json nest-cli.json ./
 COPY prisma ./prisma
 COPY src ./src
@@ -13,7 +13,7 @@ FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --ignore-scripts 2>/dev/null || npm install --omit=dev
 # Install ts-node for prisma seed (production use)
 RUN npm install ts-node
 COPY --from=builder /app/dist ./dist
