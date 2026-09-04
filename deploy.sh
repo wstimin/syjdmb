@@ -30,11 +30,9 @@ else
     yum install -y yum-utils && yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
     yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
   else
+    # Debian/Ubuntu: 使用官方一键脚本
     apt-get update -qq && apt-get install -y -qq ca-certificates curl git
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/$OS/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null || true
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$OS $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-    apt-get update -qq && apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin git
+    curl -fsSL https://get.docker.com | sh
   fi
   systemctl enable docker && systemctl start docker
   ok "Docker 安装完成"
