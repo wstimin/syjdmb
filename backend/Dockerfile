@@ -14,9 +14,16 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm install --ignore-scripts 2>/dev/null || npm install --omit=dev
-RUN npm install ts-node
+FROM node:20
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm install --omit=dev 2>/dev/null || true
+RUN npm install -g ts-node typescript 2>/dev/null || true
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 RUN npx prisma generate
 EXPOSE 3001
 CMD ["node", "dist/main.js"]
