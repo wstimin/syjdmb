@@ -8,8 +8,8 @@ set -euo pipefail
 # ============ 配置（可按需修改） ============
 REPO_URL="https://github.com/wstimin/syjdmb.git"
 INSTALL_DIR="/opt/nodeshop"
-ADMIN_EMAIL="admin@nodeshop.com"
-ADMIN_PASS="admin123456"
+DEFAULT_ADMIN_EMAIL="admin@nodeshop.com"
+DEFAULT_ADMIN_PASS="admin123456"
 # ============================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -18,6 +18,17 @@ ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; exit 1; }
 
 [ "$(id -u)" -ne 0 ] && err "请使用 root: sudo bash deploy.sh"
+
+# --- 1.5 交互式配置管理员 ---
+echo ""
+echo -e "${CYAN}══════════════════════════════════════════════${NC}"
+echo -e "${CYAN}  📧 管理员账号配置${NC}"
+echo -e "${CYAN}══════════════════════════════════════════════${NC}"
+read -rp "  管理员邮箱 [${DEFAULT_ADMIN_EMAIL}]: " ADMIN_EMAIL
+ADMIN_EMAIL="${ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}"
+read -rp "  管理员密码 [${DEFAULT_ADMIN_PASS}]: " ADMIN_PASS
+ADMIN_PASS="${ADMIN_PASS:-$DEFAULT_ADMIN_PASS}"
+echo ""
 
 # --- 1. 安装依赖 ---
 info "检查环境..."
@@ -115,7 +126,7 @@ ok "迁移完成"
 
 info "初始化管理员..."
 docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
-  nodeshop-backend npx prisma db seed || true
+  nodeshop-backend npx ts-node prisma/seed.ts || true
 ok "初始化完成"
 
 # --- 6. 输出结果 ---
