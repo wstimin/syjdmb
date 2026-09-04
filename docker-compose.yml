@@ -71,14 +71,12 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      args:
-        - NEXT_PUBLIC_API_URL=http://backend:3001/api
     container_name: nodeshop-frontend
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3001/api
+      - BACKEND_INTERNAL_URL=http://backend:3001
     depends_on:
       - backend
     networks:
@@ -91,14 +89,12 @@ services:
     build:
       context: ./admin
       dockerfile: Dockerfile
-      args:
-        - NEXT_PUBLIC_API_URL=http://backend:3001/api
     container_name: nodeshop-admin
     restart: unless-stopped
     ports:
       - "3002:3002"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3001/api
+      - BACKEND_INTERNAL_URL=http://backend:3001
     depends_on:
       - backend
     networks:
