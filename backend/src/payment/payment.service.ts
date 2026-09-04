@@ -154,7 +154,7 @@ export class PaymentService {
       orderNo: order.orderNo,
       orderId: order.id,
       status: order.status, // PENDING / PAID / COMPLETED / PROCESSING / CANCELLED
-      paid: order.status === 'COMPLETED' || order.status === 'PAID',
+      paid: order.status === 'COMPLETED' || order.status === 'PAID' || order.status === 'PROCESSING',
       amount: order.amount,
     };
   }

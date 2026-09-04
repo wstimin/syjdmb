@@ -400,6 +400,7 @@ export class ServerService {
       enable?: boolean;
       id?: string;       // VLESS/VMess UUID，不传则自动生成
       subId?: string;    // 订阅ID，不传则自动生成
+      flow?: string;     // VLESS 流控，如 xtls-rprx-vision
     },
     inboundIds: number[],
   ) {
@@ -417,6 +418,7 @@ export class ServerService {
           enable: clientData.enable ?? true,
           ...(clientData.id && { id: clientData.id }),
           ...(clientData.subId && { subId: clientData.subId }),
+          ...(clientData.flow && { flow: clientData.flow }),
         },
         inboundIds,
       },
@@ -462,6 +464,21 @@ export class ServerService {
       'POST',
       `/clients/del/${encodeURIComponent(email)}${qs}`,
     );
+  }
+
+  /**
+   * 批量调整客户端（bulkAdjust）：可设置 VLESS 的 XTLS flow（xtls-rprx-vision）
+   * POST /panel/api/clients/bulkAdjust
+   * Body: { emails, addDays, addBytes, flow }
+   * 用于 Reality/VLESS 客户端设置 Vision 流控（clients/add 不保证接受 flow）
+   */
+  async setClientFlow(serverId: number, email: string, flow: string) {
+    return this.xuiRequest(serverId, 'POST', '/clients/bulkAdjust', {
+      emails: [email],
+      addDays: 0,
+      addBytes: 0,
+      flow,
+    });
   }
 
   /**
@@ -739,6 +756,22 @@ export class ServerService {
     const res = await this.xuiRequest(serverId, 'POST', '/server/restartXrayService');
     this.logger.log(`Xray restart requested on server ${serverId}: ${res?.success}`);
     return res;
+  }
+
+  /**
+   * 生成新的 X25519 密钥对（Reality 用）
+   * POST /panel/api/server/getNewX25519Cert
+   * 返回: { privateKey, publicKey }
+   */
+  async getNewX25519Key(serverId: number): Promise<{ privateKey: string; publicKey: string }> {
+    const res = await this.xuiRequest(serverId, 'POST', '/server/getNewX25519Cert');
+    if (!res.obj || !res.obj.privateKey) {
+      throw new BadRequestException(`Failed to generate X25519 keypair: ${res.msg || 'unknown error'}`);
+    }
+    return {
+      privateKey: res.obj.privateKey,
+      publicKey: res.obj.publicKey || '',
+    };
   }
 
   // ==========================================

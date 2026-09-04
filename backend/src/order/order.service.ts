@@ -5,7 +5,9 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
+import { RedisService } from '../common/redis/redis.service';
 import { InboundService } from '../inbound/inbound.service';
 import { ServerService } from '../server/server.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -18,6 +20,7 @@ export class OrderService {
     private prisma: PrismaService,
     private inboundService: InboundService,
     private serverService: ServerService,
+    private redis: RedisService,
   ) {}
 
   // ==========================================
@@ -51,6 +54,19 @@ export class OrderService {
       throw new BadRequestException('开启中转需要填写 SOCKS 节点的地址和端口');
     }
 
+    // 服务器选择：只允许套餐绑定的服务器；未传则取第一个绑定（激活时兜底自动选）
+    let serverId: number | null = null;
+    if (params.serverId) {
+      const boundIds = (plan.serverIds || []) as number[];
+      if (!boundIds.includes(params.serverId)) {
+        throw new BadRequestException('所选服务器不在该套餐的可用服务器列表中');
+      }
+      serverId = params.serverId;
+    }
+
+    // 协议：系统默认 vless（vless+reality）；不存用户选择
+    const protocol = 'vless';
+
     const order = await this.prisma.order.create({
       data: {
         orderNo,
@@ -58,12 +74,14 @@ export class OrderService {
         planId,
         amount: plan.price,
         status: 'PENDING',
-        payMethod: params.payMethod as any,
+        payMethod: (params.payMethod ? String(params.payMethod).toUpperCase() : null) as any,
         relayEnabled: relay,
         relaySocksHost: relay ? params.relaySocksHost : null,
         relaySocksPort: relay ? params.relaySocksPort : null,
         relaySocksUser: relay ? params.relaySocksUser : null,
         relaySocksPass: relay ? params.relaySocksPass : null,
+        serverId,
+        protocol,
       },
     });
 
@@ -76,7 +94,8 @@ export class OrderService {
 
   // 用余额支付
   async payWithBalance(userId: number, orderId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    // 事务只做扣款+标记，避免把 XUI 网络调用（建节点）拖进长事务
+    const result = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: { plan: true },
@@ -119,6 +138,16 @@ export class OrderService {
 
       return { success: true, order };
     });
+
+    // 事务提交后再激活（自动创建节点；失败则由后台 cron 兜底重试）
+    try {
+      const activation = await this.activateOrder(orderId);
+      return { ...result, activation };
+    } catch (e) {
+      this.logger.error(`Balance payment activated failed for order ${orderId}: ${e.message}`);
+      // 订单已是 PAID，交给 autoActivate cron 重试
+      return { ...result, activationFailed: true, message: e.message };
+    }
   }
 
   // 支付成功后激活节点（核心流程）
@@ -128,16 +157,29 @@ export class OrderService {
       include: { plan: true },
     });
     if (!order) throw new NotFoundException('Order not found');
-    if (order.status !== 'PAID' && order.status !== 'PENDING') {
+    if (!['PAID', 'PENDING', 'PROCESSING'].includes(order.status)) {
       throw new ConflictException('Order cannot be activated');
     }
+    // 避免重复激活：已 COMPLETED 直接返回
+    if (['PAID', 'PENDING', 'PROCESSING'].includes(order.status)) {
+      const existing = await this.prisma.inbound.findFirst({
+        where: { userId: order.userId, remark: { contains: `Order ${order.orderNo}` } },
+      });
+      if (existing) {
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { status: 'COMPLETED' },
+        });
+        return { inbound: existing, order: { ...order, status: 'COMPLETED' } };
+      }
+    }
 
-    // Select server
-    const preferredProtocol = order.plan.protocols[0] || 'vless';
-    const serverId = await this.serverService.selectServer(
-      preferredProtocol,
-      order.plan.serverIds?.[0],
-    );
+    // Select server：优先用户下单时选的服务器；否则负载均衡选
+    const preferredProtocol =
+      order.protocol || (order.plan.protocols?.includes('vless') ? 'vless' : order.plan.protocols?.[0] || 'vless');
+    const serverId = order.serverId
+      ? await this.serverService.selectServer(preferredProtocol, order.serverId)
+      : await this.serverService.selectServer(preferredProtocol, order.plan.serverIds?.[0]);
 
     // Create inbound in XUI
     const inbound = await this.inboundService.createInbound({
@@ -150,6 +192,7 @@ export class OrderService {
       relaySocksPort: order.relaySocksPort || undefined,
       relaySocksUser: order.relaySocksUser || undefined,
       relaySocksPass: order.relaySocksPass || undefined,
+      orderNo: order.orderNo,
     });
 
     // Update order status
@@ -162,6 +205,46 @@ export class OrderService {
     });
 
     return { inbound, order };
+  }
+
+  /**
+   * 兜底重试：每分钟扫描已支付/激活失败的订单，自动建节点直到成功。
+   * PAID：已支付但从未激活（如网关回调后未被激活的存量单）
+   * PROCESSING：激活失败的单子（面板瞬时故障等）
+   * 带防重入：Redis SETNX 锁，避免多实例重叠跑。
+   */
+  @Cron('*/1 * * * *')
+  async autoActivatePending() {
+    const lockKey = 'order:autoActivate:lock';
+    const gotLock = await this.redis.setNx(lockKey, '1', 55).catch(() => false);
+    if (!gotLock) return; // 另一个实例/上一轮还在跑
+
+    try {
+      const cutoff = new Date(Date.now() - 60_000);
+      const orders = await this.prisma.order.findMany({
+        where: { status: { in: ['PAID', 'PROCESSING'] }, updatedAt: { lt: cutoff } },
+        include: { plan: true },
+        take: 20,
+      });
+
+      for (const order of orders) {
+        try {
+          await this.activateOrder(order.id);
+          this.logger.log(`Auto-activated order ${order.orderNo} (${order.status} → COMPLETED)`);
+        } catch (e) {
+          this.logger.warn(`Auto-activate order ${order.orderNo} failed: ${e.message}`);
+          // 保持 PROCESSING，下一次 cron 重试
+          if (order.status === 'PAID') {
+            await this.prisma.order.update({
+              where: { id: order.id },
+              data: { status: 'PROCESSING' },
+            });
+          }
+        }
+      }
+    } finally {
+      await this.redis.del(lockKey).catch(() => {});
+    }
   }
 
   // ==========================================

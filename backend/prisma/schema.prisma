@@ -157,6 +157,9 @@ model Order {
   relaySocksPort Int?      // 用户填的 SOCKS 节点端口
   relaySocksUser String?
   relaySocksPass String?
+  // 下单时选择的服务器与系统默认协议（vless+reality），激活时使用
+  serverId    Int?         // 用户选购的服务器（plan.serverIds 之一）
+  protocol    String?      // 激活时的节点协议（默认 vless）
   referralEarning Decimal? @db.Decimal(10, 2)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -196,6 +199,7 @@ model Inbound {
   serverId    Int
   server      Server         @relation(fields: [serverId], references: [id])
   inboundId   Int            // XUI inbound ID
+  clientUuid  String?        // XUI 客户端 UUID（连接串 id 参数）
   protocol    String         // vmess, vless, trojan, shadowsocks
   port        Int
   email       String         // unique identifier in XUI
@@ -212,6 +216,13 @@ model Inbound {
   relaySocksPort Int?        // 用户 SOCKS 节点端口
   relaySocksUser String?
   relaySocksPass String?
+  // VLESS+Reality 配置快照（创建时写入，用于本地生成连接串/面板读写一致性）
+  realityServerNames String? // SNI 列表，如 www.microsoft.com
+  realityPrivateKey String?  // X25519 私钥（仅面板侧需要）
+  realityPublicKey String?   // X25519 公钥（客户端链接 pbk 参数）
+  realityShortId String?     // reality shortId
+  realityDest String?        // reality dest 目标
+  realityMinVersion String?  // 最小客户端版本，默认 1.0.0
   status      InboundStatus  @default(ACTIVE)
   remark      String?
   createdAt   DateTime       @default(now())

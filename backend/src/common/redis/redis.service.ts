@@ -25,6 +25,14 @@ export class RedisService implements OnModuleDestroy {
     }
   }
 
+  // SETNX：仅在 key 不存在时设置并返回 true（用于分布式锁）
+  async setNx(key: string, value: string, ttlSeconds?: number): Promise<boolean> {
+    const result = ttlSeconds
+      ? await this.client.set(key, value, 'EX', ttlSeconds, 'NX')
+      : await this.client.set(key, value, 'NX');
+    return result === 'OK';
+  }
+
   async del(key: string): Promise<void> {
     await this.client.del(key);
   }

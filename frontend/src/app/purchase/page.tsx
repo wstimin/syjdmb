@@ -20,6 +20,8 @@ function PurchaseContent() {
   const planId = searchParams.get('plan');
 
   const [plan, setPlan] = useState<any>(null);
+  const [servers, setServers] = useState<any[]>([]);
+  const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [order, setOrder] = useState<any>(null);
   const [method, setMethod] = useState<string>('');
@@ -40,6 +42,15 @@ function PurchaseContent() {
       .then((res) => setPlan(res.data.data))
       .catch((err) => toast.error(getErrorMessage(err)))
       .finally(() => setLoading(false));
+
+    // 拉套餐可用服务器（供用户选择在哪台服务器上建节点）
+    api.get(`/plans/${planId}/servers`)
+      .then((res) => {
+        const list = res.data.data || [];
+        setServers(list);
+        if (list.length > 0) setSelectedServerId(list[0].id);
+      })
+      .catch(() => setServers([]));
   }, [planId]);
 
   // Cleanup polling on unmount
@@ -84,6 +95,7 @@ function PurchaseContent() {
       const res = await api.post('/orders', {
         planId: Number(planId),
         payMethod: m === 'card' ? undefined : m,
+        serverId: selectedServerId ?? undefined, // 用户选择在这台服务器上建节点
         relay,
         ...(relay
           ? {
@@ -168,6 +180,37 @@ function PurchaseContent() {
           <div className="text-2xl font-bold text-primary">¥{Number(plan.price)}</div>
         </CardContent>
       </Card>
+
+      {/* 选择服务器 — 用户选在哪台服务器上建节点（协议为系统默认 VLESS+Reality，不在购买页展示） */}
+      {servers.length > 0 && (
+        <Card className="mt-6 border-border/60">
+          <CardContent className="p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-semibold">选择服务器</div>
+              <span className="text-xs text-muted-foreground">节点类型默认 VLESS + Reality</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {servers.map((s: any) => {
+                const active = selectedServerId === s.id;
+                return (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setSelectedServerId(s.id)}
+                    className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                      active
+                        ? 'border-primary bg-primary/10 text-primary font-medium'
+                        : 'border-input text-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {s.flag || ''} {s.name} · {s.country || '—'}
+                  </button>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 开启中转（选装） — 在该源节点上挂 SOCKS，节点全程走中转，出口 = 用户填写的 SOCKS 节点 IP */}
       <Card className="mt-6 border-border/60">

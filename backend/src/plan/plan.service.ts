@@ -33,6 +33,31 @@ export class PlanService {
     return plan;
   }
 
+  // 套餐可用的服务器列表（购买页选择服务器用）
+  async getPlanServers(planId: number) {
+    const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
+    if (!plan) throw new NotFoundException('Plan not found');
+
+    const ids = (plan.serverIds || []) as number[];
+    if (ids.length === 0) return [];
+
+    const servers = await this.prisma.server.findMany({
+      where: { id: { in: ids }, status: 'ACTIVE' },
+      select: {
+        id: true,
+        name: true,
+        host: true,
+        country: true,
+        flag: true,
+        status: true,
+        protocol: true,
+        port: true,
+      },
+    });
+
+    return servers;
+  }
+
   async create(data: any) {
     return this.prisma.plan.create({ data });
   }

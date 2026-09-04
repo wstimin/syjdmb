@@ -94,6 +94,9 @@ export default function NodesPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant={status.variant}>{status.label}</Badge>
+                        {node.protocol === 'vless' && node.realityDest && (
+                          <Badge variant="secondary" className="bg-violet-500/15 text-violet-500 border-violet-500/30">Reality</Badge>
+                        )}
                         {node.relayEnabled && <Badge variant="success">中转</Badge>}
                       </div>
                     </div>

@@ -35,6 +35,14 @@ export class PlanController {
     return { success: true, data: result };
   }
 
+  // Public: 套餐可用的服务器（购买页选择服务器用）
+  @Get(':id/servers')
+  @ApiOperation({ summary: 'Get servers available for a plan (public)' })
+  async getPlanServers(@Param('id', ParseIntPipe) id: number) {
+    const result = await this.planService.getPlanServers(id);
+    return { success: true, data: result };
+  }
+
   // Admin endpoints
   @Get('admin/all')
   @UseGuards(JwtAuthGuard, RolesGuard)

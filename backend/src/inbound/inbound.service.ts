@@ -32,6 +32,7 @@ export class InboundService {
     relaySocksPort?: number;
     relaySocksUser?: string;
     relaySocksPass?: string;
+    orderNo?: string;  // 订单号，写入节点备注（激活幂等/后台排查用）
   }) {
     const {
       userId,
@@ -43,6 +44,7 @@ export class InboundService {
       relaySocksPort,
       relaySocksUser,
       relaySocksPass,
+      orderNo,
     } = params;
 
     const server = await this.prisma.server.findUnique({
@@ -68,6 +70,7 @@ export class InboundService {
 
     // Client object（3.6.0 客户端是一等公民，通过 /panel/api/clients/add 创建，
     // 不再内嵌到入站的 settings.clients[] 中）
+    const isVless = protocol.toLowerCase() === 'vless';
     const client = {
       id: uuid,
       email,
@@ -78,9 +81,11 @@ export class InboundService {
       tgId: '',
       subId: email.replace(/@node$/, ''),
       reset: 0,
+      // VLESS(Reality/TLS) 用 XTLS Vision 流控；不填部分客户端连不上
+      flow: isVless ? 'xtls-rprx-vision' : '',
     };
 
-    // Build protocol-specific settings（clients 置空，客户端另建）
+    // Build protocol-specific settings（clients 置空，客户端另建；VLESS 带 flow）
     let settings: string;
     switch (protocol.toLowerCase()) {
       case 'vmess': {
@@ -120,31 +125,91 @@ export class InboundService {
         throw new BadRequestException(`Unsupported protocol: ${protocol}`);
     }
 
-    // Build stream settings (WebSocket + TLS)
-    const streamSettings = JSON.stringify({
-      network: 'ws',
-      security: 'tls',
-      externalProxy: [],
-      tlsSettings: {
-        certificates: [
-          {
-            certificateFile: '/etc/letsencrypt/live/example.com/fullchain.pem',
-            keyFile: '/etc/letsencrypt/live/example.com/privkey.pem',
+    // ---- Stream settings ----
+    // VLESS → VLESS+Reality（系统默认，最小客户端版本 1.0.0）
+    // 其它协议 → WebSocket 明文（去掉假证书路径，开箱即用）；SS → 原生 tcp
+    let streamSettings: string;
+    let reality: {
+      dest: string;
+      serverNames: string;
+      privateKey: string;
+      publicKey: string;
+      shortId: string;
+    } | null = null;
+
+    if (isVless) {
+      // 用面板生成 X25519 密钥对 + 随机 shortId；Reality 目标/SNI 用微软官网（安全默认）
+      let key: { privateKey: string; publicKey: string };
+      try {
+        key = await this.serverService.getNewX25519Key(serverId);
+      } catch (e) {
+        this.logger.warn(`getNewX25519Cert failed (${e.message}); fall back to ws`);
+        key = { privateKey: '', publicKey: '' };
+      }
+      if (!key.privateKey) {
+        // 面板不支持/生成失败 → 回退 ws 明文，保证节点可建
+        streamSettings = JSON.stringify({
+          network: 'ws',
+          security: 'none',
+          externalProxy: [],
+          wsSettings: {
+            path: `/${uuid.slice(0, 8)}-${Date.now().toString(36)}`,
+            headers: {},
           },
-        ],
-        minVersion: '1.2',
-        alpn: ['http/1.1'],
-        sni: '',
-      },
-      tcpSettings: { header: { type: 'none' } },
-      wsSettings: {
-        path: `/${uuid.slice(0, 8)}-${Date.now().toString(36)}`,
-        headers: {},
-      },
-    });
+        });
+        reality = null;
+      } else {
+        const dest = 'www.microsoft.com';
+        const shortId = this.randomHex(8);
+        reality = {
+          dest,
+          serverNames: dest,
+          privateKey: key.privateKey,
+          publicKey: key.publicKey,
+          shortId,
+        };
+        streamSettings = JSON.stringify({
+          network: 'tcp',
+          security: 'reality',
+          externalProxy: [],
+          realitySettings: {
+            show: false,
+            dest,
+            serverNames: [dest],
+            privateKey: key.privateKey,
+            shortIds: [shortId],
+            minVersion: '1.0.0', // 不配置部分客户端连不上
+            settings: {
+              publicKey: key.publicKey,
+              fingerprint: 'chrome',
+              spiderX: '',
+            },
+          },
+          tcpSettings: { header: { type: 'none' } },
+        });
+      }
+    } else if (protocol.toLowerCase() === 'shadowsocks') {
+      streamSettings = JSON.stringify({
+        network: 'tcp',
+        security: 'none',
+        externalProxy: [],
+        tcpSettings: { header: { type: 'none' } },
+      });
+    } else {
+      // vmess / trojan → ws 明文（无假证书）
+      streamSettings = JSON.stringify({
+        network: 'ws',
+        security: 'none',
+        externalProxy: [],
+        wsSettings: {
+          path: `/${uuid.slice(0, 8)}-${Date.now().toString(36)}`,
+          headers: {},
+        },
+      });
+    }
 
     // Port allocation
-    const port = await this.getAvailablePort(serverId);
+    const port = await this.getAvailablePort(serverId, isVless);
 
     const inboundData = {
       up: 0,
@@ -188,6 +253,7 @@ export class InboundService {
           enable: true,
           id: client.id,
           subId: client.subId,
+          flow: client.flow || undefined,
         },
         [xuiInboundId],
       );
@@ -199,12 +265,23 @@ export class InboundService {
         throw new BadRequestException(`Failed to add XUI client: ${clientRes?.msg}`);
       }
 
+      // VLESS(Reality/TLS) 客户端补设 Vision 流控（clients/add 不保证接受 flow，用 bulkAdjust 确保）
+      if (isVless) {
+        try {
+          const flowRes = await this.serverService.setClientFlow(serverId, client.email, 'xtls-rprx-vision');
+          if (!flowRes?.success) this.logger.warn(`setClientFlow failed: ${flowRes?.msg}`);
+        } catch (e) {
+          this.logger.warn(`setClientFlow error: ${e.message}`);
+        }
+      }
+
       // Save to database
       const inbound = await this.prisma.inbound.create({
         data: {
           userId,
           serverId,
           inboundId: xuiInboundId,
+          clientUuid: uuid,
           protocol: protocol.toLowerCase(),
           port,
           email,
@@ -220,7 +297,15 @@ export class InboundService {
           relaySocksPort: relay ? relaySocksPort : null,
           relaySocksUser: relay ? relaySocksUser : null,
           relaySocksPass: relay ? relaySocksPass : null,
-          remark: `Order ${inboundData.remark}`,
+          realityServerNames: reality ? reality.serverNames : null,
+          realityPrivateKey: reality ? reality.privateKey : null,
+          realityPublicKey: reality ? reality.publicKey : null,
+          realityShortId: reality ? reality.shortId : null,
+          realityDest: reality ? reality.dest : null,
+          realityMinVersion: reality ? '1.0.0' : null,
+          remark: orderNo
+            ? `Order ${orderNo}`
+            : `Order ${inboundData.remark}`,
         },
       });
 
@@ -300,12 +385,15 @@ export class InboundService {
     this.logger.log(`Relay unmounted from ${relayTag} (server ${serverId})`);
   }
 
-  private async getAvailablePort(serverId: number): Promise<number> {
+  private async getAvailablePort(serverId: number, prefer443 = false): Promise<number> {
     // Get existing inbounds from XUI
     try {
       const response = await this.serverService.getInbounds(serverId);
       const inbounds = response?.obj || [];
       const usedPorts = new Set(inbounds.map((i: any) => i.port));
+
+      // Reality 优先 443（与 HTTPS 流量混淆，更隐蔽）；被占用则退回随机高位端口
+      if (prefer443 && !usedPorts.has(443)) return 443;
 
       // Find first available port in range 10000-65535
       for (let port = 10000 + Math.floor(Math.random() * 20000); port <= 60000; port++) {
@@ -326,6 +414,15 @@ export class InboundService {
     return 0;
   }
 
+  private randomHex(length: number): string {
+    const chars = '0123456789abcdef';
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      out += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return out;
+  }
+
   // ==========================================
   // Link Generation
   // ==========================================
@@ -338,7 +435,10 @@ export class InboundService {
 
     const host = server.host;
     const port = inbound.port;
-    const uuid = client?.id || client?.password || '';
+    // 客户端 UUID：优先用落库的 clientUuid（settings.clients 是空的，内嵌无值）
+    const uuid = inbound.clientUuid || client?.id || client?.password || '';
+    const security = streamSettings?.security || 'none';
+    const isReality = security === 'reality';
 
     let url = '';
     let qrData = '';
@@ -353,31 +453,45 @@ export class InboundService {
           id: uuid,
           aid: '0',
           scy: 'auto',
-          net: 'ws',
+          net: streamSettings?.network || 'tcp',
           type: 'none',
           host: '',
           path: wsPath,
-          tls: 'tls',
+          tls: 'none',
           sni: '',
         };
         url = `vmess://${Buffer.from(JSON.stringify(vmessConfig)).toString('base64')}`;
         break;
       }
       case 'vless': {
-        const params = new URLSearchParams({
-          type: 'ws',
-          security: 'tls',
-          path: wsPath,
-          host: '',
-          'encryption': 'none',
-        });
-        url = `vless://${uuid}@${host}:${port}?${params.toString()}#${server.name}-vless`;
+        const params: Record<string, string> = {
+          encryption: 'none',
+          type: streamSettings?.network || 'tcp',
+          headerType: 'none',
+        };
+        if (isReality) {
+          // VLESS + Reality
+          params.security = 'reality';
+          params.flow = 'xtls-rprx-vision';
+          params.fp = 'chrome';
+          params.pbk = inbound.realityPublicKey || '';
+          params.sni = inbound.realityDest || '';
+          params.sid = inbound.realityShortId || '';
+          const frag = `${server.name}-reality`;
+          url = `vless://${uuid}@${host}:${port}?${new URLSearchParams(params).toString()}#${frag}`;
+          break;
+        }
+        // VLESS + ws 明文
+        params.security = 'none';
+        params.path = wsPath;
+        params.host = '';
+        url = `vless://${uuid}@${host}:${port}?${new URLSearchParams(params).toString()}#${server.name}-vless`;
         break;
       }
       case 'trojan': {
         const params = new URLSearchParams({
-          type: 'ws',
-          security: 'tls',
+          type: streamSettings?.network || 'tcp',
+          security: 'none',
           path: wsPath,
           host: '',
         });

@@ -21,7 +21,7 @@ export default function PlansPage() {
 
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
-    traffic: '0', deviceLimit: '1', description: '', protocols: 'vless,vmess',
+    traffic: '0', deviceLimit: '1', description: '', protocols: 'vless',
     serverIds: [] as number[],
   });
 
@@ -43,7 +43,7 @@ export default function PlansPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless,vmess', serverIds: [] });
+    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', serverIds: [] });
     setDialogOpen(true);
   };
 
