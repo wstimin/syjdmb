@@ -134,10 +134,10 @@ docker compose up -d --build
 # 步骤 7：等待 PostgreSQL 就绪
 # ==========================================
 info "等待数据库就绪..."
+PG_READY=""
 for i in $(seq 1 60); do
   if docker exec nodeshop-db pg_isready -U nodeadmin -d nodeshop &>/dev/null; then
-    ok "数据库就绪"
-    break
+    PG_READY="1"; ok "数据库就绪"; break
   fi
   [ $i -eq 60 ] && err "数据库启动超时"
   sleep 2
@@ -146,45 +146,47 @@ done
 echo ""
 
 # ==========================================
-# 步骤 8：等待后端启动
+# 步骤 8：迁移数据库 + 创建管理员
+#    注意：后端 Dockerfile 的 CMD 里也会跑 migrate。
+#    为避免顺序混乱，这里先显式等待后端容器进入 running，
+#    再通过 docker exec 执行 migrate/seed，失败则明确报错。
 # ==========================================
-info "等待后端服务启动..."
-for i in $(seq 1 60); do
-  # 检查后端是否在监听 3001 端口
-  if docker exec nodeshop-backend sh -c "wget -q -O /dev/null http://localhost:3001 2>/dev/null || true" 2>/dev/null; then
-    ok "后端服务已就绪"
+
+# 等待后端容器进入 running 且进程稳定
+info "等待后端容器就绪..."
+for i in $(seq 1 90); do
+  STATE=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
+  if [ "$STATE" = "running" ] && docker exec nodeshop-backend pgrep -f "node dist/main.js" &>/dev/null; then
+    ok "后端容器已就绪"
     break
   fi
-  # 备用检查：进程是否存在
-  if docker exec nodeshop-backend pgrep -f "node dist/main.js" &>/dev/null; then
-    ok "后端服务已就绪"
-    break
-  fi
-  [ $i -eq 60 ] && warn "后端可能未完全启动，继续尝试 seed..."
+  [ $i -eq 90 ] && {
+    warn "后端容器未就绪，最近日志："
+    docker logs nodeshop-backend 2>&1 | tail -20
+    err "后端启动失败，请检查上方日志"
+  }
   sleep 3
-  echo -ne "\r  等待中... ${i}/60"
+  echo -ne "\r  等待中... ${i}/90"
 done
 echo ""
 
-# ==========================================
-# 步骤 9：数据库迁移
-# ==========================================
+# 数据库迁移（显式执行，失败即报错）
 info "执行数据库迁移..."
-docker exec nodeshop-backend npx prisma migrate deploy 2>&1 || true
-ok "迁移完成"
+if docker exec nodeshop-backend npx prisma migrate deploy; then
+  ok "迁移完成"
+else
+  docker logs nodeshop-backend 2>&1 | tail -20
+  err "数据库迁移失败，请检查上方日志"
+fi
 
-# ==========================================
-# 步骤 10：初始化管理员
-# ==========================================
+# 创建管理员（失败即报错）
 info "创建管理员账号..."
-SEED_OUTPUT=$(docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
-  nodeshop-backend npx ts-node prisma/seed.ts 2>&1) || true
-echo "$SEED_OUTPUT"
-if echo "$SEED_OUTPUT" | grep -q "Admin created"; then
+if docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
+    nodeshop-backend npx ts-node prisma/seed.ts; then
   ok "管理员创建成功"
 else
-  warn "管理员可能已存在或创建失败，尝试手动 seed..."
-  docker exec nodeshop-backend npx ts-node prisma/seed.ts 2>&1 || true
+  docker logs nodeshop-backend 2>&1 | tail -20
+  err "管理员创建失败，请检查上方日志"
 fi
 
 # ==========================================
