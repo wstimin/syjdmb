@@ -27,8 +27,23 @@ export class InboundService {
     plan: any;
     serverId: number;
     protocol: string;
+    relay?: boolean;   // 购买时勾选中转：在该源节点上挂 SOCKS 出站+路由，节点全程走中转
+    relaySocksHost?: string; // 用户填写的 SOCKS 节点地址（出口 IP）
+    relaySocksPort?: number;
+    relaySocksUser?: string;
+    relaySocksPass?: string;
   }) {
-    const { userId, plan, serverId, protocol } = params;
+    const {
+      userId,
+      plan,
+      serverId,
+      protocol,
+      relay = false,
+      relaySocksHost,
+      relaySocksPort,
+      relaySocksUser,
+      relaySocksPass,
+    } = params;
 
     const server = await this.prisma.server.findUnique({
       where: { id: serverId },
@@ -51,7 +66,8 @@ export class InboundService {
     // Traffic limit in GB (convert bytes to GB for XUI)
     const totalGB = plan.traffic > 0 ? Number(plan.traffic) / 1024 / 1024 / 1024 : 0;
 
-    // Build client object
+    // Client object（3.6.0 客户端是一等公民，通过 /panel/api/clients/add 创建，
+    // 不再内嵌到入站的 settings.clients[] 中）
     const client = {
       id: uuid,
       email,
@@ -64,12 +80,12 @@ export class InboundService {
       reset: 0,
     };
 
-    // Build protocol-specific settings
+    // Build protocol-specific settings（clients 置空，客户端另建）
     let settings: string;
     switch (protocol.toLowerCase()) {
       case 'vmess': {
         settings = JSON.stringify({
-          clients: [client],
+          clients: [],
           decryption: 'none',
           fallbacks: [],
         });
@@ -77,7 +93,7 @@ export class InboundService {
       }
       case 'vless': {
         settings = JSON.stringify({
-          clients: [{ ...client, flow: '' }],
+          clients: [],
           decryption: 'none',
           fallbacks: [],
         });
@@ -85,7 +101,7 @@ export class InboundService {
       }
       case 'trojan': {
         settings = JSON.stringify({
-          clients: [{ ...client, password: uuid }],
+          clients: [],
           decryption: 'none',
           fallbacks: [],
         });
@@ -93,7 +109,9 @@ export class InboundService {
       }
       case 'shadowsocks': {
         settings = JSON.stringify({
-          clients: [{ ...client, method: 'aes-256-gcm', password: uuid }],
+          clients: [],
+          method: 'aes-256-gcm',
+          password: uuid,
           decryption: 'none',
         });
         break;
@@ -150,10 +168,36 @@ export class InboundService {
     };
 
     try {
-      // Call XUI API to add inbound
+      // 1) 建入站（settings.clients 为空，不再内嵌客户端）
       const response = await this.serverService.addInbound(serverId, inboundData);
-
       const xuiInboundId = this.extractInboundId(response);
+
+      if (!xuiInboundId) {
+        throw new BadRequestException('Failed to obtain XUI inbound id');
+      }
+
+      // 2) 建客户端并关联到该入站（3.6.0 文档：POST /panel/api/clients/add）
+      //    服务端按协议自动生成 UUID/密码；我们显式传 UUID 以生成一致的连接串
+      const clientRes = await this.serverService.addClient(
+        serverId,
+        {
+          email: client.email,
+          totalGB: client.totalGB,
+          expiryTime: client.expiryTime,
+          limitIp: client.limitIp,
+          enable: true,
+          id: client.id,
+          subId: client.subId,
+        },
+        [xuiInboundId],
+      );
+      if (!clientRes?.success) {
+        // 建客户端失败则回滚入站，避免留下空入站
+        try {
+          await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        throw new BadRequestException(`Failed to add XUI client: ${clientRes?.msg}`);
+      }
 
       // Save to database
       const inbound = await this.prisma.inbound.create({
@@ -169,9 +213,27 @@ export class InboundService {
           trafficLimit: plan.traffic,
           expiryTime: plan.duration > 0 ? new Date(expiryTime) : null,
           speedLimit: plan.speedLimit,
+          relayEnabled: relay,
+          relayTag: relay ? `inbound-${port}` : null,
+          relaySocksOutboundTag: relay ? `socks-${port}` : null,
+          relaySocksHost: relay ? relaySocksHost : null,
+          relaySocksPort: relay ? relaySocksPort : null,
+          relaySocksUser: relay ? relaySocksUser : null,
+          relaySocksPass: relay ? relaySocksPass : null,
           remark: `Order ${inboundData.remark}`,
         },
       });
+
+      // 购买时勾选中转：在该源节点上挂 SOCKS 出站（指向用户填的 SOCKS 节点，出口 = 该 SOCKS IP）
+      // + 一条只命中该节点端口的路由规则。不新增节点；节点全程走 SOCKS。
+      if (relay) {
+        await this.mountRelayOnNode(serverId, port, {
+          host: relaySocksHost,
+          port: relaySocksPort,
+          user: relaySocksUser,
+          pass: relaySocksPass,
+        });
+      }
 
       this.logger.log(`Inbound created: ${email} port=${port} on server ${server.name}`);
       return inbound;
@@ -179,6 +241,63 @@ export class InboundService {
       this.logger.error(`Failed to create inbound: ${error.message}`);
       throw new BadRequestException(`Failed to create inbound: ${error.message}`);
     }
+  }
+
+  /**
+   * 在【源节点】上挂 SOCKS 中转（购买时勾选中转的路径）。
+   * 为该节点创建专属出站 socks-<端口>，指向用户填写的 SOCKS 节点（出口 = 该 SOCKS IP），
+   * 再加一条只命中该入站端口的路由规则，让该节点流量全程走这个 SOCKS。
+   * 仅在配置确有变更时重启 Xray（重启会让该服务器全部节点闪断数秒）。
+   */
+  private async mountRelayOnNode(
+    serverId: number,
+    port: number,
+    socks: { host?: string; port?: number; user?: string; pass?: string },
+  ) {
+    if (!socks.host || !socks.port) {
+      throw new BadRequestException(
+        '开启中转需要填写 SOCKS 节点的地址和端口',
+      );
+    }
+
+    const relayTag = `inbound-${port}`;
+    const outboundTag = `socks-${port}`;
+
+    const outbound = await this.serverService.ensureUserSocksOutbound(
+      serverId,
+      { host: socks.host, port: socks.port, user: socks.user, pass: socks.pass },
+      outboundTag,
+    );
+    const ruleChanged = await this.serverService.ensureRelayRouting(
+      serverId,
+      relayTag,
+      outboundTag,
+    );
+    if (outbound.changed || ruleChanged) {
+      await this.serverService.restartXrayService(serverId);
+    }
+    this.logger.log(
+      `Relay mounted on source node ${relayTag} -> ${outboundTag} (${socks.host}:${socks.port}) on server ${serverId}`,
+    );
+  }
+
+  /**
+   * 移除【源节点】上的 SOCKS 中转：删该节点的路由规则，再删该节点专属出站。
+   * 配置确有变更时重启 Xray。
+   */
+  private async unmountRelayFromNode(serverId: number, inbound: any) {
+    const relayTag = inbound.relayTag;
+    const outboundTag = inbound.relaySocksOutboundTag;
+    const ruleRemoved = relayTag
+      ? await this.serverService.removeRelayRouting(serverId, relayTag)
+      : false;
+    const outboundRemoved = outboundTag
+      ? await this.serverService.removeUserSocksOutbound(serverId, outboundTag)
+      : false;
+    if (ruleRemoved || outboundRemoved) {
+      await this.serverService.restartXrayService(serverId);
+    }
+    this.logger.log(`Relay unmounted from ${relayTag} (server ${serverId})`);
   }
 
   private async getAvailablePort(serverId: number): Promise<number> {
@@ -499,6 +618,22 @@ export class InboundService {
   async delete(id: number) {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
+
+    // 该节点是中转节点 → 先移除它的路由规则及其专属出站
+    if (inbound.relayEnabled) {
+      try {
+        await this.unmountRelayFromNode(inbound.serverId, inbound);
+      } catch (e) {
+        this.logger.warn(`Failed to unmount relay: ${e.message}`);
+      }
+    }
+
+    try {
+      // 3.6.0：先删客户端（从所有关联入站移除 + 删流量记录）
+      await this.serverService.deleteClient(inbound.serverId, inbound.email);
+    } catch (e) {
+      this.logger.warn(`Failed to delete XUI client ${inbound.email}: ${e.message}`);
+    }
 
     try {
       await this.serverService.deleteInbound(inbound.serverId, inbound.inboundId);

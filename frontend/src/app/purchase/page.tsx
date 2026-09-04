@@ -10,6 +10,7 @@ import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
@@ -22,6 +23,12 @@ function PurchaseContent() {
   const [loading, setLoading] = useState(true);
   const [order, setOrder] = useState<any>(null);
   const [method, setMethod] = useState<string>('');
+  const [relay, setRelay] = useState(false);
+  // 开启中转后：用户填写自己 SOCKS 节点的信息（出口 = 该 SOCKS 节点 IP）
+  const [relayHost, setRelayHost] = useState('');
+  const [relayPort, setRelayPort] = useState('');
+  const [relayUser, setRelayUser] = useState('');
+  const [relayPass, setRelayPass] = useState('');
   const [payQr, setPayQr] = useState<string | null>(null);
   const [cardCode, setCardCode] = useState('');
   const [processing, setProcessing] = useState(false);
@@ -69,7 +76,19 @@ function PurchaseContent() {
     setMethod(m);
     setProcessing(true);
     try {
-      const res = await api.post('/orders', { planId: Number(planId), payMethod: m === 'card' ? undefined : m });
+      const res = await api.post('/orders', {
+        planId: Number(planId),
+        payMethod: m === 'card' ? undefined : m,
+        relay,
+        ...(relay
+          ? {
+              relaySocksHost: relayHost,
+              relaySocksPort: Number(relayPort),
+              relaySocksUser: relayUser || undefined,
+              relaySocksPass: relayPass || undefined,
+            }
+          : {}),
+      });
       setOrder(res.data.data);
 
       // Card: no gateway needed
@@ -143,6 +162,68 @@ function PurchaseContent() {
             </div>
           </div>
           <div className="text-2xl font-bold text-primary">¥{Number(plan.price)}</div>
+        </CardContent>
+      </Card>
+
+      {/* 开启中转（选装） — 在该源节点上挂 SOCKS，节点全程走中转，出口 = 用户填写的 SOCKS 节点 IP */}
+      <Card className="mt-6 border-border/60">
+        <CardContent className="p-5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <input
+                id="relay-toggle"
+                type="checkbox"
+                checked={relay}
+                onChange={(e) => setRelay(e.target.checked)}
+                className="h-5 w-5 accent-primary"
+              />
+              <label htmlFor="relay-toggle" className="cursor-pointer">
+                <div className="text-sm font-semibold">开启中转（SOCKS 线路）</div>
+                <div className="text-xs text-muted-foreground">
+                  节点流量全程经 SOCKS 链路转发，出口 IP 为你填写的 SOCKS 节点所在地址
+                </div>
+              </label>
+            </div>
+            <span className="text-xs text-muted-foreground">选装</span>
+          </div>
+
+          {/* 勾选中转后展开：填写自有 SOCKS 节点信息 */}
+          {relay && (
+            <div className="mt-4 space-y-3 rounded-xl bg-muted/40 p-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>SOCKS 地址 *</Label>
+                  <Input
+                    value={relayHost}
+                    onChange={(e) => setRelayHost(e.target.value)}
+                    placeholder="1.2.3.4 或域名"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>SOCKS 端口 *</Label>
+                  <Input
+                    value={relayPort}
+                    onChange={(e) => setRelayPort(e.target.value)}
+                    placeholder="1080"
+                    type="number"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>用户名（可选）</Label>
+                  <Input value={relayUser} onChange={(e) => setRelayUser(e.target.value)} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>密码（可选）</Label>
+                  <Input value={relayPass} onChange={(e) => setRelayPass(e.target.value)} type="password" />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                请填写你自有的 SOCKS5 节点；节点创建后将全程经由该 SOCKS 出站，出口 IP 为该节点地址。
+              </p>
+            </div>
+          )}
         </CardContent>
       </Card>
 

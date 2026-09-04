@@ -5,51 +5,31 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
-import { ServerService } from '../server/server.service';
-import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class SocksService {
   private readonly logger = new Logger(SocksService.name);
 
-  constructor(
-    private prisma: PrismaService,
-    private serverService: ServerService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   // ==========================================
-  // User: Add SOCKS proxy info
+  // User: Add user-supplied SOCKS proxy (台账)
   // ==========================================
+  //
+  // 注意：SOCKS「中转」已改为【购买时勾选】，在源节点上挂 SOCKS 出站+路由
+  // （见 inbound.service.createInbound + server.service.ensureSocks*）。
+  // 这里只保留「用户自填 SOCKS 服务器」作为账本记录，不再创建任何节点。
 
-  /**
-   * User submits their own SOCKS proxy, or requests one be created on a server.
-   * If host+port supplied → store as user-supplied proxy.
-   * If serverId supplied → auto-create SOCKS inbound on that server via XUI.
-   */
   async addSocks(params: {
     userId: number;
-    serverId?: number;
-    host?: string;
-    port?: number;
+    host: string;
+    port: number;
     username?: string;
     password?: string;
     remark?: string;
   }) {
-    // Auto-create mode on a server
-    if (params.serverId && !params.host) {
-      const proxy = await this.createOnServer({
-        userId: params.userId,
-        serverId: params.serverId,
-        username: params.username,
-        password: params.password,
-        remark: params.remark,
-      });
-      return proxy;
-    }
-
-    // User-supplied proxy
     if (!params.host || !params.port) {
-      throw new BadRequestException('Either provide host/port or serverId');
+      throw new BadRequestException('Host and port are required');
     }
 
     const proxy = await this.prisma.socksProxy.create({
@@ -65,90 +45,6 @@ export class SocksService {
     });
 
     return proxy;
-  }
-
-  // Auto-create SOCKS inbound on a managed server
-  private async createOnServer(params: {
-    userId: number;
-    serverId: number;
-    username?: string;
-    password?: string;
-    remark?: string;
-  }): Promise<any> {
-    const server = await this.prisma.server.findUnique({
-      where: { id: params.serverId },
-    });
-    if (!server) throw new NotFoundException('Server not found');
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: params.userId },
-    });
-    if (!user) throw new NotFoundException('User not found');
-
-    // Build SOCKS inbound for XUI
-    const port = 10800 + Math.floor(Math.random() * 5000);
-    const socUser = params.username || `socks-${user.id}`;
-    const socPass = params.password || uuidv4().slice(0, 16);
-
-    const inboundData = {
-      up: 0,
-      down: 0,
-      total: 0,
-      remark: `socks-${user.id}-${socUser}`,
-      enable: true,
-      expiryTime: 0,
-      listen: '',
-      port,
-      protocol: 'SOCKS',
-      settings: JSON.stringify({
-        auth: 'password',
-        accounts: [
-          {
-            user: socUser,
-            pass: socPass,
-          },
-        ],
-        udp: true,
-        ip: '',
-        userLevel: 0,
-      }),
-      streamSettings: JSON.stringify({
-        network: 'tcp',
-        security: 'none',
-        tcpSettings: { header: { type: 'none' } },
-      }),
-      tag: `socks-${port}`,
-      sniffing: {
-        enabled: true,
-        destOverride: ['http', 'tls', 'quic'],
-        metadataOnly: false,
-        routeOnly: false,
-      },
-    };
-
-    let inboundId: number;
-    try {
-      const response = await this.serverService.addInbound(params.serverId, inboundData);
-      inboundId = response?.obj || 0;
-    } catch (e) {
-      this.logger.error(`Failed to create SOCKS inbound: ${e.message}`);
-      throw new BadRequestException(`Failed to create SOCKS on server: ${e.message}`);
-    }
-
-    return this.prisma.socksProxy.create({
-      data: {
-        userId: params.userId,
-        serverId: params.serverId,
-        inboundId,
-        host: server.host,
-        port,
-        username: socUser,
-        password: socPass,
-        protocol: 'socks',
-        remark: params.remark || `SOCKS on ${server.name}`,
-        status: 'ACTIVE',
-      },
-    });
   }
 
   // ==========================================
@@ -235,15 +131,6 @@ export class SocksService {
 
     const proxy = await this.prisma.socksProxy.findFirst({ where });
     if (!proxy) throw new NotFoundException('SOCKS proxy not found');
-
-    // Try to remove from XUI if it was auto-created
-    if (proxy.serverId && proxy.inboundId) {
-      try {
-        await this.serverService.deleteInbound(proxy.serverId, proxy.inboundId);
-      } catch (e) {
-        this.logger.warn(`Failed to delete SOCKS inbound in XUI: ${e.message}`);
-      }
-    }
 
     return this.prisma.socksProxy.update({
       where: { id },

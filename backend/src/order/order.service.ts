@@ -31,6 +31,11 @@ export class OrderService {
     serverId?: number;
     protocol?: string;
     quantity?: number;
+    relay?: boolean;          // 购买时勾选中转
+    relaySocksHost?: string;  // 用户填写的 SOCKS 节点地址（出口 IP）
+    relaySocksPort?: number;
+    relaySocksUser?: string;
+    relaySocksPass?: string;
   }) {
     const { userId, planId } = params;
 
@@ -40,6 +45,12 @@ export class OrderService {
 
     const orderNo = this.generateOrderNo();
 
+    const relay = !!params.relay;
+    // 勾选中转但没填 SOCKS 地址/端口 → 直接报错，避免下单后激活时才发现
+    if (relay && (!params.relaySocksHost || !params.relaySocksPort)) {
+      throw new BadRequestException('开启中转需要填写 SOCKS 节点的地址和端口');
+    }
+
     const order = await this.prisma.order.create({
       data: {
         orderNo,
@@ -48,6 +59,11 @@ export class OrderService {
         amount: plan.price,
         status: 'PENDING',
         payMethod: params.payMethod as any,
+        relayEnabled: relay,
+        relaySocksHost: relay ? params.relaySocksHost : null,
+        relaySocksPort: relay ? params.relaySocksPort : null,
+        relaySocksUser: relay ? params.relaySocksUser : null,
+        relaySocksPass: relay ? params.relaySocksPass : null,
       },
     });
 
@@ -129,6 +145,11 @@ export class OrderService {
       plan: order.plan,
       serverId,
       protocol: preferredProtocol,
+      relay: !!order.relayEnabled, // 购买时勾选中转 → 在该源节点上挂 SOCKS
+      relaySocksHost: order.relaySocksHost || undefined,
+      relaySocksPort: order.relaySocksPort || undefined,
+      relaySocksUser: order.relaySocksUser || undefined,
+      relaySocksPass: order.relaySocksPass || undefined,
     });
 
     // Update order status

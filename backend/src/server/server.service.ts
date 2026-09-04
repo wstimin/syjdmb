@@ -549,6 +549,199 @@ export class ServerService {
   }
 
   // ==========================================
+  // Xray 全局配置管理（SOCKS 中转出站 + 路由）
+  //    文档路径: /panel/api/xray/  (GET 读全量 config, /update 整体替换)
+  //    注意：Xray 的 outbounds 和 routing.rules 是面板全局配置，
+  //    因此这里只做「幂等注入 + 定向清理」，避免影响其他节点。
+  // ==========================================
+
+  /**
+   * 读取当前 Xray 配置模板
+   * POST /panel/api/xray/   （文档：POST，无 body）
+   * 返回: { success, obj: { xraySetting: "{...raw config...}", inboundTags, ... } }
+   * 模板含 outbounds / routing / inbounds 等，可作为读-改-写的基础。
+   */
+  async getXrayConfig(serverId: number) {
+    const res = await this.xuiRequest(serverId, 'POST', '/xray/');
+    const raw = res?.obj?.xraySetting;
+    if (!raw) return {};
+    try {
+      return typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * 写回 Xray 配置模板
+   * POST /panel/api/xray/update
+   * 文档：config 作为 form field（application/x-www-form-urlencoded）提交，
+   *      值为 Xray JSON config 模板字符串。
+   */
+  async updateXrayConfig(serverId: number, config: any) {
+    const server = await this.prisma.server.findUnique({ where: { id: serverId } });
+    if (!server) throw new NotFoundException('Server not found');
+
+    const apiBase = server.apiPath || '/panel/api';
+    const apiUrl = `${this.panelBaseUrl(server)}${apiBase}/xray/update`;
+    const authValue = await this.login(serverId);
+    const useBearer = !!server.apiToken;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      ...(useBearer
+        ? { 'Authorization': `Bearer ${authValue}` }
+        : { 'Cookie': authValue }
+      ),
+    };
+
+    const form = new URLSearchParams();
+    form.set('config', JSON.stringify(config));
+
+    let response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      // @ts-ignore
+      agent: this.httpsAgent,
+      body: form.toString(),
+    });
+
+    if ((response.status === 401 || response.status === 403) && !useBearer) {
+      await this.redis.del(`xui:session:${serverId}`);
+      const newSession = await this.login(serverId);
+      headers.Cookie = newSession;
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        // @ts-ignore
+        agent: this.httpsAgent,
+        body: form.toString(),
+      });
+    }
+
+    let data: XuiResponse;
+    try {
+      data = await response.json() as XuiResponse;
+    } catch {
+      throw new BadRequestException(
+        `XUI API request failed: invalid JSON response from /xray/update`,
+      );
+    }
+    if (!data.success) {
+      this.logger.warn(`XUI xray/update error: ${data.msg}`);
+    }
+    return data;
+  }
+
+  /**
+   * 幂等确保【该节点专属】的 SOCKS 出站存在，指向用户自己填写的 SOCKS 节点。
+   * 每个中转节点一个独立出站 tag（socks-<节点端口>），只服务这一个节点，
+   * 不会影响同服务器上的其它节点。
+   * 返回 { tag, changed }；changed=true 表示实际改动了模板（调用方据此决定是否重启 Xray）。
+   */
+  async ensureUserSocksOutbound(
+    serverId: number,
+    target: { host: string; port: number; user?: string; pass?: string },
+    tag: string,
+  ) {
+    const config: any = await this.getXrayConfig(serverId);
+    const outbounds: any[] = config?.outbounds || [];
+
+    // 已存在同名出站 → 无需改动
+    if (outbounds.some((o: any) => o.tag === tag)) {
+      return { tag, changed: false };
+    }
+
+    const servers = target.user
+      ? [{ address: target.host, port: target.port, users: [{ user: target.user, pass: target.pass }] }]
+      : [{ address: target.host, port: target.port }];
+
+    outbounds.push({
+      tag,
+      protocol: 'socks',
+      settings: { servers },
+      streamSettings: { network: 'tcp', security: 'none' },
+    });
+    config.outbounds = outbounds;
+    await this.updateXrayConfig(serverId, config);
+    this.logger.log(`SOCKS outbound '${tag}' ensured on server ${serverId} -> ${target.host}:${target.port}`);
+    return { tag, changed: true };
+  }
+
+  /**
+   * 幂等确保一条路由规则：把指定入站的流量导向该节点的专属 SOCKS 出站
+   * 通过 inboundTag 精确匹配（inbound-<端口>），只影响该中转节点，不影响其他用户。
+   * 返回 changed=true 表示实际加了规则（调用方据此决定是否重启）。
+   */
+  async ensureRelayRouting(serverId: number, relayTag: string, outboundTag: string): Promise<boolean> {
+    const config: any = await this.getXrayConfig(serverId);
+    const rules: any[] = config?.routing?.rules || [];
+
+    if (rules.some((r: any) => Array.isArray(r.inboundTag) && r.inboundTag.includes(relayTag))) {
+      return false;
+    }
+    if (!config.routing) config.routing = {};
+    config.routing.rules = [
+      ...rules,
+      { type: 'field', inboundTag: [relayTag], outboundTag },
+    ];
+    await this.updateXrayConfig(serverId, config);
+    this.logger.log(`Relay routing rule added for '${relayTag}' -> '${outboundTag}' on server ${serverId}`);
+    return true;
+  }
+
+  /**
+   * 移除指定入站的路由规则（删除/停用中转时调用）
+   * 返回 changed=true 表示实际移除了规则（调用方据此决定是否重启）。
+   */
+  async removeRelayRouting(serverId: number, relayTag: string): Promise<boolean> {
+    const config: any = await this.getXrayConfig(serverId);
+    const rules: any[] = config?.routing?.rules || [];
+    const filtered = rules.filter(
+      (r: any) => !(Array.isArray(r.inboundTag) && r.inboundTag.includes(relayTag)),
+    );
+    if (filtered.length === rules.length) return false;
+    if (!config.routing) config.routing = {};
+    config.routing.rules = filtered;
+    await this.updateXrayConfig(serverId, config);
+    this.logger.log(`Relay routing rule removed for '${relayTag}' on server ${serverId}`);
+    return true;
+  }
+
+  /**
+   * 幂等移除该节点的专属 SOCKS 出站（仅当无任何 relay 规则仍引用时）
+   * 返回 changed=true 表示实际移除了出站（调用方据此决定是否重启）。
+   */
+  async removeUserSocksOutbound(serverId: number, outboundTag: string): Promise<boolean> {
+    const config: any = await this.getXrayConfig(serverId);
+    const rules: any[] = config?.routing?.rules || [];
+
+    // 仍有规则引用该出站 → 保留
+    const stillUsed = rules.some(
+      (r: any) => r.outboundTag === outboundTag,
+    );
+    if (stillUsed) return false;
+
+    const outbounds: any[] = config?.outbounds || [];
+    const before = outbounds.length;
+    config.outbounds = outbounds.filter((o: any) => o.tag !== outboundTag);
+    if ((config?.outbounds || []).length === before) return false;
+    await this.updateXrayConfig(serverId, config);
+    this.logger.log(`SOCKS outbound '${outboundTag}' removed on server ${serverId}`);
+    return true;
+  }
+
+  /**
+   * 重启 Xray，使模板中的 outbounds / routing 变更生效。
+   * POST /panel/api/server/restartXrayService
+   * 注意：会让该服务器上所有节点闪断数秒，只在模板确有变更时调用。
+   */
+  async restartXrayService(serverId: number) {
+    const res = await this.xuiRequest(serverId, 'POST', '/server/restartXrayService');
+    this.logger.log(`Xray restart requested on server ${serverId}: ${res?.success}`);
+    return res;
+  }
+
+  // ==========================================
   // 服务器状态
   // ==========================================
 

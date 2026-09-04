@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import { Server, Plus, Trash2, Copy, Check } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -85,7 +85,7 @@ export default function SocksPage() {
         <div>
           <h1 className="text-2xl font-bold">{t('nodes.socksTitle')}</h1>
           <p className="text-sm text-muted-foreground">
-            SOCKS5 中转代理，可将本地代理转为标准SOCKS5
+            记录你自有的 SOCKS5 服务器作为台账；购买套餐时可「开启中转」，让节点走 SOCKS 线路
           </p>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -102,21 +102,21 @@ export default function SocksPage() {
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
-                  <Label>{t('nodes.socksHost')} *</Label>
+                  <Label>Host *</Label>
                   <Input value={host} onChange={(e) => setHost(e.target.value)} placeholder="1.2.3.4" />
                 </div>
                 <div className="space-y-2">
-                  <Label>{t('nodes.socksPort')} *</Label>
+                  <Label>Port *</Label>
                   <Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="1080" type="number" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-2">
-                  <Label>{t('nodes.socksUser')}</Label>
+                  <Label>User</Label>
                   <Input value={username} onChange={(e) => setUsername(e.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label>{t('nodes.socksPass')}</Label>
+                  <Label>Password</Label>
                   <Input value={password} onChange={(e) => setPassword(e.target.value)} />
                 </div>
               </div>
@@ -135,7 +135,7 @@ export default function SocksPage() {
       {proxies.length === 0 ? (
         <div className="py-20 text-center">
           <Server className="mx-auto h-16 w-16 text-muted-foreground/30" />
-          <p className="mt-4 text-muted-foreground">暂无SOCKS中转 / No SOCKS proxies yet</p>
+          <p className="mt-4 text-muted-foreground">暂无 SOCKS 台账 / No SOCKS records yet</p>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
@@ -152,12 +152,12 @@ export default function SocksPage() {
                       {p.status === 'ACTIVE' ? t('nodes.active') : 'INACTIVE'}
                     </Badge>
                   </div>
-                  <div className="mt-3 rounded-lg bg-muted/50 p-3 font-mono text-xs">
+                  <div className="mt-3 break-all rounded-lg bg-muted/50 p-3 font-mono text-xs">
                     {p.connectionString}
                   </div>
                   <div className="mt-3 flex justify-end gap-2">
                     <Button size="sm" variant="outline" onClick={() => copyConn(p.connectionString, p.id)}>
-                      {copied === p.id ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                      {copied === String(p.id) ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     </Button>
                     <Button size="sm" variant="ghost" className="text-destructive" onClick={() => deleteProxy(p.id)}>
                       <Trash2 className="h-4 w-4" />

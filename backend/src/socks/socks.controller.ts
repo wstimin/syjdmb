@@ -26,19 +26,25 @@ export class SocksController {
   @Post()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Add SOCKS proxy (user-supplied or auto-create on server)' })
+  @ApiOperation({ summary: 'Add user-supplied SOCKS proxy (台账记录)' })
   async create(
     @CurrentUser('id') userId: number,
     @Body() body: {
-      serverId?: number;
-      host?: string;
-      port?: number;
+      host: string;
+      port: number;
       username?: string;
       password?: string;
       remark?: string;
     },
   ) {
-    const result = await this.socksService.addSocks({ userId, ...body });
+    const result = await this.socksService.addSocks({
+      userId,
+      host: body.host,
+      port: body.port,
+      username: body.username,
+      password: body.password,
+      remark: body.remark,
+    });
     return { success: true, data: result };
   }
 

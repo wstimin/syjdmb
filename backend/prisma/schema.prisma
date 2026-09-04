@@ -151,6 +151,12 @@ model Order {
   paidAt       DateTime?
   expiresAt    DateTime?   // when the subscription expires
   autoRenew    Boolean     @default(false)
+  // 购买时勾选中转：把源节点的出站改为用户提供的 SOCKS 节点（出口 = 该 SOCKS 的 IP）
+  relayEnabled Boolean     @default(false)
+  relaySocksHost String?   // 用户填的 SOCKS 节点 IP/域名
+  relaySocksPort Int?      // 用户填的 SOCKS 节点端口
+  relaySocksUser String?
+  relaySocksPass String?
   referralEarning Decimal? @db.Decimal(10, 2)
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
@@ -199,6 +205,13 @@ model Inbound {
   trafficLimit BigInt        @default(0) // 0 = unlimited
   expiryTime  DateTime?
   speedLimit  Int?           // Mbps
+  relayEnabled Boolean       @default(false) // 该节点出站是否改为用户 SOCKS 中转
+  relayTag    String?        // 该节点入站 tag（路由规则 inboundTag 用 = inbound-<port>）
+  relaySocksOutboundTag String? // 该节点专属 SOCKS 出站 tag（如 socks-<port>）
+  relaySocksHost String?     // 用户 SOCKS 节点地址
+  relaySocksPort Int?        // 用户 SOCKS 节点端口
+  relaySocksUser String?
+  relaySocksPass String?
   status      InboundStatus  @default(ACTIVE)
   remark      String?
   createdAt   DateTime       @default(now())
@@ -207,6 +220,7 @@ model Inbound {
   @@index([userId, status])
   @@index([serverId])
   @@index([email])
+  @@index([relayEnabled])
 }
 
 enum InboundStatus {

@@ -92,7 +92,10 @@ export default function NodesPage() {
                           <div className="text-xs text-muted-foreground">{node.protocol}</div>
                         </div>
                       </div>
-                      <Badge variant={status.variant}>{status.label}</Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={status.variant}>{status.label}</Badge>
+                        {node.relayEnabled && <Badge variant="success">中转</Badge>}
+                      </div>
                     </div>
 
                     {/* Info */}

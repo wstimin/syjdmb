@@ -32,6 +32,11 @@ export class OrderController {
       payMethod?: string;
       serverId?: number;
       protocol?: string;
+      relay?: boolean;
+      relaySocksHost?: string;
+      relaySocksPort?: number;
+      relaySocksUser?: string;
+      relaySocksPass?: string;
     },
   ) {
     const result = await this.orderService.createOrder({
@@ -40,6 +45,11 @@ export class OrderController {
       payMethod: body.payMethod,
       serverId: body.serverId,
       protocol: body.protocol,
+      relay: body.relay,
+      relaySocksHost: body.relaySocksHost,
+      relaySocksPort: body.relaySocksPort,
+      relaySocksUser: body.relaySocksUser,
+      relaySocksPass: body.relaySocksPass,
     });
     return { success: true, data: result };
   }
