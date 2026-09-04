@@ -75,6 +75,7 @@ JWT_SEC=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 48)
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
 cat > .env <<EOF
+DB_PASS=${DB_PASS}
 DATABASE_URL="postgresql://nodeadmin:${DB_PASS}@postgres:5432/nodeshop?schema=public"
 REDIS_URL="redis://redis:6379"
 BACKEND_PORT=3001
