@@ -129,7 +129,7 @@ export class SocksService {
     let inboundId: number;
     try {
       const response = await this.serverService.addInbound(params.serverId, inboundData);
-      inboundId = response?.obj || response?.id || 0;
+      inboundId = response?.obj || 0;
     } catch (e) {
       this.logger.error(`Failed to create SOCKS inbound: ${e.message}`);
       throw new BadRequestException(`Failed to create SOCKS on server: ${e.message}`);

@@ -9,7 +9,7 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 
 // 3-x-ui 面板 API 响应格式（文档统一格式）
-interface XuiResponse<T = any> {
+export interface XuiResponse<T = any> {
   success: boolean;
   msg?: string;
   obj?: T;
