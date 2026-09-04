@@ -67,6 +67,17 @@ export class OrderService {
     // 协议：系统默认 vless（vless+reality）；不存用户选择
     const protocol = 'vless';
 
+    // 服务器可用性校验：套餐绑定了服务器就只在这些里查，没绑定则查全局；
+    // 一台 ACTIVE 都没有 → 下单注定激活失败，直接拦下，避免「付了钱节点建不出来」
+    const boundIds = (plan.serverIds || []) as number[];
+    const availableCount =
+      boundIds.length > 0
+        ? await this.prisma.server.count({ where: { id: { in: boundIds }, status: 'ACTIVE' } })
+        : await this.prisma.server.count({ where: { status: 'ACTIVE' } });
+    if (availableCount === 0) {
+      throw new BadRequestException('该套餐暂无可用服务器');
+    }
+
     const order = await this.prisma.order.create({
       data: {
         orderNo,
@@ -151,27 +162,44 @@ export class OrderService {
   }
 
   // 支付成功后激活节点（核心流程）
+  // 认领式激活：先 CAS 抢占为 PROCESSING 再干活，并发（余额支付 vs cron vs 管理端手动激活）
+  // 只有一方能拿到；没拿到的一方走幂等分支，绝不重复建节点。
   async activateOrder(orderId: number) {
+    const claim = await this.prisma.order.updateMany({
+      where: { id: orderId, status: { in: ['PAID', 'PENDING', 'PROCESSING'] } },
+      data: { status: 'PROCESSING' },
+    });
+    if (claim.count === 0) {
+      // 订单已在别处被认领，或已是终态（COMPLETED/CANCELLED/FAILED）：
+      // COMPLETED 且有节点 → 把存量幂等返回
+      const later = await this.prisma.order.findUnique({ where: { id: orderId } });
+      if (!later) throw new NotFoundException('Order not found');
+      if (later.status === 'COMPLETED') {
+        const existing = await this.prisma.inbound.findFirst({
+          where: { userId: later.userId, remark: { contains: `Order ${later.orderNo}` } },
+        });
+        if (existing) return { inbound: existing, order: later };
+      }
+      throw new ConflictException('Order cannot be activated');
+    }
+
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { plan: true },
     });
     if (!order) throw new NotFoundException('Order not found');
-    if (!['PAID', 'PENDING', 'PROCESSING'].includes(order.status)) {
-      throw new ConflictException('Order cannot be activated');
-    }
-    // 避免重复激活：已 COMPLETED 直接返回
-    if (['PAID', 'PENDING', 'PROCESSING'].includes(order.status)) {
-      const existing = await this.prisma.inbound.findFirst({
-        where: { userId: order.userId, remark: { contains: `Order ${order.orderNo}` } },
+
+    // 防重复建：上一次激活可能「面板入站建好了、但回写 COMPLETED 前进程崩溃」，
+    // 认领后先查存量；有就直接恢复 COMPLETED，不回滚
+    const existing = await this.prisma.inbound.findFirst({
+      where: { userId: order.userId, remark: { contains: `Order ${order.orderNo}` } },
+    });
+    if (existing) {
+      await this.prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'COMPLETED' },
       });
-      if (existing) {
-        await this.prisma.order.update({
-          where: { id: orderId },
-          data: { status: 'COMPLETED' },
-        });
-        return { inbound: existing, order: { ...order, status: 'COMPLETED' } };
-      }
+      return { inbound: existing, order: { ...order, status: 'COMPLETED' } };
     }
 
     // Select server：优先用户下单时选的服务器；否则负载均衡选
@@ -216,7 +244,10 @@ export class OrderService {
   @Cron('*/1 * * * *')
   async autoActivatePending() {
     const lockKey = 'order:autoActivate:lock';
-    const gotLock = await this.redis.setNx(lockKey, '1', 55).catch(() => false);
+    const lockToken = uuidv4();
+    // 300s 锁 + token：单轮批量建节点可能远超 55s；token 保证 finally 只释放「自己的」锁，
+    // 避免上一轮超时后误删下一轮实例刚拿到的锁 → 双跑重复建节点
+    const gotLock = await this.redis.setNx(lockKey, lockToken, 300).catch(() => false);
     if (!gotLock) return; // 另一个实例/上一轮还在跑
 
     try {
@@ -228,22 +259,22 @@ export class OrderService {
       });
 
       for (const order of orders) {
+        // 长轮次续期：防止本轮还没跑完锁就过期，下一个实例带着新锁进来双跑
+        await this.redis.expire(lockKey, 300).catch(() => {});
         try {
-          await this.activateOrder(order.id);
-          this.logger.log(`Auto-activated order ${order.orderNo} (${order.status} → COMPLETED)`);
+          const result = await this.activateOrder(order.id);
+          this.logger.log(`Auto-activated order ${order.orderNo} (${order.status} → ${result.order.status})`);
         } catch (e) {
+          // 失败不动状态：activateOrder 认领时已把订单置为 PROCESSING，下一轮 cron 会继续重试
           this.logger.warn(`Auto-activate order ${order.orderNo} failed: ${e.message}`);
-          // 保持 PROCESSING，下一次 cron 重试
-          if (order.status === 'PAID') {
-            await this.prisma.order.update({
-              where: { id: order.id },
-              data: { status: 'PROCESSING' },
-            });
-          }
         }
       }
     } finally {
-      await this.redis.del(lockKey).catch(() => {});
+      // 只释放自己的锁：token 匹配才 del
+      const cur = await this.redis.get(lockKey).catch(() => null);
+      if (cur === lockToken) {
+        await this.redis.del(lockKey).catch(() => {});
+      }
     }
   }
 

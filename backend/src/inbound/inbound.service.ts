@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
-import { ServerService } from '../server/server.service';
+import { ServerService, XuiResponse } from '../server/server.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -65,8 +65,9 @@ export class InboundService {
       expiryTime = Date.now() + plan.duration * 24 * 3600 * 1000;
     }
 
-    // Traffic limit in GB (convert bytes to GB for XUI)
-    const totalGB = plan.traffic > 0 ? Number(plan.traffic) / 1024 / 1024 / 1024 : 0;
+    // Traffic quota in bytes（3.6.0 面板客户端 totalGB 字段按【字节】解释，0=不限；
+    // 不要换算成 GB —— 换算后 100GiB 套餐会变成几十字节配额，连上就被自动停用）
+    const totalGB = plan.traffic > 0 ? Number(plan.traffic) : 0;
 
     // Client object（3.6.0 客户端是一等公民，通过 /panel/api/clients/add 创建，
     // 不再内嵌到入站的 settings.clients[] 中）
@@ -75,7 +76,7 @@ export class InboundService {
       id: uuid,
       email,
       limitIp: plan.deviceLimit || 0,
-      totalGB: Number(totalGB.toFixed(2)),
+      totalGB,
       expiryTime,
       enable: true,
       tgId: '',
@@ -143,7 +144,9 @@ export class InboundService {
       try {
         key = await this.serverService.getNewX25519Key(serverId);
       } catch (e) {
-        this.logger.warn(`getNewX25519Cert failed (${e.message}); fall back to ws`);
+        // 正常情况下（3.6.0 GET 端点）不会走到这里；走到说明面板异常/不兼容，
+        // 降级为 ws 明文 —— 大声记日志，避免"看似成功却是非 Reality"无从察觉
+        this.logger.error(`getNewX25519Cert failed (${e.message}); REALITY 不可用，降级为 vless+ws 明文`);
         key = { privateKey: '', publicKey: '' };
       }
       if (!key.privateKey) {
@@ -208,8 +211,8 @@ export class InboundService {
       });
     }
 
-    // Port allocation
-    const port = await this.getAvailablePort(serverId, isVless);
+    // Port allocation：Reality 优先 443；被面板其它入站占用则随机高位
+    let port = await this.getAvailablePort(serverId, isVless);
 
     const inboundData = {
       up: 0,
@@ -220,7 +223,8 @@ export class InboundService {
       expiryTime,
       listen: '',
       port,
-      protocol: protocol.toLowerCase().toUpperCase(),
+      // 面板 oneof 校验只认小写协议名（vless），大写 "VLESS" 会被拒
+      protocol: protocol.toLowerCase(),
       settings,
       streamSettings,
       tag: `inbound-${port}`,
@@ -233,12 +237,27 @@ export class InboundService {
     };
 
     try {
-      // 1) 建入站（settings.clients 为空，不再内嵌客户端）
-      const response = await this.serverService.addInbound(serverId, inboundData);
-      const xuiInboundId = this.extractInboundId(response);
+      // 1) 建入站（settings.clients 为空，不再内嵌客户端）。
+      //    端口可能被宿主机其它服务占用（尤其 443），命中 already in use 时
+      //    放弃 443 偏好、改用随机高位端口有界重试，避免每笔订单永久卡死。
+      let response: XuiResponse | null = null;
+      let xuiInboundId = 0;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        inboundData.port = port;
+        inboundData.tag = `inbound-${port}`;
+        response = await this.serverService.addInbound(serverId, inboundData);
+        const id = this.extractInboundId(response);
+        if (response?.success && id) {
+          xuiInboundId = id;
+          break;
+        }
+        if (!/already in use|in use/i.test(response?.msg || '')) break;
+        this.logger.warn(`Port ${port} in use on server ${serverId}, retry with a random high port`);
+        port = await this.getAvailablePort(serverId, false);
+      }
 
       if (!xuiInboundId) {
-        throw new BadRequestException('Failed to obtain XUI inbound id');
+        throw new BadRequestException(response?.msg || 'Failed to obtain XUI inbound id');
       }
 
       // 2) 建客户端并关联到该入站（3.6.0 文档：POST /panel/api/clients/add）
@@ -275,39 +294,52 @@ export class InboundService {
         }
       }
 
-      // Save to database
-      const inbound = await this.prisma.inbound.create({
-        data: {
-          userId,
-          serverId,
-          inboundId: xuiInboundId,
-          clientUuid: uuid,
-          protocol: protocol.toLowerCase(),
-          port,
-          email,
-          settings,
-          streamSettings,
-          trafficLimit: plan.traffic,
-          expiryTime: plan.duration > 0 ? new Date(expiryTime) : null,
-          speedLimit: plan.speedLimit,
-          relayEnabled: relay,
-          relayTag: relay ? `inbound-${port}` : null,
-          relaySocksOutboundTag: relay ? `socks-${port}` : null,
-          relaySocksHost: relay ? relaySocksHost : null,
-          relaySocksPort: relay ? relaySocksPort : null,
-          relaySocksUser: relay ? relaySocksUser : null,
-          relaySocksPass: relay ? relaySocksPass : null,
-          realityServerNames: reality ? reality.serverNames : null,
-          realityPrivateKey: reality ? reality.privateKey : null,
-          realityPublicKey: reality ? reality.publicKey : null,
-          realityShortId: reality ? reality.shortId : null,
-          realityDest: reality ? reality.dest : null,
-          realityMinVersion: reality ? '1.0.0' : null,
-          remark: orderNo
-            ? `Order ${orderNo}`
-            : `Order ${inboundData.remark}`,
-        },
-      });
+      // Save to database（本地落库失败要回滚已建好的 XUI 入站+客户端——
+      // 否则 cron 重试会在新端口再建一个节点，面板遗留第一个永久游离节点）
+      let inbound: any;
+      try {
+        inbound = await this.prisma.inbound.create({
+          data: {
+            userId,
+            serverId,
+            inboundId: xuiInboundId,
+            clientUuid: uuid,
+            protocol: protocol.toLowerCase(),
+            port,
+            email,
+            settings,
+            streamSettings,
+            trafficLimit: plan.traffic,
+            expiryTime: plan.duration > 0 ? new Date(expiryTime) : null,
+            speedLimit: plan.speedLimit,
+            relayEnabled: relay,
+            relayTag: relay ? `inbound-${port}` : null,
+            relaySocksOutboundTag: relay ? `socks-${port}` : null,
+            relaySocksHost: relay ? relaySocksHost : null,
+            relaySocksPort: relay ? relaySocksPort : null,
+            relaySocksUser: relay ? relaySocksUser : null,
+            relaySocksPass: relay ? relaySocksPass : null,
+            realityServerNames: reality ? reality.serverNames : null,
+            realityPrivateKey: reality ? reality.privateKey : null,
+            realityPublicKey: reality ? reality.publicKey : null,
+            realityShortId: reality ? reality.shortId : null,
+            realityDest: reality ? reality.dest : null,
+            realityMinVersion: reality ? '1.0.0' : null,
+            remark: orderNo
+              ? `Order ${orderNo}`
+              : `Order ${inboundData.remark}`,
+          },
+        });
+      } catch (e) {
+        // XUI 侧补偿回滚（仅限本地写失败的场景；勿动 relay 挂载，那发生在落库之后）
+        try {
+          await this.serverService.deleteClient(serverId, client.email);
+        } catch {}
+        try {
+          await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        throw e;
+      }
 
       // 购买时勾选中转：在该源节点上挂 SOCKS 出站（指向用户填的 SOCKS 节点，出口 = 该 SOCKS IP）
       // + 一条只命中该节点端口的路由规则。不新增节点；节点全程走 SOCKS。

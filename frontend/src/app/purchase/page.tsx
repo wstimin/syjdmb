@@ -22,6 +22,7 @@ function PurchaseContent() {
   const [plan, setPlan] = useState<any>(null);
   const [servers, setServers] = useState<any[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
+  const [serversLoaded, setServersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [order, setOrder] = useState<any>(null);
   const [method, setMethod] = useState<string>('');
@@ -50,7 +51,8 @@ function PurchaseContent() {
         setServers(list);
         if (list.length > 0) setSelectedServerId(list[0].id);
       })
-      .catch(() => setServers([]));
+      .catch(() => setServers([]))
+      .finally(() => setServersLoaded(true));
   }, [planId]);
 
   // Cleanup polling on unmount
@@ -60,15 +62,28 @@ function PurchaseContent() {
 
   const startPolling = (orderNo: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
+    let notified = false;
+    const startedAt = Date.now();
     pollRef.current = setInterval(async () => {
       try {
         const res = await api.get(`/payments/status/${orderNo}`);
         const d = res.data.data;
-        if (d.paid) {
+        // 节点创建完成才跳转；仅收到支付（PAID/PROCESSING）说明节点还在建，继续轮询
+        if (d.status === 'COMPLETED') {
           clearInterval(pollRef.current!);
-          toast.success(t('purchase.orderSuccess') || '支付成功，正在创建节点...');
-          // Give backend a moment to activate the node via callback
-          setTimeout(() => router.push('/user/nodes'), 1500);
+          toast.success(t('purchase.orderSuccess') || '支付成功，节点已就绪');
+          setTimeout(() => router.push('/user/nodes'), 1200);
+          return;
+        }
+        if (!notified && d.paid) {
+          notified = true;
+          toast.success(t('purchase.paySuccess') || '支付成功！正在创建节点...');
+          return;
+        }
+        // 兜底超时：10 分钟节点还没建出来，别让用户无限等待
+        if (Date.now() - startedAt > 10 * 60 * 1000) {
+          clearInterval(pollRef.current!);
+          toast.error('等待节点创建超时，请稍后到「我的节点」查看，或联系客服');
         }
       } catch {
         // Silently ignore transient errors during polling
@@ -112,6 +127,15 @@ function PurchaseContent() {
       // Balance: pay directly, skip QR
       if (m === 'balance') {
         const payRes = await api.post(`/orders/${newOrder.id}/pay/balance`);
+        await refreshUser(); // 扣款成功，立即刷新余额等用户信息
+        const data = payRes.data?.data;
+        if (data?.activationFailed) {
+          // 扣款成功、激活失败（如面板瞬时故障）：订单已是 PAID/PROCESSING，
+          // 后台会每分钟自动重试建节点，用户无需重新下单
+          toast.error('支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的节点」查看');
+          setTimeout(() => router.push('/user/nodes'), 1500);
+          return;
+        }
         toast.success(t('purchase.paySuccess') || '支付成功！正在创建节点...');
         setTimeout(() => router.push('/user/nodes'), 1500);
         return;
@@ -278,12 +302,17 @@ function PurchaseContent() {
       {!order && !payQr && (
         <div className="mt-6">
           <h2 className="mb-4 text-lg font-semibold">{t('purchase.paymentMethod')}</h2>
+          {serversLoaded && servers.length === 0 && (
+            <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              该套餐暂无可用服务器，暂不可购买，请联系客服
+            </div>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             {methods.map((m) => (
               <button
                 key={m.id}
                 onClick={() => createOrder(m.id)}
-                disabled={processing}
+                disabled={processing || (serversLoaded && servers.length === 0)}
                 className="flex items-center gap-3 rounded-xl border p-4 text-left transition-all hover:border-primary hover:shadow-md disabled:opacity-50"
               >
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-xl">

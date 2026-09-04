@@ -19,8 +19,14 @@ export interface XuiResponse<T = any> {
 export class ServerService {
   private readonly logger = new Logger(ServerService.name);
 
-  // TLS 自签证书支持：面板通常用自签 HTTPS，容器内通过此 Agent 跳过验证
-  private httpsAgent: any = null;
+  // 面板请求超时：防止面板黑盒不可达时请求悬挂数分钟
+  // （undici 默认 headers/bodyTimeout 300s，会越过 cron 锁窗口导致重入）
+  private static readonly PANEL_TIMEOUT_MS = 15000;
+
+  // TLS 自签证书支持：面板通常用自签 HTTPS。
+  // 注意：Node 全局 fetch(undici) 不认 https.Agent 的 agent 选项，
+  // 必须取全局 undici dispatcher 构造一个 connect.rejectUnauthorized:false 的实例。
+  private dispatcher: any = null;
 
   constructor(
     private prisma: PrismaService,
@@ -32,11 +38,23 @@ export class ServerService {
 
   private initHttpsAgent() {
     try {
+      // undici 全局 dispatcher 挂在 Symbol('undici.globalDispatcher.1') 上，
+      // 取其构造函数并注入 connect.rejectUnauthorized:false（实测可行）
+      const globalDispatcher: any = (globalThis as any)[Symbol.for('undici.globalDispatcher.1')];
+      if (globalDispatcher && globalDispatcher.constructor) {
+        this.dispatcher = new globalDispatcher.constructor({
+          connect: { rejectUnauthorized: false },
+        });
+        return;
+      }
+      // 兜底：undici 作为 Node 内置依赖，一般可直接 require
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const https = require('https');
-      this.httpsAgent = new https.Agent({ rejectUnauthorized: false });
-    } catch {
-      this.logger.warn('Node.js https module not available, HTTPS panels may fail');
+      const { Agent } = require('undici');
+      this.dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+    } catch (e: any) {
+      this.logger.warn(
+        `Cannot disable TLS verification for panels: ${e.message}; 自签 HTTPS 面板可能连不上`,
+      );
     }
   }
 
@@ -175,26 +193,63 @@ export class ServerService {
     if (!server) throw new NotFoundException('Server not found');
 
     // 有 API Token 时直接返回，不需要登录
-    // 文档原文："Bearer-token callers can skip this"
+    // 文档："Bearer-token callers can skip this"（CSRF 中间件对 Bearer 短路）
     if (server.apiToken) return server.apiToken;
 
-    // 无 Token，走 Cookie 登录
+    // 无 Token，走 Cookie 登录（3.6.0：会话 cookie 的 unsafe 请求必须带 X-CSRF-Token）
     const sessionKey = `xui:session:${serverId}`;
+    const csrfKey = `xui:csrf:${serverId}`;
     const cachedSession = await this.redis.get(sessionKey);
-    if (cachedSession) return cachedSession;
+    const cachedCsrf = await this.redis.get(csrfKey);
+    if (cachedSession && cachedCsrf) return cachedSession;
 
-    const loginUrl = `${this.panelBaseUrl(server)}/login`;
+    // 面板反代子路径：apiPath 默认 /panel/api，登录/CSRF 端点挂在其前缀（剥离 /panel/api 后缀）下
+    const apiBase = server.apiPath || '/panel/api';
+    const webBasePath = apiBase.endsWith('/panel/api') ? apiBase.slice(0, -'/panel/api'.length) : '';
+    const base = this.panelBaseUrl(server);
+
+    // 1) 先 GET /csrf-token：公开端点，返回 token 并下发初始会话 cookie
+    let csrfToken = '';
+    let sessionCookie = '';
+    try {
+      const csrfRes = await fetch(`${base}${webBasePath}/csrf-token`, {
+        method: 'GET',
+        // @ts-ignore - undici fetch 用 dispatcher（agent 不生效）
+        dispatcher: this.dispatcher,
+        signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
+      });
+      const csrfBody: any = await csrfRes.json().catch(() => null);
+      csrfToken =
+        (typeof csrfBody?.obj === 'string' ? csrfBody.obj : undefined) ||
+        csrfBody?.obj?.token ||
+        csrfBody?.token ||
+        '';
+      const csrfCookies = csrfRes.headers.getSetCookie?.() || [];
+      sessionCookie = csrfCookies
+        .map((c: string) => c.split(';')[0])
+        .find((c: string) => c.startsWith('session=') || c.startsWith('3x-ui=')) || '';
+    } catch (e: any) {
+      this.logger.debug(`CSRF token fetch failed: ${e.message}`);
+    }
+
+    // 2) POST /login：带 CSRF 阶段的会话 cookie + X-CSRF-Token
+    const loginUrl = `${base}${webBasePath}/login`;
     this.logger.debug(`Logging in to XUI panel: ${loginUrl}`);
 
     const response = await fetch(loginUrl, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+      },
       body: JSON.stringify({
         username: server.username,
         password: server.password,
       }),
-      // @ts-ignore - Node 18+ 支持 agent 选项，用于自签证书
-      agent: this.httpsAgent,
+      // @ts-ignore
+      dispatcher: this.dispatcher,
+      signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
     });
 
     // 解析响应 JSON
@@ -209,18 +264,20 @@ export class ServerService {
       throw new BadRequestException(`XUI login failed: ${body.msg || 'unknown error'}`);
     }
 
-    // 从 Set-Cookie 头提取 session cookie
-    const cookies = response.headers.getSetCookie?.() || [];
-    const sessionCookie = cookies
+    // 登录可能轮换会话 cookie；有新的用新的，否则沿用 CSRF 阶段拿到的
+    const loginCookies = response.headers.getSetCookie?.() || [];
+    const loginSession = loginCookies
       .map((c: string) => c.split(';')[0])
       .find((c: string) => c.startsWith('session=') || c.startsWith('3x-ui='));
+    if (loginSession) sessionCookie = loginSession;
 
     if (!sessionCookie) {
       throw new BadRequestException('XUI login succeeded but no session cookie received');
     }
 
-    // 缓存 session（1小时 TTL）
+    // 缓存 session + CSRF token（1小时 TTL，与 session 同步）
     await this.redis.set(sessionKey, sessionCookie, 3600);
+    await this.redis.set(csrfKey, csrfToken, 3600);
     this.logger.log(`XUI login successful for server ${server.name}`);
     return sessionCookie;
   }
@@ -247,19 +304,22 @@ export class ServerService {
     // 有 apiToken 时用 Bearer，否则用 Cookie
     // 文档原文："Authorization: Bearer <token>" — 所有 /panel/api/* 端点都支持
     const useBearer = !!server.apiToken;
+    // cookie 会话的 unsafe 请求必须带 X-CSRF-Token（Bearer 可跳过）
+    const csrfToken = useBearer ? null : await this.redis.get(`xui:csrf:${serverId}`);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(useBearer
         ? { 'Authorization': `Bearer ${authValue}` }
-        : { 'Cookie': authValue }
+        : { 'Cookie': authValue, ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}) }
       ),
     };
 
     const options: RequestInit = {
       method,
       headers,
-      // @ts-ignore
-      agent: this.httpsAgent,
+      // @ts-ignore - undici fetch 用 dispatcher（agent 不生效）
+      dispatcher: this.dispatcher,
+      signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
     };
 
     if (body && method === 'POST') {
@@ -268,12 +328,15 @@ export class ServerService {
 
     let response = await fetch(apiUrl, options);
 
-    // 401/403 → 仅在 Cookie 模式下重新登录（Token 无效不会因重试变好）
+    // 401/403 → 仅在 Cookie 模式下重新登录（同时重取 CSRF token）
     if ((response.status === 401 || response.status === 403) && !useBearer) {
       this.logger.debug(`Session expired for server ${server.name}, re-login...`);
       await this.redis.del(`xui:session:${serverId}`);
+      await this.redis.del(`xui:csrf:${serverId}`);
       const newSession = await this.login(serverId);
+      const newCsrf = await this.redis.get(`xui:csrf:${serverId}`);
       headers.Cookie = newSession;
+      if (newCsrf) headers['X-CSRF-Token'] = newCsrf;
       response = await fetch(apiUrl, { ...options, headers });
     }
 
@@ -603,11 +666,15 @@ export class ServerService {
     const apiUrl = `${this.panelBaseUrl(server)}${apiBase}/xray/update`;
     const authValue = await this.login(serverId);
     const useBearer = !!server.apiToken;
+    const csrfToken = useBearer ? null : await this.redis.get(`xui:csrf:${serverId}`);
     const headers: Record<string, string> = {
       'Content-Type': 'application/x-www-form-urlencoded',
       ...(useBearer
         ? { 'Authorization': `Bearer ${authValue}` }
-        : { 'Cookie': authValue }
+        : {
+            'Cookie': authValue,
+            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+          }
       ),
     };
 
@@ -618,19 +685,24 @@ export class ServerService {
       method: 'POST',
       headers,
       // @ts-ignore
-      agent: this.httpsAgent,
+      dispatcher: this.dispatcher,
+      signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
       body: form.toString(),
     });
 
     if ((response.status === 401 || response.status === 403) && !useBearer) {
       await this.redis.del(`xui:session:${serverId}`);
+      await this.redis.del(`xui:csrf:${serverId}`);
       const newSession = await this.login(serverId);
+      const newCsrf = await this.redis.get(`xui:csrf:${serverId}`);
       headers.Cookie = newSession;
+      if (newCsrf) headers['X-CSRF-Token'] = newCsrf;
       response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         // @ts-ignore
-        agent: this.httpsAgent,
+        dispatcher: this.dispatcher,
+        signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
         body: form.toString(),
       });
     }
@@ -760,11 +832,11 @@ export class ServerService {
 
   /**
    * 生成新的 X25519 密钥对（Reality 用）
-   * POST /panel/api/server/getNewX25519Cert
+   * GET /panel/api/server/getNewX25519Cert（3.6.0 文档注册为 GET，用 POST 会 404）
    * 返回: { privateKey, publicKey }
    */
   async getNewX25519Key(serverId: number): Promise<{ privateKey: string; publicKey: string }> {
-    const res = await this.xuiRequest(serverId, 'POST', '/server/getNewX25519Cert');
+    const res = await this.xuiRequest(serverId, 'GET', '/server/getNewX25519Cert');
     if (!res.obj || !res.obj.privateKey) {
       throw new BadRequestException(`Failed to generate X25519 keypair: ${res.msg || 'unknown error'}`);
     }
