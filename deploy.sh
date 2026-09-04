@@ -38,7 +38,23 @@ else
   fi
   systemctl enable docker && systemctl start docker
   ok "Docker 安装完成"
-fi
+
+  # 配置 Docker 镜像加速（国内服务器）
+  if [ ! -f /etc/docker/daemon.json ] || ! grep -q "registry-mirrors" /etc/docker/daemon.json 2>/dev/null; then
+    info "配置 Docker 镜像加速..."
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json <<'DAEMON'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://hub-mirror.c.163.com",
+    "https://mirror.ccs.tencentyun.com"
+  ]
+}
+DAEMON
+    systemctl daemon-reload && systemctl restart docker
+    ok "镜像加速已配置"
+  fi
 
 # --- 2. 克隆/更新代码 ---
 if [ -d "$INSTALL_DIR/.git" ]; then
