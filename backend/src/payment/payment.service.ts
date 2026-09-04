@@ -87,9 +87,16 @@ export class PaymentService {
   // ==========================================
 
   async redeemCard(userId: number, code: string): Promise<any> {
-    const card = await this.prisma.card.findUnique({
-      where: { code: code.trim().toUpperCase() },
-    });
+    // 卡密生成时格式为 XXXX-XXXX-XXXX-XXXX（大写、每 4 位一组带连字符）。
+    // 用户录入时可能去掉连字符、写小写或带空格，这里统一规范化：
+    // 去除所有非字母数字字符再转大写，与库中存储的卡密（去格式后）比对。
+    const normalizedInput = String(code || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    if (!normalizedInput) throw new BadRequestException('Invalid card key');
+
+    const cards = await this.prisma.card.findMany();
+    const card = cards.find(
+      (c) => String(c.code).replace(/[^a-zA-Z0-9]/g, '').toUpperCase() === normalizedInput,
+    );
 
     if (!card) throw new BadRequestException('Invalid card key');
     if (card.status === 'USED') throw new BadRequestException('Card key already used');

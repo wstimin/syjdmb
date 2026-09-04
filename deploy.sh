@@ -11,6 +11,8 @@ set -euo pipefail
 # ============ 默认配置 ============
 REPO_URL="https://github.com/wstimin/syjdmb.git"
 INSTALL_DIR="/opt/nodeshop"
+# 是否重置数据：RESET=1 bash deploy.sh → 清空数据库与 Redis（默认保留数据）
+RESET="${RESET:-0}"
 # ==================================
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -96,7 +98,12 @@ ok "代码就绪"
 
 # ==========================================
 # 步骤 4：生成 .env
+#    首次安装才生成；后续更新保留现有 .env，
+#    避免 DB_PASS / JWT_SECRET 变动导致连不上已保留的数据库。
 # ==========================================
+if [ -f .env ]; then
+  info ".env 已存在，保留现有配置（数据库密码/密钥不变）"
+else
 DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
 JWT_SEC=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 48)
 SERVER_IP=$(hostname -I | awk '{print $1}')
@@ -115,14 +122,23 @@ APP_URL="http://${SERVER_IP}:3001"
 APP_NAME="NodeShop"
 XUI_PANELS="[]"
 EOF
-ok ".env 已生成"
+fi
+ok ".env 就绪"
 
 # ==========================================
-# 步骤 5：清理旧环境（避免密码冲突）
+# 步骤 5：停止旧容器
+#    默认保留数据库与 Redis 数据卷（更新不丢数据）。
+#    如需彻底重置数据：RESET=1 bash deploy.sh
 # ==========================================
-info "清理旧容器和数据卷..."
-docker compose down -v 2>/dev/null || true
-ok "旧环境已清理"
+if [ "$RESET" = "1" ]; then
+  info "重置模式：清空旧容器和数据卷..."
+  docker compose down -v 2>/dev/null || true
+  ok "数据已重置（数据库与 Redis 清空）"
+else
+  info "停止旧容器（保留数据库数据卷，更新不丢数据）..."
+  docker compose down 2>/dev/null || true
+  ok "旧容器已停止，数据已保留"
+fi
 
 # ==========================================
 # 步骤 6：构建并启动
