@@ -1,0 +1,388 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// Users & Authentication
+// ==========================================
+
+model User {
+  id            Int       @id @default(autoincrement())
+  uuid          String    @unique @default(uuid())
+  email         String    @unique
+  password      String
+  username      String?
+  role          UserRole  @default(USER)
+  status        UserStatus @default(ACTIVE)
+  balance       Decimal   @default(0) @db.Decimal(10, 2)
+  balanceFrozen Decimal   @default(0) @db.Decimal(10, 2)
+  avatar        String?
+  language      String    @default("zh")
+  referralCode  String    @unique @default(uuid())
+  referredBy    Int?
+  referrer      User?     @relation("Referrals", fields: [referredBy], references: [id])
+  referrals     User[]    @relation("Referrals")
+  orders        Order[]
+  inbounds      Inbound[]
+  socksProxies  SocksProxy[]
+  tickets       Ticket[]
+  cards         Card[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([referralCode])
+}
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BANNED
+  SUSPENDED
+}
+
+// ==========================================
+// Servers & XUI Panel
+// ==========================================
+
+model Server {
+  id        Int        @id @default(autoincrement())
+  name      String
+  host      String
+  port      Int        @default(54321)
+  username  String
+  password  String
+  remark    String?
+  status    ServerStatus @default(ACTIVE)
+  protocol  String     @default("http")
+  apiPath   String     @default("/panel/api")
+  sessionId String?    // cached XUI session
+  sessionExpiry DateTime? // session expiry
+  weight    Int        @default(1) // load balancing weight
+  maxUsers  Int        @default(100)
+  country   String     @default("US")
+  flag      String?    // country flag emoji
+  inbounds  Inbound[]
+  socksProxies SocksProxy[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([status])
+}
+
+enum ServerStatus {
+  ACTIVE
+  MAINTENANCE
+  OFFLINE
+}
+
+// ==========================================
+// Plans & Products
+// ==========================================
+
+model Plan {
+  id          Int        @id @default(autoincrement())
+  name        String
+  nameEn      String?
+  description String?
+  descriptionEn String?
+  type        PlanType
+  price       Decimal    @db.Decimal(10, 2)
+  originalPrice Decimal? @db.Decimal(10, 2)
+  duration    Int        // days, 0 = unlimited
+  traffic     BigInt     // bytes, 0 = unlimited
+  speedLimit  Int?       // Mbps, null = unlimited
+  deviceLimit Int        @default(1)
+  protocols   String[]   // ["vmess", "vless", "trojan", "ss"]
+  serverIds   Int[]      // which servers this plan is available on
+  sort        Int        @default(0)
+  status      PlanStatus @default(ACTIVE)
+  isFeatured  Boolean    @default(false)
+  isTrial     Boolean    @default(false)
+  trialDays   Int?       // trial period in days
+  orders      Order[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([status, sort])
+}
+
+enum PlanType {
+  TIME_BASED    // time-limited subscription
+  TRAFFIC_BASED // traffic-limited
+  COMBO         // both time and traffic
+  UNLIMITED     // no limits
+}
+
+enum PlanStatus {
+  ACTIVE
+  HIDDEN
+  SOLD_OUT
+  ARCHIVED
+}
+
+// ==========================================
+// Orders & Payments
+// ==========================================
+
+model Order {
+  id           Int         @id @default(autoincrement())
+  orderNo      String      @unique @default(uuid())
+  userId       Int
+  user         User        @relation(fields: [userId], references: [id])
+  planId       Int
+  plan         Plan        @relation(fields: [planId], references: [id])
+  amount       Decimal     @db.Decimal(10, 2)
+  payAmount    Decimal?    @db.Decimal(10, 2) // discounted amount
+  status       OrderStatus @default(PENDING)
+  payMethod    PayMethod?
+  tradeNo      String?     // payment gateway trade number
+  paidAt       DateTime?
+  expiresAt    DateTime?   // when the subscription expires
+  autoRenew    Boolean     @default(false)
+  referralEarning Decimal? @db.Decimal(10, 2)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([userId, status])
+  @@index([orderNo])
+  @@index([status, createdAt])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  EXPIRED
+  CANCELLED
+}
+
+enum PayMethod {
+  WECHAT
+  ALIPAY
+  CARD_KEY
+  BALANCE
+}
+
+// ==========================================
+// Inbounds (VPN Nodes)
+// ==========================================
+
+model Inbound {
+  id          Int            @id @default(autoincrement())
+  uuid        String         @unique @default(uuid())
+  userId      Int
+  user        User           @relation(fields: [userId], references: [id])
+  serverId    Int
+  server      Server         @relation(fields: [serverId], references: [id])
+  inboundId   Int            // XUI inbound ID
+  protocol    String         // vmess, vless, trojan, shadowsocks
+  port        Int
+  email       String         // unique identifier in XUI
+  settings    String         // JSON - connection settings
+  streamSettings String?     // JSON - transport settings
+  totalTraffic BigInt        @default(0) // bytes used
+  trafficLimit BigInt        @default(0) // 0 = unlimited
+  expiryTime  DateTime?
+  speedLimit  Int?           // Mbps
+  status      InboundStatus  @default(ACTIVE)
+  remark      String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([userId, status])
+  @@index([serverId])
+  @@index([email])
+}
+
+enum InboundStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+  DELETED
+}
+
+// ==========================================
+// SOCKS5 Proxies
+// ==========================================
+
+model SocksProxy {
+  id          Int           @id @default(autoincrement())
+  uuid        String        @unique @default(uuid())
+  userId      Int
+  user        User          @relation(fields: [userId], references: [id])
+  serverId    Int?
+  server      Server?       @relation(fields: [serverId], references: [id])
+  inboundId   Int?          // XUI inbound ID if auto-created
+  host        String
+  port        Int
+  username    String?
+  password    String?
+  protocol    String        @default("socks")
+  remark      String?
+  status      SocksStatus   @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([userId])
+}
+
+enum SocksStatus {
+  ACTIVE
+  INACTIVE
+  DELETED
+}
+
+// ==========================================
+// Card Keys (卡密)
+// ==========================================
+
+model Card {
+  id          Int          @id @default(autoincrement())
+  code        String       @unique
+  amount      Decimal      @db.Decimal(10, 2)
+  status      CardStatus   @default(UNUSED)
+  usedBy      Int?
+  user        User?        @relation(fields: [usedBy], references: [id])
+  usedAt      DateTime?
+  batchId     String?      // batch identifier
+  createdAt   DateTime     @default(now())
+
+  @@index([code])
+  @@index([status, batchId])
+}
+
+enum CardStatus {
+  UNUSED
+  USED
+  CANCELLED
+}
+
+// ==========================================
+// Tickets (Support)
+// ==========================================
+
+model Ticket {
+  id          Int          @id @default(autoincrement())
+  uuid        String       @unique @default(uuid())
+  userId      Int
+  user        User         @relation(fields: [userId], references: [id])
+  subject     String
+  status      TicketStatus @default(OPEN)
+  priority    TicketPriority @default(NORMAL)
+  messages    TicketMessage[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([userId, status])
+  @@index([status])
+}
+
+model TicketMessage {
+  id        Int      @id @default(autoincrement())
+  ticketId  Int
+  ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender    String   // "user" or "admin"
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([ticketId])
+}
+
+enum TicketStatus {
+  OPEN
+  PENDING
+  REPLIED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+// ==========================================
+// Announcements
+// ==========================================
+
+model Announcement {
+  id          Int      @id @default(autoincrement())
+  title       String
+  titleEn     String?
+  content     String
+  contentEn   String?
+  type        AnnouncementType @default(INFO)
+  isPinned    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum AnnouncementType {
+  INFO
+  WARNING
+  MAINTENANCE
+  PROMOTION
+}
+
+// ==========================================
+// System Settings
+// ==========================================
+
+model SystemSetting {
+  id        Int    @id @default(autoincrement())
+  key       String @unique
+  value     String
+  type      String @default("string") // string, number, boolean, json
+  group     String @default("general") // general, payment, email, xui
+  remark    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+  @@index([group])
+}
+
+// ==========================================
+// Financial Transactions
+// ==========================================
+
+model Transaction {
+  id          Int              @id @default(autoincrement())
+  userId      Int
+  type        TransactionType
+  amount      Decimal          @db.Decimal(10, 2)
+  balance     Decimal          @db.Decimal(10, 2) // balance after transaction
+  description String?
+  relatedId   String?          // order number, card code, etc.
+  createdAt   DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type])
+}
+
+enum TransactionType {
+  RECHARGE
+  PURCHASE
+  REFUND
+  CARD_REDEEM
+  REFERRAL
+  ADMIN_ADJUST
+}
