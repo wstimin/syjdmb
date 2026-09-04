@@ -182,7 +182,7 @@ fi
 # 创建管理员（失败即报错）
 info "创建管理员账号..."
 if docker exec -e SEED_ADMIN_EMAIL="$ADMIN_EMAIL" -e SEED_ADMIN_PASSWORD="$ADMIN_PASS" \
-    nodeshop-backend node prisma/seed.js; then
+    nodeshop-backend node prisma/seed.cjs; then
   ok "管理员创建成功"
 else
   docker logs nodeshop-backend 2>&1 | tail -20
