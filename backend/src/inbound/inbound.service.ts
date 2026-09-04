@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ServerService } from '../server/server.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -332,15 +333,28 @@ export class InboundService {
     };
   }
 
+  /**
+   * 定时任务：每分钟扫描所有活跃节点
+   *  - 到期判定：expiryTime 已过 → 停用（面板端 + 本地）
+   *  - 流量判定：累计流量 >= 套餐限额 → 停用
+   * 判定通过后调用面板接口真正关闭客户端，否则用户仍可连接
+   *  (由 @nestjs/schedule 的 @Cron 触发，见下方 checkExpiryAndTraffic)
+   */
   async updateTraffic() {
-    // Fetch traffic for all active inbounds
     const inbounds = await this.prisma.inbound.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: { in: ['ACTIVE', 'EXPIRED', 'SUSPENDED'] } },
       include: { server: true },
     });
 
+    const now = Date.now();
+
     for (const inbound of inbounds) {
       try {
+        // —— 到期判定 ——
+        const expiresAt = inbound.expiryTime ? new Date(inbound.expiryTime).getTime() : null;
+        const expired = expiresAt !== null && expiresAt <= now;
+
+        // —— 流量判定 ——
         const traffic = await this.serverService.getClientTraffic(
           inbound.serverId,
           inbound.email,
@@ -348,25 +362,50 @@ export class InboundService {
         const up = traffic?.obj?.up || 0;
         const down = traffic?.obj?.down || 0;
         const total = up + down;
-
-        // Check if traffic limit exceeded
         const limit = Number(inbound.trafficLimit);
-        if (limit > 0 && total >= limit) {
+        const limitExceeded = limit > 0 && total >= limit;
+
+        // —— 判定：到期或超流量 → 停用 ——
+        if (expired || (limitExceeded && inbound.status !== 'EXPIRED')) {
+          // 面板端停用客户端（enable: false）
+          //  仅当客户端当前是启用状态才调用，避免重复调用
+          const clientEnabled = traffic?.obj?.enable !== false;
+          if (inbound.status === 'ACTIVE' && clientEnabled) {
+            const res = await this.serverService.updateClient(
+              inbound.serverId,
+              inbound.email,
+              { enable: false },
+            );
+            if (!res?.success) {
+              this.logger.warn(
+                `Failed to disable client ${inbound.email} on server ${inbound.serverId}: ${res?.msg}`,
+              );
+            } else {
+              this.logger.log(
+                `Node ${inbound.email} disabled (${expired ? 'expired' : 'traffic limit'})`,
+              );
+            }
+          }
+
+          // 本地状态更新
           await this.prisma.inbound.update({
             where: { id: inbound.id },
             data: {
               totalTraffic: BigInt(total),
-              status: 'EXPIRED',
+              status: expired ? 'EXPIRED' : 'EXPIRED',
             },
           });
         } else {
+          // 未到期超限，仅更新流量计数
           await this.prisma.inbound.update({
             where: { id: inbound.id },
             data: { totalTraffic: BigInt(total) },
           });
         }
       } catch (e) {
-        this.logger.debug(`Failed to update traffic for ${inbound.email}: ${e.message}`);
+        this.logger.debug(
+          `Failed to update traffic for ${inbound.email}: ${e.message}`,
+        );
       }
     }
   }
@@ -441,6 +480,20 @@ export class InboundService {
       where: { id },
       data: { status: 'ACTIVE' },
     });
+  }
+
+  /**
+   * 定时检查节点到期 / 流量超额
+   * 每分钟执行一次（* * * * *）
+   * 到期或超流量的节点会自动在 XUI 面板端停用客户端并标记本地状态
+   */
+  @Cron('* * * * *')
+  async checkExpiryAndTraffic() {
+    try {
+      await this.updateTraffic();
+    } catch (e) {
+      this.logger.error(`Scheduled expiry/traffic check failed: ${e.message}`);
+    }
   }
 
   async delete(id: number) {

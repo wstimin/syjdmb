@@ -1,4 +1,5 @@
 import { Module, MiddlewareConsumer, NestModule } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { UserModule } from './user/user.module';
@@ -27,6 +28,9 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
     // Database & Cache
     PrismaModule,
     RedisModule,
+
+    // Scheduling（用于节点到期/流量检查定时任务）
+    ScheduleModule.forRoot(),
 
     // Feature modules
     AuthModule,
