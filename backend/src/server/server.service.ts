@@ -157,20 +157,25 @@ export class ServerService {
 
   // ==========================================
   // 3-x-ui 面板认证
-  //    文档：POST /login
-  //    Body: { "username": "admin", "password": "admin" }
-  //    成功返回: { "success": true, "msg": "Logged in successfully" }
-  //    会话通过 Set-Cookie 头传递
+  //    两种模式（文档原文）：
+  //    1. Cookie 认证：POST /login 获取 session cookie
+  //    2. Bearer Token：Settings → Security → API Token
+  //    所有 /panel/api/* 端点同时支持两种模式
+  //    有 apiToken 时优先用 Token（更稳定，不过期）
   // ==========================================
 
   async login(serverId: number): Promise<string> {
-    // 优先从缓存获取 session
+    const server = await this.prisma.server.findUnique({ where: { id: serverId } });
+    if (!server) throw new NotFoundException('Server not found');
+
+    // 有 API Token 时直接返回，不需要登录
+    // 文档原文："Bearer-token callers can skip this"
+    if (server.apiToken) return server.apiToken;
+
+    // 无 Token，走 Cookie 登录
     const sessionKey = `xui:session:${serverId}`;
     const cachedSession = await this.redis.get(sessionKey);
     if (cachedSession) return cachedSession;
-
-    const server = await this.prisma.server.findUnique({ where: { id: serverId } });
-    if (!server) throw new NotFoundException('Server not found');
 
     const loginUrl = `${this.panelBaseUrl(server)}/login`;
     this.logger.debug(`Logging in to XUI panel: ${loginUrl}`);
@@ -186,7 +191,7 @@ export class ServerService {
       agent: this.httpsAgent,
     });
 
-    // 解析响应 JSON（登录成功或失败都返回 JSON）
+    // 解析响应 JSON
     let body: XuiResponse;
     try {
       body = await response.json() as XuiResponse;
@@ -199,7 +204,6 @@ export class ServerService {
     }
 
     // 从 Set-Cookie 头提取 session cookie
-    // 3-x-ui 设置的 cookie 名称可能是 "session" 或 "3x-ui"
     const cookies = response.headers.getSetCookie?.() || [];
     const sessionCookie = cookies
       .map((c: string) => c.split(';')[0])
@@ -217,7 +221,7 @@ export class ServerService {
 
   // ==========================================
   // 通用面板 API 请求
-  //    自动处理：session 获取、401/403 重试、响应格式校验
+  //    自动处理：Token/Cookie 认证、401/403 重试、响应格式校验
   // ==========================================
 
   async xuiRequest(
@@ -229,12 +233,18 @@ export class ServerService {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
 
-    const session = await this.login(serverId);
     const apiUrl = `${this.panelBaseUrl(server)}${path}`;
+    const authValue = await this.login(serverId);
 
+    // 有 apiToken 时用 Bearer，否则用 Cookie
+    // 文档原文："Authorization: Bearer <token>" — 所有 /panel/api/* 端点都支持
+    const useBearer = !!server.apiToken;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Cookie': session,
+      ...(useBearer
+        ? { 'Authorization': `Bearer ${authValue}` }
+        : { 'Cookie': authValue }
+      ),
     };
 
     const options: RequestInit = {
@@ -250,8 +260,8 @@ export class ServerService {
 
     let response = await fetch(apiUrl, options);
 
-    // 401/403 → session 过期，重新登录后重试一次
-    if (response.status === 401 || response.status === 403) {
+    // 401/403 → 仅在 Cookie 模式下重新登录（Token 无效不会因重试变好）
+    if ((response.status === 401 || response.status === 403) && !useBearer) {
       this.logger.debug(`Session expired for server ${server.name}, re-login...`);
       await this.redis.del(`xui:session:${serverId}`);
       const newSession = await this.login(serverId);

@@ -62,6 +62,7 @@ model Server {
   port      Int        @default(54321)
   username  String
   password  String
+  apiToken  String?    // 3-x-ui Bearer Token（Settings → Security → API Token）
   remark    String?
   status    ServerStatus @default(ACTIVE)
   protocol  String     @default("http")

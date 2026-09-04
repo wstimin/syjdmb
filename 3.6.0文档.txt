@@ -1,0 +1,6393 @@
+
+3X-UI Panel API
+ 3.x 
+OAS 3.0
+/shiyeotimin/panel/api/openapi.json
+Programmatic interface to a 3X-UI panel. Authenticate either by logging in (cookie) or with an API token from Settings → Security → API Token (Bearer). All endpoints under /panel/api/* honour both modes — an API token is a full-admin credential, so treat it like the panel password.
+
+Servers
+
+/shiyeotimin - Current panel
+
+Authorize
+Authentication
+Two authentication modes are supported. UI sessions use a cookie set by the login endpoint. Programmatic clients (bots, scripts, remote panels) authenticate with a Bearer token taken from Settings → Security → API Token. Both work for every endpoint under /panel/api/*.
+
+
+
+POST
+/login
+Authenticate with username + password and receive a session cookie. Required before any cookie-based API call.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "username": "admin",
+  "password": "admin",
+  "twoFactorCode": "123456"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "Logged in successfully"
+}
+No links
+400	
+Error response
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "success": false,
+  "msg": "Wrong username or password"
+}
+No links
+
+POST
+/logout
+Clear the session cookie. Requires the CSRF header for browser sessions.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+GET
+/csrf-token
+Mint a CSRF token for the current session. The SPA replays it in the X-CSRF-Token header on unsafe requests. Bearer-token callers can skip this — the middleware short-circuits CSRF for authenticated API requests.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": "csrf-token-string"
+}
+No links
+
+POST
+/getTwoFactorEnable
+Returns whether 2FA is enabled on the panel — used by the login page to decide whether to show the OTP field.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": false
+}
+No links
+Inbounds
+Manage inbound configurations and their clients. All endpoints live under /panel/api/inbounds and require a logged-in session or Bearer token. Link-generating endpoints honour forwarded headers only when the request comes from a configured trusted proxy.
+
+
+
+GET
+/panel/api/inbounds/list
+List every inbound owned by the authenticated user, including each inbound’s clientStats traffic counters. settings, streamSettings, and sniffing are returned as nested JSON objects (no escaped strings); legacy callers that send them back as JSON-encoded strings are still accepted on write.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "clientStats": [
+        {
+          "down": 2097152,
+          "email": "user1",
+          "enable": true,
+          "expiryTime": 1735689600000,
+          "id": 14825,
+          "inboundId": 1,
+          "lastOnline": 1735680000000,
+          "reset": 0,
+          "subId": "i7tvdpeffi0hvvf1",
+          "total": 10737418240,
+          "up": 1048576,
+          "uuid": "e18c9a96-71bf-48d4-933f-8b9a46d4290c"
+        }
+      ],
+      "down": 0,
+      "enable": true,
+      "expiryTime": 0,
+      "fallbackParent": null,
+      "id": 1,
+      "lastTrafficResetTime": 0,
+      "listen": "",
+      "nodeId": null,
+      "originNodeGuid": "",
+      "port": 443,
+      "protocol": "vless",
+      "remark": "VLESS-443",
+      "settings": null,
+      "shareAddr": "",
+      "shareAddrStrategy": "node",
+      "sniffing": null,
+      "streamSettings": null,
+      "subSortIndex": 1,
+      "tag": "in-443-tcp",
+      "total": 0,
+      "trafficReset": "never",
+      "trafficResetDay": 1,
+      "up": 0
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/inbounds/list/slim
+Same shape as /list but with settings.clients[] stripped down to {email, enable, comment} and ClientStats not enriched with UUID/SubId. Use this for list pages; fetch /get/:id when you need the full per-client payload (uuid, password, flow, ...).
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "id": 1,
+      "remark": "VLESS-443",
+      "settings": {
+        "clients": [
+          {
+            "email": "alice",
+            "enable": true
+          }
+        ],
+        "decryption": "none"
+      },
+      "clientStats": []
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/inbounds/options
+Lightweight picker projection of the authenticated user’s inbounds. Returns id, remark, tag, protocol, port, a server-computed tlsFlowCapable flag (true for VLESS on TCP with tls or reality, or on XHTTP with VLESS encryption / vlessenc enabled), and ssMethod (the Shadowsocks cipher, empty for non-Shadowsocks inbounds — used by the client UI to generate a valid Shadowsocks 2022 PSK). Use this for dropdowns and attach pickers — it skips settings, streamSettings, and clientStats so the payload stays small even on panels with thousands of clients.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "enable": true,
+      "id": 1,
+      "listen": "",
+      "mtprotoDomain": "",
+      "nodeAddress": "",
+      "nodeId": null,
+      "port": 443,
+      "protocol": "vless",
+      "remark": "VLESS-443",
+      "shareAddr": "",
+      "shareAddrStrategy": "",
+      "ssMethod": "",
+      "tag": "in-443-tcp",
+      "tlsFlowCapable": true,
+      "wgDns": "",
+      "wgMtu": 0,
+      "wgPublicKey": ""
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/inbounds/allLinks
+Return every protocol URL (vless://, vmess://, trojan://, ss://, hysteria://, mtproto) across all inbounds and all of their clients. Links are rendered through the subscription engine, so the configured remark template (name-only display part) is applied per client — the same output the client info/QR pages use. Protocols without a URL form (socks, http, mixed, wireguard, dokodemo, tunnel) contribute nothing. Used by the panel’s "Export all inbound links" action.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "vless://uuid@host:443?security=reality&...#Germany-alice",
+    "vmess://eyJ2IjoyLC..."
+  ]
+}
+No links
+
+GET
+/panel/api/inbounds/get/{id}
+Fetch a single inbound by numeric ID.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/add
+Create a new inbound. Send the full inbound payload (protocol, port, settings, streamSettings, sniffing, remark, expiryTime, total, enable). settings, streamSettings, and sniffing may be sent as nested JSON objects (preferred) or as JSON-encoded strings (legacy).
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "enable": true,
+  "remark": "VLESS-443",
+  "listen": "",
+  "port": 443,
+  "protocol": "vless",
+  "expiryTime": 0,
+  "total": 0,
+  "settings": {
+    "clients": [
+      {
+        "id": "...",
+        "email": "user1"
+      }
+    ],
+    "decryption": "none",
+    "fallbacks": []
+  },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "reality",
+    "realitySettings": {
+      "show": false,
+      "dest": "..."
+    }
+  },
+  "sniffing": {
+    "enabled": true,
+    "destOverride": [
+      "http",
+      "tls"
+    ]
+  }
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+400	
+Error response
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "success": false,
+  "msg": "Port 443 is already in use"
+}
+No links
+
+POST
+/panel/api/inbounds/del/{id}
+Delete an inbound by ID. Also removes its associated client stats rows.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/bulkDel
+Delete many inbounds in one call. Processes the list sequentially; failures are reported per id and the rest still proceed. Restarts xray at most once.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "ids": [
+    1,
+    2,
+    3
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "deleted": 2,
+    "skipped": [
+      {
+        "id": 3,
+        "reason": "..."
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/inbounds/update/{id}
+Replace an inbound’s configuration. Body shape mirrors /add. Heavy on inbounds with thousands of clients — prefer /setEnable for enable-only flips.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/setEnable/{id}
+Toggle only the enable flag without serialising the whole settings JSON. Recommended for UI switches on large inbounds.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "enable": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/{id}/resetTraffic
+Zero out upload + download counters for a single inbound. Does not touch per-client counters.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/{id}/delAllClients
+Remove every client attached to a single inbound while keeping the inbound itself. Collects emails from settings.clients[] and feeds them into the optimized bulk-delete path (runtime user removal + traffic-row cleanup + SyncInbound). Destructive and cannot be undone.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "deleted": 12
+  }
+}
+No links
+
+POST
+/panel/api/inbounds/resetAllTraffics
+Reset upload + download counters on every inbound. Destructive — accounting history is lost.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/import
+Bulk-import an inbound from a JSON blob (e.g. one exported via the UI). The body uses form encoding with a single "data" field.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/inbounds/pushClientTraffics
+Receive a master panel's aggregated per-client usage, keyed by the master's GUID. Stored in a side table used only for the UI display overlay and local quota enforcement — never folded into the local counters that masters poll, so delta accounting stays intact. Called panel-to-panel by the node traffic sync job.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "masterGuid": "9f6c2d-…",
+  "traffics": [
+    {
+      "email": "alice",
+      "up": 1048576,
+      "down": 2097152
+    }
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+GET
+/panel/api/inbounds/{id}/fallbacks
+List the fallback rules attached to a master VLESS/Trojan TCP-TLS inbound. Each rule links one child inbound (the dest) to optional SNI/ALPN/path/dest/xver match criteria. When dest is empty the child inbound's listen+port is used.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Master inbound ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "id": 1,
+      "masterId": 10,
+      "childId": 11,
+      "name": "",
+      "alpn": "",
+      "path": "/vlws",
+      "dest": "",
+      "xver": 2,
+      "sortOrder": 0
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/inbounds/{id}/fallbacks
+Replace the entire fallback list for a master inbound. Body is JSON. Triggers an Xray restart.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Master inbound ID.
+
+id
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "fallbacks": [
+    {
+      "childId": 11,
+      "path": "/vlws",
+      "xver": 2
+    },
+    {
+      "childId": 12,
+      "alpn": "h2",
+      "dest": "8443"
+    }
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "Inbound updated"
+}
+No links
+Server
+System status, log retrieval, certificate generators, Xray binary management, and backup/restore. All under /panel/api/server.
+
+
+
+GET
+/panel/api/openapi.json
+Serve this API description as an OpenAPI 3 document — the same file that powers the API Docs page. Requires a session or Bearer token like the rest of /panel/api. Useful for generating clients or importing into API tooling.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/status
+Real-time machine snapshot: CPU, memory, swap, disk, network IO, load averages, open connections, Xray state. Cached and refreshed every 2 seconds in the background.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "cpu": 12.5,
+    "mem": {
+      "current": 2147483648,
+      "total": 8589934592
+    },
+    "swap": {
+      "current": 0,
+      "total": 4294967296
+    },
+    "disk": {
+      "current": 53687091200,
+      "total": 268435456000
+    },
+    "netIO": {
+      "up": 1073741824,
+      "down": 2147483648
+    },
+    "xray": {
+      "state": "running",
+      "version": "v25.10.31"
+    },
+    "tcpCount": 42,
+    "load": {
+      "load1": 0.5,
+      "load5": 0.3,
+      "load15": 0.2
+    }
+  }
+}
+No links
+
+GET
+/panel/api/server/fail2banStatus
+Reports whether per-client IP limits can be enforced on this host. The panel uses it to gate the "IP Limit" field, since enforcement depends on Fail2ban being installed.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "enabled": true,
+    "installed": true,
+    "usable": true,
+    "windows": false
+  }
+}
+No links
+
+GET
+/panel/api/server/cpuHistory/{bucket}
+Legacy: aggregated CPU history. Use /history/cpu/:bucket instead — same data with a uniform {t, v} shape.
+
+
+Parameters
+Cancel
+Name	Description
+bucket *
+integer
+(path)
+Bucket size in seconds. Allowed: 2, 30, 60, 120, 180, 300.
+
+bucket
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/history/{metric}/{bucket}
+Aggregated time-series for one metric. Returns an array of {t, v} samples covering the last ~6 hours.
+
+
+Parameters
+Cancel
+Name	Description
+metric *
+string
+(path)
+cpu | mem | netUp | netDown | online | load1 | load5 | load15.
+
+metric
+bucket *
+integer
+(path)
+Bucket size in seconds. Allowed: 2, 30, 60, 120, 180, 300.
+
+bucket
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "t": 1700000000,
+      "v": 12.5
+    },
+    {
+      "t": 1700000002,
+      "v": 13.1
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/server/xrayMetricsState
+Xray runtime metrics state — whether the xray config has a `metrics` block, which expvar keys are flowing, and the current snapshot values for each. Returns an empty state when metrics are not configured.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/xrayMetricsHistory/{metric}/{bucket}
+Time-series history for one Xray runtime metric over the last ~6 hours. Same {t, v} shape as /history/:metric/:bucket.
+
+
+Parameters
+Cancel
+Name	Description
+metric *
+string
+(path)
+xrAlloc | xrSys | xrHeapObjects | xrNumGC | xrPauseNs.
+
+metric
+bucket *
+integer
+(path)
+Bucket size in seconds. Allowed: 2, 30, 60, 120, 180, 300.
+
+bucket
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/xrayObservatory
+Latest snapshot from the Xray observatory — per-outbound latency, health status, and last-probe time. Only populated when the Xray config has an observatory configured.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/xrayObservatoryHistory/{tag}/{bucket}
+Time-series of observatory probe results for one outbound tag. Same {t, v} shape as the other history endpoints.
+
+
+Parameters
+Cancel
+Name	Description
+tag *
+string
+(path)
+Outbound tag from the observatory config.
+
+tag
+bucket *
+integer
+(path)
+Bucket size in seconds. Allowed: 2, 30, 60, 120, 180, 300.
+
+bucket
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/getXrayVersion
+List Xray binary versions available for install on this host.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "v25.10.31",
+    "v25.9.15",
+    "v25.8.1"
+  ]
+}
+No links
+
+GET
+/panel/api/server/getPanelUpdateInfo
+Check whether a newer 3x-ui release is available on GitHub.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/getUpdateStatus
+Report the outcome of the most recently launched panel self-update (see POST updatePanel). Compare the returned runId against the one updatePanel returned to tell this run apart from a stale result.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "exitCode": 0,
+    "finishedAt": 1735689612,
+    "runId": "1735689600123456789",
+    "state": "success"
+  }
+}
+No links
+
+GET
+/panel/api/server/getConfigJson
+Return the assembled Xray config that’s currently running on this host.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/getDb
+Stream a full database backup as an attachment: the SQLite .db file on SQLite panels, or a pg_dump custom-format archive (.dump) on PostgreSQL panels. Use as a manual backup.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/getMigration
+Stream a cross-engine migration file as an attachment: a .dump (SQL text) on SQLite, or a .db SQLite database built from the live data on PostgreSQL.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/server/getNewUUID
+Generate a fresh UUID v4. Convenience helper for client IDs.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": "550e8400-e29b-41d4-a716-446655440000"
+}
+No links
+
+GET
+/panel/api/server/getWebCertFiles
+Return this panel's own web TLS certificate and key file paths. The central panel calls it on a node (via the node API token) so "Set Cert from Panel" fills a node-assigned inbound with paths that exist on the node.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "webCertFile": "/root/cert/example.com/fullchain.pem",
+    "webKeyFile": "/root/cert/example.com/privkey.pem"
+  }
+}
+No links
+
+GET
+/panel/api/server/descendants
+Read-only summaries (guid, parentGuid, name, address, status, versions) of the nodes this panel manages. A parent panel calls it on a node (via the node API token) to surface transitive sub-nodes in a chained topology. Counts are computed by the parent, not returned here.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "guid": "c3d4-...",
+      "parentGuid": "a1b2-...",
+      "name": "Node3",
+      "address": "10.0.0.3",
+      "status": "online"
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/server/getNewX25519Cert
+Generate a new X25519 keypair for Reality.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "privateKey": "uN9qLfV3zH8w...",
+    "publicKey": "5v8xPqR2sM7k..."
+  }
+}
+No links
+
+GET
+/panel/api/server/getNewmldsa65
+Generate a new ML-DSA-65 keypair (post-quantum signature). Returns {privateKey, publicKey, seed}.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "privateKey": "mdsa65priv...",
+    "publicKey": "mdsa65pub...",
+    "seed": "random-seed..."
+  }
+}
+No links
+
+GET
+/panel/api/server/getNewmlkem768
+Generate a new ML-KEM-768 keypair (post-quantum KEM). Returns {clientKey, serverKey}.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "clientKey": "mlkem768-client...",
+    "serverKey": "mlkem768-server..."
+  }
+}
+No links
+
+GET
+/panel/api/server/getNewVlessEnc
+Generate VLESS encryption auth options. Returns an auths array each with id, label, encryption, and decryption fields.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "auths": [
+      {
+        "id": 0,
+        "label": "Auth #0",
+        "encryption": "aes-256-gcm",
+        "decryption": ""
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/server/stopXrayService
+Stop the Xray binary. All proxies go offline immediately.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+400	
+Error response
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "success": false,
+  "msg": "Xray is not running"
+}
+No links
+
+POST
+/panel/api/server/restartXrayService
+Reload Xray with the current config. Typically required after structural inbound or routing changes.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+400	
+Error response
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "success": false,
+  "msg": "Xray config is invalid: ..."
+}
+No links
+
+POST
+/panel/api/server/installXray/{version}
+Download and install the specified Xray version. Pass "latest" for the newest release.
+
+
+Parameters
+Cancel
+Name	Description
+version *
+string
+(path)
+Xray tag (e.g. v25.10.31) or "latest".
+
+version
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/updatePanel
+Self-update the panel to the latest version. The server restarts on success.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "runId": "1735689600123456789"
+  }
+}
+No links
+
+POST
+/panel/api/server/setUpdateChannel
+Toggle the panel update channel between stable and the rolling per-commit dev release. Only effective on dev builds.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/updateGeofile
+Refresh the default GeoIP / GeoSite data files. Body can include a fileName, or use the /:fileName variant.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/updateGeofile/{fileName}
+Refresh a single Geo file by filename (e.g. geoip.dat, geosite.dat).
+
+
+Parameters
+Cancel
+Name	Description
+fileName *
+string
+(path)
+Filename of the data file to refresh.
+
+fileName
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/logs/{count}
+Return the last N lines of the panel’s own log.
+
+
+Parameters
+Cancel
+Name	Description
+count *
+integer
+(path)
+Number of trailing log lines.
+
+count
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "level": "info",
+  "syslog": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": "2025/01/01 12:00:00 [INFO] Server started\n2025/01/01 12:00:01 [INFO] Xray is running"
+}
+No links
+
+POST
+/panel/api/server/xraylogs/{count}
+Return the last N lines of the Xray process log.
+
+
+Parameters
+Cancel
+Name	Description
+count *
+integer
+(path)
+Number of trailing log lines.
+
+count
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": "2025/01/01 12:00:00 rejected  vless  proxy  example.com  reason: no valid user\n2025/01/01 12:00:01 direct  freedom  ok"
+}
+No links
+
+POST
+/panel/api/server/importDB
+Restore the panel DB from an uploaded backup (multipart form, field name "db"). SQLite panels accept a SQLite database (.db) or a SQLite migration dump (.dump); PostgreSQL panels accept a pg_dump archive (.dump), a SQLite database (.db), or a SQLite migration dump. The panel restarts after restore. Destructive.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/getNewEchCert
+Generate a new ECH (Encrypted Client Hello) keypair and config list for the given SNI.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/server/getCertHash
+Compute the hex SHA-256 of a certificate (DER) for pinning (pinnedPeerCertSha256). Provide either a server file path or inline PEM/DER content.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "e8e2d3..."
+  ]
+}
+No links
+
+POST
+/panel/api/server/getRemoteCertHash
+Run `xray tls ping` against a remote server and return its live leaf-certificate SHA-256 hash(es) for pinning (pinnedPeerCertSha256).
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "e8e2d3..."
+  ]
+}
+No links
+
+POST
+/panel/api/server/scanRealityTarget
+Run a live TLS 1.3 probe against a candidate REALITY target and return a feasibility verdict (TLS 1.3 + h2 + X25519 + trusted certificate) plus the certificate SAN DNS names.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "alpn": "h2",
+    "certIssuer": "Google Trust Services",
+    "certSubject": "cloudflare.com",
+    "certValid": true,
+    "curveID": "X25519",
+    "feasible": true,
+    "h2": true,
+    "host": "www.cloudflare.com",
+    "ip": "104.16.124.96",
+    "latencyMs": 180,
+    "notAfter": "2026-08-01T00:00:00Z",
+    "port": 443,
+    "reason": "",
+    "serverNames": [
+      ""
+    ],
+    "target": "www.cloudflare.com:443",
+    "tls13": true,
+    "tlsVersion": "1.3",
+    "x25519": true
+  }
+}
+No links
+
+POST
+/panel/api/server/scanRealityTargets
+Probe/discover REALITY targets and return each verdict ranked by feasibility then latency. Each comma-separated token may be a domain (validated with SNI), a bare IP, or a CIDR range (discovered without SNI by reading the certificate domain). When empty, a built-in seed list is probed.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "alpn": "h2",
+      "certIssuer": "Google Trust Services",
+      "certSubject": "cloudflare.com",
+      "certValid": true,
+      "curveID": "X25519",
+      "feasible": true,
+      "h2": true,
+      "host": "www.cloudflare.com",
+      "ip": "104.16.124.96",
+      "latencyMs": 180,
+      "notAfter": "2026-08-01T00:00:00Z",
+      "port": 443,
+      "reason": "",
+      "serverNames": [
+        ""
+      ],
+      "target": "www.cloudflare.com:443",
+      "tls13": true,
+      "tlsVersion": "1.3",
+      "x25519": true
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/server/clientIps
+Fetch the fully aggregated inbound_client_ips database table. Used by nodes to sync recently active IPs across the cluster.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "clientEmail": "",
+      "id": 0,
+      "ips": null
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/server/clientIps
+Submit a list of recently active IP timestamps. The panel merges them with the existing database to maintain a unified global IP-limit view.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+Clients
+Manage clients as first-class entities that can be attached to one or more inbounds. A single client row drives the settings.clients entry in every inbound it belongs to. Endpoints live under /panel/api/clients.
+
+
+
+GET
+/panel/api/clients/list
+List every client with its attached inbound IDs and traffic record. The reverse field, if set, is returned as a nested JSON object (legacy JSON-encoded-string form is still accepted on write).
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "id": 1,
+      "email": "alice@example.com",
+      "subId": "abcd1234",
+      "uuid": "...",
+      "totalGB": 53687091200,
+      "expiryTime": 1735689600000,
+      "enable": true,
+      "reverse": null,
+      "inboundIds": [
+        3,
+        5
+      ],
+      "traffic": {
+        "up": 1024,
+        "down": 4096,
+        "enable": true
+      }
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/clients/list/paged
+Filter, sort, and paginate clients on the server. Each item is a slim row (no uuid/password/auth/flow/security/reverse/tgId) so the clients page can ship 25-ish rows in a few KB instead of the full table. The response also includes a summary computed across the full DB row set so dashboard counters stay stable as the user paginates or filters: the *Count fields are exact, while the email arrays beside them stop at 200 entries so the payload does not grow with the panel. Page size capped at 200; fetch /get/:email to obtain the full per-client payload for an edit/info modal.
+
+
+Parameters
+Cancel
+Name	Description
+page *
+integer
+(query)
+1-indexed page number. Defaults to 1.
+
+page
+pageSize *
+integer
+(query)
+Rows per page. Defaults to 25, capped at 200.
+
+pageSize
+search *
+string
+(query)
+Case-insensitive substring match on email / subId / comment.
+
+search
+filter *
+string
+(query)
+Status bucket: online | active | deactive | depleted | expiring.
+
+filter
+protocol *
+string
+(query)
+Match clients attached to at least one inbound of this protocol (vless, vmess, trojan, shadowsocks, ...).
+
+protocol
+sort *
+string
+(query)
+Sort key: enable | email | inboundIds | traffic | remaining | expiryTime.
+
+sort
+order *
+string
+(query)
+ascend or descend.
+
+order
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "items": [
+      {
+        "email": "alice@example.com",
+        "subId": "abcd1234",
+        "enable": true,
+        "totalGB": 53687091200,
+        "expiryTime": 1735689600000,
+        "limitIp": 0,
+        "reset": 0,
+        "inboundIds": [
+          3,
+          5
+        ],
+        "traffic": {
+          "up": 1024,
+          "down": 4096,
+          "enable": true
+        },
+        "createdAt": 1735000000000,
+        "updatedAt": 1735100000000
+      }
+    ],
+    "total": 2000,
+    "filtered": 47,
+    "page": 1,
+    "pageSize": 25,
+    "summary": {
+      "total": 2000,
+      "active": 1850,
+      "onlineCount": 1,
+      "depletedCount": 0,
+      "expiringCount": 0,
+      "deactiveCount": 150,
+      "online": [
+        "alice@example.com"
+      ],
+      "depleted": [],
+      "expiring": [],
+      "deactive": [
+        "bob@example.com"
+      ]
+    }
+  }
+}
+No links
+
+GET
+/panel/api/clients/get/{email}
+Fetch one client by email, including the inbound IDs and external config IDs it is attached to.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/clients/get/tgId/{tgId}
+Fetch clients by Telegram user ID. Returns an array since multiple clients can share the same Telegram ID.
+
+
+Parameters
+Cancel
+Name	Description
+tgId *
+integer
+(path)
+Telegram user ID (numeric).
+
+tgId
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/clients/add
+Create a new client and attach it to one or more inbounds in a single call. Body is JSON. Per-protocol secrets (UUID for VLESS/VMess, password for Trojan/Shadowsocks, auth for Hysteria) are generated server-side when omitted, so callers can send only the universal fields.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "client": {
+    "email": "alice@example.com",
+    "totalGB": 53687091200,
+    "expiryTime": 1735689600000,
+    "tgId": 0,
+    "limitIp": 0,
+    "enable": true
+  },
+  "inboundIds": [
+    3,
+    5
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "Client added"
+}
+No links
+
+POST
+/panel/api/clients/update/{email}
+Update an existing client by email. Changes propagate to every attached inbound. Body is the JSON client payload — supply the full set of fields you want to keep (the server replaces the row, it does not patch).
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Current client email (unique identifier).
+
+email
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "email": "alice@example.com",
+  "totalGB": 107374182400,
+  "expiryTime": 1767225600000,
+  "tgId": 123456789,
+  "enable": true
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "Client updated"
+}
+No links
+
+POST
+/panel/api/clients/del/{email}
+Delete a client by email. Removes it from every attached inbound and drops its traffic record unless keepTraffic=1 is passed.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+keepTraffic *
+integer
+(query)
+Pass 1 to retain the xray_client_traffic row after deletion.
+
+keepTraffic
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "Client deleted"
+}
+No links
+
+POST
+/panel/api/clients/{email}/attach
+Attach an existing client to one or more additional inbounds. Body is JSON.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "inboundIds": [
+    7,
+    9
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+POST
+/panel/api/clients/{email}/detach
+Detach a client from one or more inbounds without deleting the client.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "inboundIds": [
+    5
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+POST
+/panel/api/clients/{email}/externalLinks
+Replace a client's external links (per-client share links and remote subscription URLs surfaced in their subscription). Sends the full set; the server replaces all rows.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "externalLinks": [
+    {
+      "kind": "link",
+      "value": "vless://uuid@host:443?...#srv",
+      "remark": "DE"
+    },
+    {
+      "kind": "subscription",
+      "value": "https://provider.example/sub/abc",
+      "remark": "Provider"
+    }
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+POST
+/panel/api/clients/resetAllTraffics
+Reset the up/down counters for every client globally. Quotas and expiry are not affected. Triggers an Xray restart if any counter actually moved.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+POST
+/panel/api/clients/delDepleted
+Delete every client whose traffic quota is exhausted (used >= total, when reset is disabled) or whose expiry has passed. Returns the deleted count and triggers an Xray restart when any client was on a running inbound.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "deleted": 0
+  }
+}
+No links
+
+POST
+/panel/api/clients/delOrphans
+Delete every client that is not attached to any inbound, along with its traffic record, IP log, and external links. Useful for clearing clients left unattached after their inbounds were removed. Returns the deleted count. Cannot be undone.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "deleted": 0
+  }
+}
+No links
+
+GET
+/panel/api/clients/export
+Return every client as a {client, inboundIds} array — the same shape /bulkCreate and /import accept — so the payload round-trips straight back through /import. Clients with no inbound attachment are included with an empty inboundIds list. The UI shows this in a CodeMirror viewer (copy / download); programmatic callers get the array in obj.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "client": {
+        "email": "alice@example.com",
+        "id": "...",
+        "totalGB": 53687091200,
+        "expiryTime": 0,
+        "enable": true,
+        "subId": "..."
+      },
+      "inboundIds": [
+        7,
+        9
+      ]
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/clients/import
+Import clients from a JSON body { "data": "<json>" }, where data is a string-encoded array produced by /export ([{client, inboundIds}]). Items with inboundIds are created and attached to those inbounds; items with an empty inboundIds list are restored as unattached client records. Existing emails are never overwritten — they are returned in skipped. Triggers a single Xray restart at the end if any target inbound was running.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "data": "[{\"client\":{\"email\":\"alice@example.com\",\"enable\":true},\"inboundIds\":[7]}]"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "created": 2,
+    "skipped": [
+      {
+        "email": "alice@example.com",
+        "reason": "email already in use: alice@example.com"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkAdjust
+Shift expiry and/or traffic quota for many clients in one call. addDays/addBytes may be negative. Clients with unlimited expiry (expiryTime=0) or unlimited traffic (totalGB=0) are skipped for the corresponding field — bulk extend never converts unlimited to limited. A client that was auto-disabled solely because it was depleted (expired or over quota) is automatically re-enabled — locally and on its node — when the adjustment lifts it out of depletion; a manually-disabled or still-depleted client is left disabled. The optional flow directive sets the XTLS flow on every client: "none" clears it, "xtls-rprx-vision"/"xtls-rprx-vision-udp443" set it where the inbound supports it (omit or "" to leave it unchanged). Returns the adjusted count and per-email skip reasons.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ],
+  "addDays": 30,
+  "addBytes": 53687091200,
+  "flow": "xtls-rprx-vision"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "adjusted": 2,
+    "skipped": [
+      {
+        "email": "carol",
+        "reason": "unlimited expiry"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkEnable
+Enable many clients in one call. Emails are grouped by inbound and applied with a single read-modify-write per inbound; the running Xray (local or remote node) is updated to add each user. Note that enabling a client whose quota is exhausted or whose expiry has passed only flips the flag — the traffic loop will disable it again on the next tick. Returns the changed count and per-email skip reasons.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "changed": 2,
+    "skipped": [
+      {
+        "email": "carol",
+        "reason": "client not found"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkDisable
+Disable many clients in one call. Emails are grouped by inbound and applied with a single read-modify-write per inbound; the running Xray (local or remote node) is updated to remove each user. Returns the changed count and per-email skip reasons.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "changed": 2,
+    "skipped": [
+      {
+        "email": "carol",
+        "reason": "client not found"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkDel
+Delete many clients in one call. The server processes the list sequentially so each delete sees the committed state of the previous one — avoids the race the per-email fan-out had on the panel side. Pass keepTraffic=true to retain the xray_client_traffic rows after deletion.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ],
+  "keepTraffic": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "deleted": 2,
+    "skipped": [
+      {
+        "email": "carol",
+        "reason": "client not found"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkCreate
+Create many clients in one call. Body is a JSON array of {client, inboundIds} payloads — the same shape /add accepts. Items are processed sequentially; per-email skip reasons are returned for items that fail (e.g., duplicate email). Triggers a single Xray restart at the end if any inbound was running.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+[
+  {
+    "client": {
+      "email": "alice@example.com",
+      "totalGB": 53687091200,
+      "expiryTime": 0,
+      "enable": true
+    },
+    "inboundIds": [
+      7
+    ]
+  },
+  {
+    "client": {
+      "email": "bob@example.com",
+      "totalGB": 53687091200,
+      "expiryTime": 0,
+      "enable": true
+    },
+    "inboundIds": [
+      7,
+      9
+    ]
+  }
+]
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "created": 2,
+    "skipped": [
+      {
+        "email": "alice@example.com",
+        "reason": "email already in use"
+      }
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/groups/bulkAdd
+Add many clients to a group in one call. Updates clients.group_name and patches the matching client entry inside every owning inbound's settings JSON in a single transaction. If the group name does not yet exist (in client_groups or as a derived label), it is auto-created as a persistent group. To clear the group label, use /groups/bulkRemove instead.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ],
+  "group": "customer-a"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "affected": 2
+  }
+}
+No links
+
+POST
+/panel/api/clients/groups/bulkRemove
+Clear the group label on many clients in one call. Inverse of /groups/bulkAdd. Clients themselves are kept — only the group label is cleared from clients.group_name and from each owning inbound's settings JSON. Groups become empty if all their members are removed.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "affected": 2
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkAttach
+Attach many existing clients to many inbounds in one call. Each client keeps its identity (email/UUID/password/subId) and a shared traffic row; all clients are added to a target inbound in a single AddInboundClient call. Clients already present on a target are reported under skipped. Returns per-email attached/skipped/errors lists and triggers a single Xray restart if any target inbound was running.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ],
+  "inboundIds": [
+    7,
+    9
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "attached": [
+      "alice",
+      "bob"
+    ],
+    "skipped": [
+      "bob"
+    ],
+    "errors": []
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkDetach
+Mirror of bulkAttach: detach many existing clients from many inbounds in one call. For each email, intersects the client's current inbounds with the requested set and detaches from those only; (email, inbound) pairs where the client is not currently attached are silently no-ops. Emails not attached to any of the requested inbounds are reported under skipped. Client records are kept even if they become orphaned — use bulkDel for full removal. Returns per-email detached/skipped/errors lists and triggers a single Xray restart if any target inbound was running.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ],
+  "inboundIds": [
+    7,
+    9
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "detached": [
+      "alice",
+      "bob"
+    ],
+    "skipped": [],
+    "errors": []
+  }
+}
+No links
+
+POST
+/panel/api/clients/bulkResetTraffic
+Zero up/down counters for many clients in one call. Loops the single-reset path so each client is re-enabled across its attached inbounds and pushed to Xray/remote nodes. Returns the count of successfully reset clients.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "emails": [
+    "alice",
+    "bob"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "affected": 2
+  }
+}
+No links
+
+GET
+/panel/api/clients/groups
+List all client groups with their member counts. Merges persisted groups (rows in client_groups, including empty placeholders) with the distinct group_name values currently set on clients. Sorted alphabetically (case-insensitive).
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "name": "customer-a",
+      "clientCount": 5
+    },
+    {
+      "name": "internal",
+      "clientCount": 0
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/clients/groups/{name}/emails
+Return just the email list of clients that currently belong to the given group. Useful for fanning a single bulk action over an entire group without round-tripping the full client list.
+
+
+Parameters
+Cancel
+Name	Description
+name *
+string
+(path)
+Group name (URL-encoded).
+
+name
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "alice",
+    "bob",
+    "carol"
+  ]
+}
+No links
+
+POST
+/panel/api/clients/groups/create
+Create a new empty (placeholder) group. The group becomes selectable in client forms and the filter drawer even before any client is added to it. Errors if a group with the same name already exists.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "customer-a"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "name": "customer-a"
+  }
+}
+No links
+
+POST
+/panel/api/clients/groups/rename
+Rename a group. The new name is applied to the client_groups row AND propagated to every matching client (both clients.group_name and the client entry inside every owning inbound's settings JSON) in a single transaction. Returns the number of clients whose label was updated.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "oldName": "customer-a",
+  "newName": "tier-1"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "affected": 5
+  }
+}
+No links
+
+POST
+/panel/api/clients/groups/delete
+Remove a group. Deletes the client_groups row and clears the group label from every matching client (both clients.group_name and the inbound settings JSON). The clients themselves are NOT deleted — use /bulkDel after filtering by group for that. Returns the count of clients whose label was cleared.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "customer-a"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "affected": 5
+  }
+}
+No links
+
+POST
+/panel/api/clients/groups/resetTraffic
+Reset only the group-level traffic counter shown on the groups page. Snapshots the current up/down sum of the group's members as a baseline so the group total reads zero, while leaving each client's own counters (and their quotas) untouched. No Xray restart is triggered. Creates the client_groups row if the group exists only as a derived label.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "customer-a"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "name": "customer-a"
+  }
+}
+No links
+
+POST
+/panel/api/clients/resetTraffic/{email}
+Zero out a single client’s up/down counters. Re-enables the client across every attached inbound and pushes the change to Xray (or the remote node) so depleted users can connect again immediately.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email.
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/clients/updateTraffic/{email}
+Manually adjust a client’s upload + download counters. Useful for migrations from external accounting systems.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email.
+
+email
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "upload": 1073741824,
+  "download": 5368709120
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/clients/ips/{email}
+List source IPs that have connected with the given client’s credentials. Returns an array of "ip (timestamp)" strings.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email.
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/clients/clearIps/{email}
+Reset the recorded IP list for a client.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email.
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/clients/onlines
+List the emails of currently connected clients (last seen within the heartbeat window), deduped across every node.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "user1",
+    "user2"
+  ]
+}
+No links
+
+POST
+/panel/api/clients/onlinesByGuid
+Online client emails grouped by the panelGuid of the node that physically hosts each client. The local panel uses its own GUID; each node (at any depth in a chain) uses its GUID. Lets the inbounds page attribute online status to the real node instead of the intermediate one it syncs through.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "a1b2-...": [
+      "user1"
+    ],
+    "c3d4-...": [
+      "user1",
+      "user2"
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/clientIpsByGuid
+Per-client source IPs grouped by the panelGuid of the node that observed them. Lets the central panel attribute and enforce per-client IP limits using the real visitor IPs each node sees, instead of the address of the intermediate panel it syncs through.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "a1b2-...": {
+      "user1": [
+        {
+          "ip": "1.2.3.4",
+          "timestamp": 1700000000
+        }
+      ]
+    }
+  }
+}
+No links
+
+POST
+/panel/api/clients/activeInbounds
+Inbound tags that carried traffic within the heartbeat window, grouped by the hosting node's panelGuid. Pairs with onlinesByGuid so the inbounds page only marks a multi-inbound client online on the inbounds it actually used. Nodes that do not report per-inbound activity are absent.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "a1b2-...": [
+      "in-443-tcp",
+      "in-8443-tcp"
+    ]
+  }
+}
+No links
+
+POST
+/panel/api/clients/lastOnline
+Map of client email → last-seen unix timestamp.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "user1": 1700000000,
+    "user2": 1699999000
+  }
+}
+No links
+
+GET
+/panel/api/clients/traffic/{email}
+Traffic counters for a client identified by email.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique across the panel).
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "down": 2097152,
+    "email": "user1",
+    "enable": true,
+    "expiryTime": 1735689600000,
+    "id": 14825,
+    "inboundId": 1,
+    "lastOnline": 1735680000000,
+    "reset": 0,
+    "subId": "i7tvdpeffi0hvvf1",
+    "total": 10737418240,
+    "up": 1048576,
+    "uuid": "e18c9a96-71bf-48d4-933f-8b9a46d4290c"
+  }
+}
+No links
+
+GET
+/panel/api/clients/subLinks/{subId}
+Return every protocol URL (vless://, vmess://, trojan://, ss://, hysteria://, hy2://) for clients matching the subscription ID. Same result set as /sub/<subId>, but as a JSON array — no base64. When an inbound has streamSettings.externalProxy set, one URL is emitted per external proxy. Empty array when the subId has no enabled clients.
+
+
+Parameters
+Cancel
+Name	Description
+subId *
+string
+(path)
+Subscription ID, taken from the client's subId field.
+
+subId
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "vless://uuid@host:443?security=reality&...#user1",
+    "vmess://eyJ2IjoyLC..."
+  ]
+}
+No links
+
+GET
+/panel/api/clients/links/{email}
+Return every URL for one client across all attached inbounds — the same strings the Copy URL button copies in the panel UI. Supported protocols: vmess, vless, trojan, shadowsocks, hysteria. If streamSettings.externalProxy is set, returns one URL per external proxy. Protocols without a URL form (socks, http, mixed, wireguard, dokodemo, tunnel) contribute nothing.
+
+
+Parameters
+Cancel
+Name	Description
+email *
+string
+(path)
+Client email (unique identifier).
+
+email
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "vless://uuid@host:443?...#user1"
+  ]
+}
+No links
+Nodes
+Manage remote 3x-ui panels acting as nodes for a central panel. All endpoints under /panel/api/nodes.
+
+
+
+GET
+/panel/api/nodes/list
+List every configured node with its connection details, health, and last heartbeat patch.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "activeCount": 20,
+      "address": "node.example.com",
+      "allowPrivateAddress": false,
+      "basePath": "/",
+      "clientCount": 25,
+      "configDirty": false,
+      "configDirtyAt": 0,
+      "cpuPct": 12.5,
+      "createdAt": 1700000000,
+      "depletedCount": 1,
+      "disabledCount": 2,
+      "enable": true,
+      "guid": "node-guid",
+      "hasApiToken": true,
+      "id": 1,
+      "inboundCount": 3,
+      "inboundSyncMode": "all",
+      "inboundTags": [
+        "in-443-tcp"
+      ],
+      "lastError": "",
+      "lastHeartbeat": 1700000000,
+      "latencyMs": 42,
+      "memPct": 45.2,
+      "name": "edge-1",
+      "netDown": 1048576,
+      "netUp": 2097152,
+      "onlineCount": 5,
+      "outboundTag": "direct",
+      "panelVersion": "v3.x.x",
+      "parentGuid": "",
+      "pinnedCertSha256": "",
+      "port": 2053,
+      "remark": "Primary edge",
+      "scheme": "https",
+      "status": "online",
+      "tlsVerifyMode": "verify",
+      "transitive": false,
+      "updatedAt": 1700003600,
+      "uptimeSecs": 86400,
+      "xrayError": "",
+      "xrayState": "running",
+      "xrayVersion": "25.10.31"
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/nodes/mtls/ca
+This panel's node-auth CA certificate (public, PEM) to paste into a node's mTLS trust setting. Lazily mints the CA and the master client cert on first call. Pair with setting tlsVerifyMode=mtls on the node.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "caCert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+  }
+}
+No links
+
+POST
+/panel/api/nodes/mtls/trustCA
+Set the CA certificate this panel trusts for incoming node-API client certificates (this panel acting as a node). Paste the managing panel's CA (from nodes/mtls/ca). An empty caCert disables it. A non-empty value must be a PEM certificate. Applied on the next panel restart.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "caCert": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----\n"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/nodes/get/{id}
+Fetch a single node by ID.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "activeCount": 20,
+    "address": "node.example.com",
+    "allowPrivateAddress": false,
+    "basePath": "/",
+    "clientCount": 25,
+    "configDirty": false,
+    "configDirtyAt": 0,
+    "cpuPct": 12.5,
+    "createdAt": 1700000000,
+    "depletedCount": 1,
+    "disabledCount": 2,
+    "enable": true,
+    "guid": "node-guid",
+    "hasApiToken": true,
+    "id": 1,
+    "inboundCount": 3,
+    "inboundSyncMode": "all",
+    "inboundTags": [
+      "in-443-tcp"
+    ],
+    "lastError": "",
+    "lastHeartbeat": 1700000000,
+    "latencyMs": 42,
+    "memPct": 45.2,
+    "name": "edge-1",
+    "netDown": 1048576,
+    "netUp": 2097152,
+    "onlineCount": 5,
+    "outboundTag": "direct",
+    "panelVersion": "v3.x.x",
+    "parentGuid": "",
+    "pinnedCertSha256": "",
+    "port": 2053,
+    "remark": "Primary edge",
+    "scheme": "https",
+    "status": "online",
+    "tlsVerifyMode": "verify",
+    "transitive": false,
+    "updatedAt": 1700003600,
+    "uptimeSecs": 86400,
+    "xrayError": "",
+    "xrayState": "running",
+    "xrayVersion": "25.10.31"
+  }
+}
+No links
+
+GET
+/panel/api/nodes/webCert/{id}
+Fetch a node's own web TLS certificate/key file paths (proxied to the node). Used by the inbound form's "Set Cert from Panel" so a node-assigned inbound gets paths that exist on the node, not the central panel.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "webCertFile": "/root/cert/example.com/fullchain.pem",
+    "webKeyFile": "/root/cert/example.com/privkey.pem"
+  }
+}
+No links
+
+POST
+/panel/api/nodes/add
+Register a new remote node. Provide its URL, write-only apiToken, and optional remark / allowPrivateAddress flag. Responses expose hasApiToken only.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "de-fra-1",
+  "remark": "",
+  "scheme": "https",
+  "address": "node1.example.com",
+  "port": 2053,
+  "basePath": "/",
+  "apiToken": "abcdef...",
+  "clearApiToken": false,
+  "enable": true,
+  "allowPrivateAddress": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "activeCount": 20,
+    "address": "node.example.com",
+    "allowPrivateAddress": false,
+    "basePath": "/",
+    "clientCount": 25,
+    "configDirty": false,
+    "configDirtyAt": 0,
+    "cpuPct": 12.5,
+    "createdAt": 1700000000,
+    "depletedCount": 1,
+    "disabledCount": 2,
+    "enable": true,
+    "guid": "node-guid",
+    "hasApiToken": true,
+    "id": 1,
+    "inboundCount": 3,
+    "inboundSyncMode": "all",
+    "inboundTags": [
+      "in-443-tcp"
+    ],
+    "lastError": "",
+    "lastHeartbeat": 1700000000,
+    "latencyMs": 42,
+    "memPct": 45.2,
+    "name": "edge-1",
+    "netDown": 1048576,
+    "netUp": 2097152,
+    "onlineCount": 5,
+    "outboundTag": "direct",
+    "panelVersion": "v3.x.x",
+    "parentGuid": "",
+    "pinnedCertSha256": "",
+    "port": 2053,
+    "remark": "Primary edge",
+    "scheme": "https",
+    "status": "online",
+    "tlsVerifyMode": "verify",
+    "transitive": false,
+    "updatedAt": 1700003600,
+    "uptimeSecs": 86400,
+    "xrayError": "",
+    "xrayState": "running",
+    "xrayVersion": "25.10.31"
+  }
+}
+No links
+
+POST
+/panel/api/nodes/update/{id}
+Replace a node’s connection details. apiToken is write-only: omit it or send an empty string to keep the stored token; set clearApiToken=true to clear it.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "de-fra-1",
+  "remark": "",
+  "scheme": "https",
+  "address": "node1.example.com",
+  "port": 2053,
+  "basePath": "/",
+  "apiToken": "",
+  "clearApiToken": false,
+  "enable": true,
+  "allowPrivateAddress": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/nodes/del/{id}
+Delete a node. Inbounds bound to it are not auto-migrated.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/nodes/setEnable/{id}
+Pause or resume traffic sync with this node.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "enable": true
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/nodes/test
+Probe a node without saving it. Uses the body as connection details and returns the same heartbeat snapshot a registered node would have.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "scheme": "https",
+  "address": "node1.example.com",
+  "port": 2053,
+  "basePath": "/",
+  "apiToken": "abcdef..."
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "cpuPct": 12.5,
+    "error": "",
+    "latencyMs": 42,
+    "memPct": 45.2,
+    "panelVersion": "v3.x.x",
+    "status": "online",
+    "uptimeSecs": 86400,
+    "xrayError": "",
+    "xrayState": "",
+    "xrayVersion": "25.10.31"
+  }
+}
+No links
+
+POST
+/panel/api/nodes/certFingerprint
+Connect to the node over HTTPS without verifying its certificate and return the leaf certificate's SHA-256 (base64). Used by the Add/Edit Node dialog to fetch and pin a self-signed certificate. Uses the same body as /test.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "scheme": "https",
+  "address": "node1.example.com",
+  "port": 2053,
+  "basePath": "/"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": "k3b1...base64-sha256...="
+}
+No links
+
+POST
+/panel/api/nodes/inbounds
+Use unsaved node connection details to list the remote inbounds available for selective import.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "de-fra-1",
+  "scheme": "https",
+  "address": "node1.example.com",
+  "port": 2053,
+  "basePath": "/",
+  "apiToken": "abcdef..."
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "tag": "inbound-443",
+      "remark": "VLESS",
+      "protocol": "vless",
+      "port": 443
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/nodes/probe/{id}
+Probe an existing node, updating its cached health state.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/nodes/updatePanel
+Trigger the official panel self-updater on each given node (downloads the latest release and restarts). Only enabled, online nodes are updated; offline/disabled ones are reported as skipped. Set "dev": true to move the nodes to the rolling per-commit dev channel instead of the latest stable release. Returns a per-node result list.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "ids": [
+    1,
+    2,
+    3
+  ],
+  "dev": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "id": 1,
+      "name": "de-1",
+      "ok": true
+    },
+    {
+      "id": 2,
+      "name": "fr-1",
+      "ok": false,
+      "error": "node is offline"
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/nodes/history/{id}/{metric}/{bucket}
+Aggregated metric history for a node — same shape as /server/history, scoped to one node.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Node ID.
+
+id
+metric *
+string
+(path)
+cpu | mem.
+
+metric
+bucket *
+integer
+(path)
+Bucket size in seconds. Allowed: 2, 30, 60, 120, 180, 300.
+
+bucket
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+Hosts
+Per-inbound override endpoints. Each enabled host renders one extra subscription link/proxy with its own address/port/TLS, superseding the legacy externalProxy array. All endpoints under /panel/api/hosts.
+
+
+
+GET
+/panel/api/hosts/list
+List every host across all inbounds, grouped by inbound then ordered by sort order.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "allowInsecure": false,
+      "alpn": [
+        ""
+      ],
+      "echConfigList": "",
+      "excludeFromSubTypes": [
+        ""
+      ],
+      "finalMask": "",
+      "fingerprint": "",
+      "groupId": "",
+      "hostHeader": "",
+      "hosts": [
+        ""
+      ],
+      "inboundIds": [
+        0
+      ],
+      "isDisabled": false,
+      "isHidden": false,
+      "keepSniBlank": false,
+      "mihomoIpVersion": "dual",
+      "mihomoX25519": false,
+      "muxParams": "",
+      "nodeGuids": [
+        ""
+      ],
+      "overrideSniFromAddress": false,
+      "path": "",
+      "pinnedPeerCertSha256": [
+        ""
+      ],
+      "port": 0,
+      "remark": "",
+      "security": "same",
+      "serverDescription": "",
+      "shuffleHost": false,
+      "sni": "",
+      "sockoptParams": "",
+      "sortOrder": 0,
+      "tags": [
+        ""
+      ],
+      "verifyPeerCertByName": "",
+      "vlessRoute": ""
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/hosts/get/{groupId}
+Fetch a single host group by Group ID.
+
+
+Parameters
+Cancel
+Name	Description
+groupId *
+string
+(path)
+Host Group ID.
+
+groupId
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "allowInsecure": false,
+    "alpn": [
+      ""
+    ],
+    "echConfigList": "",
+    "excludeFromSubTypes": [
+      ""
+    ],
+    "finalMask": "",
+    "fingerprint": "",
+    "groupId": "",
+    "hostHeader": "",
+    "hosts": [
+      ""
+    ],
+    "inboundIds": [
+      0
+    ],
+    "isDisabled": false,
+    "isHidden": false,
+    "keepSniBlank": false,
+    "mihomoIpVersion": "dual",
+    "mihomoX25519": false,
+    "muxParams": "",
+    "nodeGuids": [
+      ""
+    ],
+    "overrideSniFromAddress": false,
+    "path": "",
+    "pinnedPeerCertSha256": [
+      ""
+    ],
+    "port": 0,
+    "remark": "",
+    "security": "same",
+    "serverDescription": "",
+    "shuffleHost": false,
+    "sni": "",
+    "sockoptParams": "",
+    "sortOrder": 0,
+    "tags": [
+      ""
+    ],
+    "verifyPeerCertByName": "",
+    "vlessRoute": ""
+  }
+}
+No links
+
+GET
+/panel/api/hosts/byInbound/{inboundId}
+Fetch one inbound's hosts, grouped by host group.
+
+
+Parameters
+Cancel
+Name	Description
+inboundId *
+integer
+(path)
+Inbound ID.
+
+inboundId
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "allowInsecure": false,
+      "alpn": [
+        ""
+      ],
+      "echConfigList": "",
+      "excludeFromSubTypes": [
+        ""
+      ],
+      "finalMask": "",
+      "fingerprint": "",
+      "groupId": "",
+      "hostHeader": "",
+      "hosts": [
+        ""
+      ],
+      "inboundIds": [
+        0
+      ],
+      "isDisabled": false,
+      "isHidden": false,
+      "keepSniBlank": false,
+      "mihomoIpVersion": "dual",
+      "mihomoX25519": false,
+      "muxParams": "",
+      "nodeGuids": [
+        ""
+      ],
+      "overrideSniFromAddress": false,
+      "path": "",
+      "pinnedPeerCertSha256": [
+        ""
+      ],
+      "port": 0,
+      "remark": "",
+      "security": "same",
+      "serverDescription": "",
+      "shuffleHost": false,
+      "sni": "",
+      "sockoptParams": "",
+      "sortOrder": 0,
+      "tags": [
+        ""
+      ],
+      "verifyPeerCertByName": "",
+      "vlessRoute": ""
+    }
+  ]
+}
+No links
+
+GET
+/panel/api/hosts/tags
+Distinct, sorted set of tags used across all hosts.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    "CDN",
+    "EU",
+    "FAST"
+  ]
+}
+No links
+
+POST
+/panel/api/hosts/add
+Create a host group on inbounds.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "inboundIds": [
+    1
+  ],
+  "remark": "cdn-front",
+  "hosts": [
+    "cdn.example.com"
+  ],
+  "port": 8443,
+  "security": "same",
+  "tags": [
+    "CDN"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "address": "cdn.example.com",
+      "allowInsecure": false,
+      "alpn": [
+        ""
+      ],
+      "createdAt": 0,
+      "echConfigList": "",
+      "excludeFromSubTypes": [
+        ""
+      ],
+      "finalMask": "",
+      "fingerprint": "",
+      "groupId": "",
+      "hostHeader": "",
+      "id": 1,
+      "inboundId": 1,
+      "isDisabled": false,
+      "isHidden": false,
+      "keepSniBlank": false,
+      "mihomoIpVersion": "dual",
+      "mihomoX25519": false,
+      "muxParams": null,
+      "nodeGuids": [
+        ""
+      ],
+      "overrideSniFromAddress": false,
+      "path": "",
+      "pinnedPeerCertSha256": [
+        ""
+      ],
+      "port": 8443,
+      "remark": "cdn-front",
+      "security": "same",
+      "serverDescription": "",
+      "shuffleHost": false,
+      "sni": "",
+      "sockoptParams": null,
+      "sortOrder": 0,
+      "tags": [
+        ""
+      ],
+      "updatedAt": 0,
+      "verifyPeerCertByName": "",
+      "vlessRoute": "443"
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/hosts/update/{groupId}
+Replace a host group’s content.
+
+
+Parameters
+Cancel
+Name	Description
+groupId *
+string
+(path)
+Host Group ID.
+
+groupId
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "inboundIds": [
+    1
+  ],
+  "remark": "cdn-front",
+  "hosts": [
+    "cdn.example.com"
+  ],
+  "port": 8443,
+  "security": "same",
+  "tags": [
+    "CDN"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "address": "cdn.example.com",
+      "allowInsecure": false,
+      "alpn": [
+        ""
+      ],
+      "createdAt": 0,
+      "echConfigList": "",
+      "excludeFromSubTypes": [
+        ""
+      ],
+      "finalMask": "",
+      "fingerprint": "",
+      "groupId": "",
+      "hostHeader": "",
+      "id": 1,
+      "inboundId": 1,
+      "isDisabled": false,
+      "isHidden": false,
+      "keepSniBlank": false,
+      "mihomoIpVersion": "dual",
+      "mihomoX25519": false,
+      "muxParams": null,
+      "nodeGuids": [
+        ""
+      ],
+      "overrideSniFromAddress": false,
+      "path": "",
+      "pinnedPeerCertSha256": [
+        ""
+      ],
+      "port": 8443,
+      "remark": "cdn-front",
+      "security": "same",
+      "serverDescription": "",
+      "shuffleHost": false,
+      "sni": "",
+      "sockoptParams": null,
+      "sortOrder": 0,
+      "tags": [
+        ""
+      ],
+      "updatedAt": 0,
+      "verifyPeerCertByName": "",
+      "vlessRoute": "443"
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/hosts/del/{groupId}
+Delete a host group.
+
+
+Parameters
+Cancel
+Name	Description
+groupId *
+string
+(path)
+Host Group ID.
+
+groupId
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/hosts/setEnable/{groupId}
+Enable or disable a host group.
+
+
+Parameters
+Cancel
+Name	Description
+groupId *
+string
+(path)
+Host Group ID.
+
+groupId
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "enable": true
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/hosts/reorder
+Set host group sort order by the position of each groupId in the array.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "ids": [
+    "abc-123",
+    "def-456"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/hosts/bulk/add
+Add a host group to inbounds (same as /add).
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "inboundIds": [
+    1,
+    2
+  ],
+  "hosts": [
+    "cdn.example.com",
+    "cdn2.example.com:443"
+  ],
+  "remark": "Cloudflare CDN",
+  "port": 0,
+  "security": "same",
+  "isDisabled": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "address": "cdn.example.com",
+      "allowInsecure": false,
+      "alpn": [
+        ""
+      ],
+      "createdAt": 0,
+      "echConfigList": "",
+      "excludeFromSubTypes": [
+        ""
+      ],
+      "finalMask": "",
+      "fingerprint": "",
+      "groupId": "",
+      "hostHeader": "",
+      "id": 1,
+      "inboundId": 1,
+      "isDisabled": false,
+      "isHidden": false,
+      "keepSniBlank": false,
+      "mihomoIpVersion": "dual",
+      "mihomoX25519": false,
+      "muxParams": null,
+      "nodeGuids": [
+        ""
+      ],
+      "overrideSniFromAddress": false,
+      "path": "",
+      "pinnedPeerCertSha256": [
+        ""
+      ],
+      "port": 8443,
+      "remark": "cdn-front",
+      "security": "same",
+      "serverDescription": "",
+      "shuffleHost": false,
+      "sni": "",
+      "sockoptParams": null,
+      "sortOrder": 0,
+      "tags": [
+        ""
+      ],
+      "updatedAt": 0,
+      "verifyPeerCertByName": "",
+      "vlessRoute": "443"
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/hosts/bulk/setEnable
+Enable or disable many host groups in one call.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "ids": [
+    "abc-123",
+    "def-456"
+  ],
+  "enable": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/hosts/bulk/del
+Delete many host groups in one call.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "ids": [
+    "abc-123",
+    "def-456"
+  ]
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+Backup
+Operations that interact with the configured Telegram bot.
+
+
+
+POST
+/panel/api/backuptotgbot
+Send a fresh DB backup to every Telegram chat configured as an admin recipient. No body, no params.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+Settings
+Panel configuration and user credentials. All endpoints live under /panel/api/setting and require a logged-in session or Bearer token.
+
+
+API Tokens
+Manage Bearer tokens used for programmatic auth (bots, central panels acting on this node, CI). Each token has a unique name and an enabled flag — disable to revoke without deleting, delete to revoke permanently. Tokens are stored as SHA-256 hashes and the plaintext is returned only once, in the create response — it cannot be retrieved afterwards, so copy it then. Send one as Authorization: Bearer <token> on any /panel/api/* request — the token is a full-admin credential.
+
+
+
+GET
+/panel/api/setting/apiTokens
+List every API token, enabled or not. The token value is never returned — only metadata.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": [
+    {
+      "id": 1,
+      "name": "default",
+      "enabled": true,
+      "createdAt": 1736000000
+    }
+  ]
+}
+No links
+
+POST
+/panel/api/setting/apiTokens/create
+Mint a new API token. Name must be unique and 1-64 characters; the token string is server-generated and returned only in this response — it is stored hashed and cannot be retrieved later.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "name": "central-panel-a"
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "createdAt": 1736000000,
+    "enabled": true,
+    "id": 2,
+    "name": "central-panel-a",
+    "token": "new-token-string"
+  }
+}
+No links
+400	
+Error response
+
+Media type
+
+application/json
+Example Value
+Schema
+{
+  "success": false,
+  "msg": "a token with that name already exists"
+}
+No links
+
+POST
+/panel/api/setting/apiTokens/delete/{id}
+Permanently delete a token. Any caller using it stops authenticating immediately.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Token row ID.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+
+POST
+/panel/api/setting/apiTokens/setEnabled/{id}
+Toggle a token enabled/disabled without deleting it. Disabled tokens are rejected by checkAPIAuth on the next request.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Token row ID.
+
+id
+Request body
+
+application/json
+Edit Value
+Schema
+{
+  "enabled": false
+}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true
+}
+No links
+Xray Settings
+Xray configuration template, outbound management, Warp/Nord integration, and config testing. All endpoints under /panel/api/xray.
+
+
+
+POST
+/panel/api/xray/
+Return the Xray config template (JSON string), available inbound tags, client reverse tags, and the configured outbound test URL in one response.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "obj": {
+    "xraySetting": "{...raw xray config...}",
+    "inboundTags": "[\"in-443-tcp\"]",
+    "clientReverseTags": "[]",
+    "outboundTestUrl": "https://www.google.com/generate_204"
+  }
+}
+No links
+
+GET
+/panel/api/xray/getDefaultJsonConfig
+Return the built-in default Xray config shipped with the panel (identical to /panel/api/setting/getDefaultJsonConfig).
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/xray/getOutboundsTraffic
+Return traffic statistics for every outbound. Each outbound shows up/down/total counters.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/xray/getXrayResult
+Return the most recent Xray process stdout/stderr output. Useful to check for startup errors or runtime warnings.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/update
+Save the Xray JSON config template and optionally the outbound test URL. Both are sent as form fields.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/warp/{action}
+Manage Cloudflare Warp integration. The action parameter selects the operation.
+
+
+Parameters
+Cancel
+Name	Description
+action *
+string
+(path)
+data — return Warp stats (quota, remaining). del — delete Warp data. config — return current Warp config. reg — register a new Warp endpoint (sends privateKey, publicKey). license — set a Warp+ license key (sends license).
+
+action
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/nord/{action}
+Manage NordVPN integration. The action parameter selects the operation.
+
+
+Parameters
+Cancel
+Name	Description
+action *
+string
+(path)
+countries — list available countries. servers — list servers in a country (sends countryId). reg — get NordVPN credentials (sends token). setKey — store NordVPN API key (sends key). data — return current NordVPN connection data. del — delete NordVPN data.
+
+action
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/resetOutboundsTraffic
+Reset traffic counters for a specific outbound by tag.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/testOutbound
+Test an outbound configuration. Sends the outbound JSON (required), optionally all outbounds (to resolve sockopt.dialerProxy dependencies), and a mode flag.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/testOutbounds
+Test a batch of outbounds (max 50) through one shared temp xray instance. Returns an array of results in input order, each with the outbound tag, delay, HTTP status and a connect/TLS/TTFB timing breakdown.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/balancerStatus
+Live state of routing balancers in the running core (RoutingService.GetBalancerInfo): current override and the targets the strategy prefers. Returns a map keyed by balancer tag.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/balancerOverride
+Force a balancer in the running core to always pick one outbound (RoutingService.OverrideBalancerTarget). Applied live without a restart; cleared automatically when Xray restarts.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/routeTest
+Ask the running core which outbound its router would pick for a synthetic connection (RoutingService.TestRoute). No traffic is sent.
+
+
+Parameters
+Cancel
+No parameters
+
+Request body
+
+application/json
+Edit Value
+Schema
+{}
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+GET
+/panel/api/xray/outbound-subs
+List all outbound subscriptions (remote URLs that supply additional outbounds), newest first.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs
+Create an outbound subscription. The URL is fetched, parsed into outbounds with stable tags, and merged additively into the running Xray config.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs/{id}
+Update an existing outbound subscription by id. Accepts the same form fields as create.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Subscription id.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+DELETE
+/panel/api/xray/outbound-subs/{id}
+Delete an outbound subscription by id.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Subscription id.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs/{id}/del
+Delete an outbound subscription by id (POST alias of DELETE for clients that cannot send DELETE).
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Subscription id.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs/{id}/refresh
+Force an immediate re-fetch of the subscription and return the parsed outbounds. Signals Xray to reload.
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Subscription id.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs/{id}/move
+Reorder a subscription one step up or down in priority (controls its position in the merged outbounds).
+
+
+Parameters
+Cancel
+Name	Description
+id *
+integer
+(path)
+Subscription id.
+
+id
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+POST
+/panel/api/xray/outbound-subs/parse
+Preview a subscription URL: fetch and parse it into outbounds without persisting anything.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+Subscription Server
+A separate HTTP/HTTPS server that serves proxy subscription links (standard, JSON, and Clash) to clients. The server listens on its own port (default 10882) and is configured in Settings → Subscription. Paths are configurable; defaults are shown below. All subscription endpoints set response headers for client apps to read traffic/expiry info.
+
+
+WebSocket
+Real-time status updates via WebSocket. Connect once at ws:///ws to receive a stream of JSON messages without polling. Requires an authenticated session cookie (Bearer token auth is not supported). Each message has a type field that identifies the payload shape.
+
+
+
+GET
+/ws
+Upgrade an HTTP connection to a WebSocket. Requires an authenticated session cookie (Bearer token auth is not supported here). Returns 101 Switching Protocols on success. The server then pushes JSON messages described below.
+
+
+Parameters
+Cancel
+No parameters
+
+Execute
+Responses
+Code	Description	Links
+200	
+Successful response
+
+Media type
+
+application/json
+Controls Accept header.
+Example Value
+Schema
+{
+  "success": true,
+  "msg": "string",
+  "obj": "string"
+}
+No links
+
+Schemas
+AllSetting
+AllSettingView
+ApiToken
+ApiTokenView
+Client
+ClientInbound
+ClientRecord
+ClientReverse
+ClientTraffic
+FallbackParentInfo
+HistoryOfSeeders
+Host
+HostGroup
+Inbound
+InboundClientIps
+InboundFallback
+InboundOption
+Msg
+Node
+NodeMutationRequest
+NodeView
+OutboundTraffics
+PanelUpdateStatus
+ProbeResultUI
+RealityScanResult
+Setting
+User

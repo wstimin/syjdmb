@@ -20,8 +20,8 @@ export default function ServersPage() {
   const [testing, setTesting] = useState<string | null>(null);
 
   const [form, setForm] = useState({
-    name: '', host: '', port: '54321', username: '', password: '',
-    country: 'US', flag: '🇺🇸', weight: '1', remark: '',
+    name: '', host: '', port: '54321', protocol: 'http', username: '', password: '',
+    apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '',
   });
 
   const fetchServers = () => {
@@ -35,15 +35,17 @@ export default function ServersPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', host: '', port: '54321', username: '', password: '', country: 'US', flag: '🇺🇸', weight: '1', remark: '' });
+    setForm({ name: '', host: '', port: '54321', protocol: 'http', username: '', password: '', apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '' });
     setDialogOpen(true);
   };
 
   const openEdit = (s: any) => {
     setEditing(s);
     setForm({
-      name: s.name, host: s.host, port: String(s.port), username: s.username, password: s.password,
-      country: s.country || 'US', flag: s.flag || '🇺🇸', weight: String(s.weight), remark: s.remark || '',
+      name: s.name, host: s.host, port: String(s.port), protocol: s.protocol || 'http',
+      username: s.username, password: s.password, apiToken: s.apiToken || '',
+      country: s.country || 'US', flag: s.flag || '🇺🇸', weight: String(s.weight),
+      maxUsers: String(s.maxUsers ?? 100), remark: s.remark || '',
     });
     setDialogOpen(true);
   };
@@ -54,8 +56,10 @@ export default function ServersPage() {
       return;
     }
     const payload = {
-      name: form.name, host: form.host, port: Number(form.port), username: form.username, password: form.password,
-      country: form.country, flag: form.flag, weight: Number(form.weight), remark: form.remark || null,
+      name: form.name, host: form.host, port: Number(form.port), protocol: form.protocol,
+      username: form.username, password: form.password, apiToken: form.apiToken || null,
+      country: form.country, flag: form.flag, weight: Number(form.weight),
+      maxUsers: Number(form.maxUsers), remark: form.remark || null,
     };
     try {
       if (editing) {
@@ -132,8 +136,8 @@ export default function ServersPage() {
 
       <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700">
         <ServerIcon className="mr-2 inline h-4 w-4" />
-        通过 XUI 面板 API 对接：添加服务器后点击「测试」验证连接，之后购买套餐将自动在该服务器上创建节点。
-        <code className="ml-2 rounded bg-background px-2 py-0.5 text-xs">/panel/api/inbounds/*</code>
+        通过 XUI 面板 API 对接：添加服务器后点击「测试」验证连接，之后购买套餐将自动在该服务器上创建节点。支持 HTTP 和 HTTPS 面板。
+        <code className="ml-2 rounded bg-background px-2 py-0.5 text-xs">/panel/api/*</code>
       </div>
 
       <Card>
@@ -161,12 +165,34 @@ export default function ServersPage() {
               <Input value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} />
             </div>
             <div className="space-y-2">
+              <Label>协议</Label>
+              <select
+                value={form.protocol}
+                onChange={(e) => setForm({ ...form, protocol: e.target.value })}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS（SSL）</option>
+              </select>
+            </div>
+            <div className="space-y-2">
               <Label>用户名 *</Label>
               <Input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
             </div>
             <div className="space-y-2">
               <Label>密码 *</Label>
               <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </div>
+            <div className="space-y-2 col-span-2">
+              <Label>API Token（可选，更稳定）</Label>
+              <Input
+                value={form.apiToken}
+                onChange={(e) => setForm({ ...form, apiToken: e.target.value })}
+                placeholder="填入后优先使用 Token 认证，不填则用用户名密码登录"
+              />
+              <p className="text-xs text-muted-foreground">
+                在 3-XUI 面板 → Settings → Security → API Token 中生成。填入后连接更稳定，不会因 Session 过期而断开。
+              </p>
             </div>
             <div className="space-y-2">
               <Label>地区代码</Label>
@@ -179,6 +205,10 @@ export default function ServersPage() {
             <div className="space-y-2">
               <Label>负载权重</Label>
               <Input type="number" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>最大用户数</Label>
+              <Input type="number" value={form.maxUsers} onChange={(e) => setForm({ ...form, maxUsers: e.target.value })} />
             </div>
             <div className="space-y-2 col-span-2">
               <Label>备注</Label>
