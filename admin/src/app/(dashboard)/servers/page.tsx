@@ -20,8 +20,8 @@ export default function ServersPage() {
   const [testing, setTesting] = useState<string | null>(null);
 
   const [form, setForm] = useState({
-    name: '', host: '', port: '54321', protocol: 'http', username: '', password: '',
-    apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '',
+    name: '', host: '', port: '54321', protocol: 'http', apiPath: '/panel/api',
+    username: '', password: '', apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '',
   });
 
   const fetchServers = () => {
@@ -35,7 +35,7 @@ export default function ServersPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', host: '', port: '54321', protocol: 'http', username: '', password: '', apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '' });
+    setForm({ name: '', host: '', port: '54321', protocol: 'http', apiPath: '/panel/api', username: '', password: '', apiToken: '', country: 'US', flag: '🇺🇸', weight: '1', maxUsers: '100', remark: '' });
     setDialogOpen(true);
   };
 
@@ -43,6 +43,7 @@ export default function ServersPage() {
     setEditing(s);
     setForm({
       name: s.name, host: s.host, port: String(s.port), protocol: s.protocol || 'http',
+      apiPath: s.apiPath || '/panel/api',
       username: s.username, password: s.password, apiToken: s.apiToken || '',
       country: s.country || 'US', flag: s.flag || '🇺🇸', weight: String(s.weight),
       maxUsers: String(s.maxUsers ?? 100), remark: s.remark || '',
@@ -58,6 +59,7 @@ export default function ServersPage() {
     const payload = {
       name: form.name, host: form.host, port: Number(form.port), protocol: form.protocol,
       username: form.username, password: form.password, apiToken: form.apiToken || null,
+      apiPath: form.apiPath || '/panel/api',
       country: form.country, flag: form.flag, weight: Number(form.weight),
       maxUsers: Number(form.maxUsers), remark: form.remark || null,
     };
@@ -174,6 +176,17 @@ export default function ServersPage() {
                 <option value="http">HTTP</option>
                 <option value="https">HTTPS（SSL）</option>
               </select>
+            </div>
+            <div className="space-y-2 col-span-2">
+              <Label>API 路径（后缀）</Label>
+              <Input
+                value={form.apiPath}
+                onChange={(e) => setForm({ ...form, apiPath: e.target.value })}
+                placeholder="/panel/api"
+              />
+              <p className="text-xs text-muted-foreground">
+                默认 /panel/api。若面板挂在 Nginx 反代子路径下，请填写实际路径。
+              </p>
             </div>
             <div className="space-y-2">
               <Label>用户名 *</Label>

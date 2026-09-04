@@ -60,8 +60,11 @@ export class ServerService {
     name: string;
     host: string;
     port: number;
+    protocol?: string;
+    apiPath?: string;
     username: string;
     password: string;
+    apiToken?: string;
     remark?: string;
     country?: string;
     flag?: string;
@@ -73,8 +76,11 @@ export class ServerService {
         name: data.name,
         host: data.host,
         port: data.port,
+        protocol: data.protocol || 'http',
+        apiPath: data.apiPath || '/panel/api',
         username: data.username,
         password: data.password,
+        apiToken: data.apiToken || null,
         remark: data.remark,
         country: data.country || 'US',
         flag: data.flag,
@@ -233,7 +239,9 @@ export class ServerService {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
 
-    const apiUrl = `${this.panelBaseUrl(server)}${path}`;
+    // apiPath 默认 /panel/api，反向代理自定义路径时从数据库读取
+    const apiBase = server.apiPath || '/panel/api';
+    const apiUrl = `${this.panelBaseUrl(server)}${apiBase}${path}`;
     const authValue = await this.login(serverId);
 
     // 有 apiToken 时用 Bearer，否则用 Cookie
@@ -298,7 +306,7 @@ export class ServerService {
    * 返回: { success, obj: [{ id, remark, port, protocol, settings, clientStats, ... }] }
    */
   async getInbounds(serverId: number) {
-    return this.xuiRequest(serverId, 'GET', '/panel/api/inbounds/list');
+    return this.xuiRequest(serverId, 'GET', '/inbounds/list');
   }
 
   /**
@@ -309,7 +317,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'GET',
-      `/panel/api/inbounds/get/${inboundId}`,
+      `/inbounds/get/${inboundId}`,
     );
   }
 
@@ -334,7 +342,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      '/panel/api/inbounds/add',
+      '/inbounds/add',
       inboundData,
     );
   }
@@ -347,7 +355,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/inbounds/update/${inboundId}`,
+      `/inbounds/update/${inboundId}`,
       inboundData,
     );
   }
@@ -360,7 +368,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/inbounds/del/${inboundId}`,
+      `/inbounds/del/${inboundId}`,
     );
   }
 
@@ -398,7 +406,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      '/panel/api/clients/add',
+      '/clients/add',
       {
         client: {
           email: clientData.email,
@@ -436,7 +444,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/clients/update/${encodeURIComponent(email)}`,
+      `/clients/update/${encodeURIComponent(email)}`,
       clientData,
     );
   }
@@ -452,7 +460,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/clients/del/${encodeURIComponent(email)}${qs}`,
+      `/clients/del/${encodeURIComponent(email)}${qs}`,
     );
   }
 
@@ -466,7 +474,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'GET',
-      `/panel/api/clients/links/${encodeURIComponent(email)}`,
+      `/clients/links/${encodeURIComponent(email)}`,
     );
   }
 
@@ -479,7 +487,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'GET',
-      `/panel/api/clients/traffic/${encodeURIComponent(email)}`,
+      `/clients/traffic/${encodeURIComponent(email)}`,
     );
   }
 
@@ -492,7 +500,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/clients/${encodeURIComponent(email)}/attach`,
+      `/clients/${encodeURIComponent(email)}/attach`,
       { inboundIds },
     );
   }
@@ -506,7 +514,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      `/panel/api/clients/${encodeURIComponent(email)}/detach`,
+      `/clients/${encodeURIComponent(email)}/detach`,
       { inboundIds },
     );
   }
@@ -517,7 +525,7 @@ export class ServerService {
    * 返回: { success, obj: [{ id, email, subId, totalGB, expiryTime, inboundIds, traffic, ... }] }
    */
   async listClients(serverId: number) {
-    return this.xuiRequest(serverId, 'GET', '/panel/api/clients/list');
+    return this.xuiRequest(serverId, 'GET', '/clients/list');
   }
 
   /**
@@ -535,7 +543,7 @@ export class ServerService {
     return this.xuiRequest(
       serverId,
       'POST',
-      '/panel/api/clients/bulkCreate',
+      '/clients/bulkCreate',
       clients,
     );
   }
@@ -550,7 +558,7 @@ export class ServerService {
    * 返回: { success, obj: { cpu, mem, swap, disk, netIO, xray: { state, version }, tcpCount, load, ... } }
    */
   async getServerStats(serverId: number) {
-    return this.xuiRequest(serverId, 'GET', '/panel/api/server/status');
+    return this.xuiRequest(serverId, 'GET', '/server/status');
   }
 
   // ==========================================
