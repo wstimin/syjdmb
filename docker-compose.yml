@@ -1,7 +1,9 @@
 version: '3.8'
 
 services:
+  # ==========================================
   # PostgreSQL Database
+  # ==========================================
   postgres:
     image: postgres:16-alpine
     container_name: nodeshop-db
@@ -9,9 +11,9 @@ services:
     environment:
       POSTGRES_DB: nodeshop
       POSTGRES_USER: nodeadmin
-      POSTGRES_PASSWORD: nodepassword
+      POSTGRES_PASSWORD: ${DB_PASS:-nodepassword}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,14 +21,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - nodeshop
 
+  # ==========================================
   # Redis
+  # ==========================================
   redis:
     image: redis:7-alpine
     container_name: nodeshop-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -34,8 +40,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - nodeshop
 
-  # Backend API
+  # ==========================================
+  # Backend API (NestJS)
+  # ==========================================
   backend:
     build:
       context: ./backend
@@ -43,56 +53,69 @@ services:
     container_name: nodeshop-backend
     restart: unless-stopped
     ports:
-      - "3001:3001"
-    environment:
-      - DATABASE_URL=postgresql://nodeadmin:nodepassword@postgres:5432/nodeshop?schema=public
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=your-super-secret-jwt-key-change-this
-      - JWT_EXPIRES_IN=15m
-      - JWT_REFRESH_EXPIRES_IN=7d
-      - BACKEND_PORT=3001
+      - "127.0.0.1:3001:3001"
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-      - /app/dist
+    networks:
+      - nodeshop
 
-  # Frontend (User-facing)
+  # ==========================================
+  # Frontend (User-facing, Next.js)
+  # ==========================================
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://backend:3001/api
     container_name: nodeshop-frontend
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:3001/api
+      - NEXT_PUBLIC_API_URL=http://backend:3001/api
     depends_on:
       - backend
-    volumes:
-      - ./frontend/src:/app/src
+    networks:
+      - nodeshop
 
-  # Admin Dashboard
+  # ==========================================
+  # Admin Dashboard (Next.js)
+  # ==========================================
   admin:
     build:
       context: ./admin
       dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://backend:3001/api
     container_name: nodeshop-admin
     restart: unless-stopped
     ports:
-      - "3002:3002"
+      - "127.0.0.1:3002:3002"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:3001/api
+      - NEXT_PUBLIC_API_URL=http://backend:3001/api
     depends_on:
       - backend
-    volumes:
-      - ./admin/src:/app/src
+    networks:
+      - nodeshop
 
+# ==========================================
+# Volumes
+# ==========================================
 volumes:
   postgres_data:
+    driver: local
   redis_data:
+    driver: local
+
+# ==========================================
+# Network
+# ==========================================
+networks:
+  nodeshop:
+    driver: bridge

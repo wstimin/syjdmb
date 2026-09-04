@@ -14,6 +14,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm ci --omit=dev
+# Install ts-node for prisma seed (production use)
+RUN npm install ts-node
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 RUN npx prisma generate
