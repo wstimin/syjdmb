@@ -1,5 +1,5 @@
 # Backend
-FROM node:20-alpine AS builder
+FROM node:20 AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm install --ignore-scripts 2>/dev/null || npm install
@@ -9,12 +9,11 @@ COPY src ./src
 RUN npx prisma generate
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:20
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm install --ignore-scripts 2>/dev/null || npm install --omit=dev
-# Install ts-node for prisma seed (production use)
 RUN npm install ts-node
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma

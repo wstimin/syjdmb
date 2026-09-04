@@ -1,5 +1,5 @@
 # Frontend
-FROM node:20-alpine AS builder
+FROM node:20 AS builder
 WORKDIR /app
 # BACKEND_INTERNAL_URL 在运行时由 middleware 使用，不需要 build 时设置
 COPY package*.json ./
@@ -7,10 +7,9 @@ RUN npm install --ignore-scripts 2>/dev/null || npm install
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine
+FROM node:20
 WORKDIR /app
 ENV NODE_ENV=production
-# middleware 在运行时读取，这里设默认值（本地开发用）
 ENV BACKEND_INTERNAL_URL=http://localhost:3001
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
