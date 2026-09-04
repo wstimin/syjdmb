@@ -99,13 +99,58 @@ XUI_PANELS='[{"name":"Server 1","url":"http://your-panel:54321","username":"admi
 
 > ⚠️ 种子脚本不预置任何演示套餐（套餐由管理员在后台手动创建，保证真实可售卖）。
 
-## 生产部署
+## 生产部署（一键部署）
+
+在 Linux 服务器上执行一条命令即可完成全部部署：
 
 ```bash
-docker-compose up -d --build
+git clone https://github.com/wstimin/syjdmb.git && cd syjdmb && sudo bash deploy.sh
 ```
 
-然后通过 Nginx 反向代理配置域名 + SSL。详见各服务 `Dockerfile`。
+脚本自动完成：
+1. 安装 Docker + Docker Compose
+2. 克隆项目代码
+3. 生成随机 JWT 密钥和数据库密码
+4. 构建并启动全部 5 个服务（PostgreSQL、Redis、Backend、Frontend、Admin）
+5. 执行数据库迁移和初始化（管理员账号 + 系统设置）
+6. 输出访问地址和登录凭据
+
+部署完成后访问：
+- 前端用户端：`http://服务器IP:3000`
+- 管理后台：`http://服务器IP:3002`
+- API 文档：`http://服务器IP:3001/docs`
+
+### 更新部署
+
+```bash
+cd /opt/nodeshop && sudo bash deploy.sh
+```
+
+### 常用运维命令
+
+```bash
+docker compose -f /opt/nodeshop/docker-compose.yml logs -f backend   # 查看后端日志
+docker compose -f /opt/nodeshop/docker-compose.yml restart           # 重启所有服务
+docker compose -f /opt/nodeshop/docker-compose.yml down              # 停止所有服务
+```
+
+### 配置域名 + SSL（可选）
+
+部署完成后如需配置域名和 HTTPS：
+
+```bash
+# 安装 Nginx
+apt install -y nginx
+
+# 安装 SSL 证书工具
+apt install -y certbot python3-certbot-nginx
+
+# 申请证书（替换为你的域名）
+certbot --nginx -d your-domain.com -d admin.your-domain.com
+
+# 自动续期
+certbot renew --dry-run
+```
 
 ## 默认管理员
 
