@@ -81,8 +81,12 @@ export default function ServersPage() {
     setTesting(id);
     try {
       const res = await api.post(`/servers/${id}/test`);
-      if (res.data.success) toast.success('连接成功');
-      else toast.error(res.data.message);
+      if (res.data.success) {
+        // 后端返回 { auth, latencyMs, inbounds, msg } —— 显示真实连接细节
+        toast.success(res.data.data?.msg || '连接成功');
+      } else {
+        toast.error(res.data.message || '连接失败');
+      }
     } catch (err: any) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -138,7 +142,7 @@ export default function ServersPage() {
 
       <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700">
         <ServerIcon className="mr-2 inline h-4 w-4" />
-        通过 XUI 面板 API 对接：添加服务器后点击「测试」验证连接，之后购买套餐将自动在该服务器上创建节点。支持 HTTP 和 HTTPS 面板。
+        通过 XUI 面板 API 对接：添加服务器后点击「测试」验证连接（若失败会显示面板的真实报错，如证书/TLS、认证、端口不通）。建议在面板 Settings → Security → API Token 生成 Token 填入，用 Token 认证最稳，不会因 Session 过期而掉线。
         <code className="ml-2 rounded bg-background px-2 py-0.5 text-xs">/panel/api/*</code>
       </div>
 

@@ -73,13 +73,13 @@ export class ServerController {
   }
 
   @Post(':id/test')
-  @ApiOperation({ summary: 'Test server connection' })
+  @ApiOperation({ summary: 'Test server connection (real round-trip)' })
   async testConnection(@Param('id', ParseIntPipe) id: number) {
     try {
-      const session = await this.serverService.login(id);
-      return { success: true, message: 'Connection successful', sessionId: session.substring(0, 20) + '...' };
-    } catch (e) {
-      return { success: false, message: `Connection failed: ${e.message}` };
+      const result = await this.serverService.testConnection(id);
+      return { success: true, data: result };
+    } catch (e: any) {
+      return { success: false, message: `连接失败: ${e.message}` };
     }
   }
 }

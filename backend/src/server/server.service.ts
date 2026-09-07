@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
+import { Agent, setGlobalDispatcher } from 'undici';
 
 // 3-x-ui 面板 API 响应格式（文档统一格式）
 export interface XuiResponse<T = any> {
@@ -23,10 +24,9 @@ export class ServerService {
   // （undici 默认 headers/bodyTimeout 300s，会越过 cron 锁窗口导致重入）
   private static readonly PANEL_TIMEOUT_MS = 15000;
 
-  // TLS 自签证书支持：面板通常用自签 HTTPS。
-  // 注意：Node 全局 fetch(undici) 不认 https.Agent 的 agent 选项，
-  // 必须取全局 undici dispatcher 构造一个 connect.rejectUnauthorized:false 的实例。
-  private dispatcher: any = null;
+  // 自签 TLS 面板专用 dispatcher：Node 全局 fetch(undici) 不认 https.Agent 的
+  // agent 选项，必须用 undici 的 Agent(connect.rejectUnauthorized:false)。
+  private dispatcher: Agent | null = null;
 
   constructor(
     private prisma: PrismaService,
@@ -38,23 +38,20 @@ export class ServerService {
 
   private initHttpsAgent() {
     try {
-      // undici 全局 dispatcher 挂在 Symbol('undici.globalDispatcher.1') 上，
-      // 取其构造函数并注入 connect.rejectUnauthorized:false（实测可行）
-      const globalDispatcher: any = (globalThis as any)[Symbol.for('undici.globalDispatcher.1')];
-      if (globalDispatcher && globalDispatcher.constructor) {
-        this.dispatcher = new globalDispatcher.constructor({
-          connect: { rejectUnauthorized: false },
-        });
-        return;
-      }
-      // 兜底：undici 作为 Node 内置依赖，一般可直接 require
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { Agent } = require('undici');
-      this.dispatcher = new Agent({ connect: { rejectUnauthorized: false } });
+      // 面板几乎都用自签 HTTPS。必须向 undici 注入跳过 CA 校验的全局 Agent，
+      // 否则所有面板请求在 DEPTH_ZERO_SELF_SIGNED_CERT 上失败，节点永远建不出来。
+      // 注意：undici 不是 Node 的内置可 require 模块，且构造阶段全局 dispatcher
+      // 尚未初始化 —— 之前用 Symbol hack + require('undici') 兜底，两者都不可靠，
+      // 导致 dispatcher 常为 null、面板 100% 连不上。现在显式依赖 npm undici 的
+      // 公开 API（setGlobalDispatcher），Node 20 下稳定生效。
+      const agent = new Agent({ connect: { rejectUnauthorized: false } });
+      setGlobalDispatcher(agent);
+      this.dispatcher = agent;
+      this.logger.log('Panel dispatcher ready: rejectUnauthorized=false（兼容自签 HTTPS 面板）');
     } catch (e: any) {
-      this.logger.warn(
-        `Cannot disable TLS verification for panels: ${e.message}; 自签 HTTPS 面板可能连不上`,
-      );
+      // Agent 构造几乎不会失败；若真失败则保持 this.dispatcher = null
+      // （回到默认 TLS 校验），并大声报错，避免「看似成功却全挂」无从察觉
+      this.logger.error(`Panel TLS dispatcher init failed: ${e.message}; 自签 HTTPS 面板将连不上`);
     }
   }
 
@@ -370,6 +367,30 @@ export class ServerService {
    */
   async getInbounds(serverId: number) {
     return this.xuiRequest(serverId, 'GET', '/inbounds/list');
+  }
+
+  /**
+   * 真·连接探测：登录（或 Bearer）+ 真实 API 往返（/inbounds/list），
+   * 一次性验证 网络/TLS/认证/API 四条链路。失败抛出带具体原因的错误，
+   * 管理端「测试连接」按钮据此显示真实面板报错。
+   */
+  async testConnection(serverId: number) {
+    const server = await this.prisma.server.findUnique({ where: { id: serverId } });
+    if (!server) throw new NotFoundException('Server not found');
+    const authMode = server.apiToken ? 'apiToken (Bearer)' : 'cookie + csrf';
+    const started = Date.now();
+    const res = await this.xuiRequest(serverId, 'GET', '/inbounds/list');
+    if (!res || res.success !== true) {
+      throw new BadRequestException(`面板 API 响应异常: ${res?.msg || 'unknown'}`);
+    }
+    const list = Array.isArray(res.obj) ? res.obj : [];
+    return {
+      ok: true,
+      auth: authMode,
+      latencyMs: Date.now() - started,
+      inbounds: list.length,
+      msg: `连接成功（${authMode}），面板现有 ${list.length} 个入站`,
+    };
   }
 
   /**
