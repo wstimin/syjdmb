@@ -234,9 +234,26 @@ cmd_update() {
   warn "将拉取最新代码与预编译镜像包并部署。数据库、数据卷与配置保留；镜像在云端已编译好，本机不再编译（快）。"
   read -rp "  确认更新？(y/N) " a
   [ "$a" = "y" ] || [ "$a" = "Y" ] || { info "已取消"; return; }
+
   info "拉取最新代码..."
+  # 1) 回滚（菜单3）会把 HEAD 游离到旧提交，此时 git pull 会失败 → 自动切回 master
+  local cur
+  cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  if [ "$cur" != "master" ]; then
+    warn "当前不在 master 分支（${cur}，可能之前回滚过），自动切回..."
+    git checkout master 2>/dev/null || git checkout -f -B master origin/master
+  fi
+  # 2) 工作区若有本地改动（如手工改过 deploy.sh）会阻塞 --ff-only：
+  #    先 stash 备份再拉取；改动一直留在 stash 里，可随时 git stash list / git stash pop 找回
+  if ! git diff --quiet 2>/dev/null; then
+    warn "检测到本地改动（git diff 非空），先暂存再拉取..."
+    git stash push -m "shop-update-before-$(date +%F_%T)" 2>/dev/null \
+      || { warn "git stash 失败，本次更新取消。可先：cd /opt/nodeshop && git status 查看后手动处理"; return; }
+  fi
   if ! git pull --ff-only origin master; then
-    warn "git pull 失败（可能本地有改动）。可先用菜单 3 回滚，或在服务器处理后再试。"
+    warn "git pull 失败，恢复本地改动（git stash pop）..."
+    git stash pop 2>/dev/null || true
+    warn "可先：cd /opt/nodeshop && git status 查看，或使用菜单 3 回滚后再试"
     return
   fi
   # 新代码里的 deploy_core/load_prebuilt_images 是本文件新实现的：
@@ -253,8 +270,8 @@ cmd_rollback() {
   read -rp "  输入要回滚到的提交号（前几位即可，回车取消）: " rev
   [ -z "$rev" ] && { info "已取消"; return; }
   if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then warn "无效的提交号：$rev"; return; fi
-  info "回滚到 $rev 并重新部署..."
-  git checkout "$rev"
+  info "回滚到 $rev 并重新部署（master 会指向该提交，后续更新正常，不再游离 HEAD）..."
+  git checkout -B master "$rev"
   deploy_core || { warn "回滚部署失败，代码已切换。"; return; }
   warn "已回滚到 $rev。回到最新版请使用菜单 2「更新」。"
 }
