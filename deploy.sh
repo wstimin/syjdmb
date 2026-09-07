@@ -429,6 +429,8 @@ bootstrap_if_needed      # 首次/外部运行：装环境、落盘、装 shop�
 
 # 执行到这里说明已在磁盘版运行
 cd "$INSTALL_DIR"
+# 忽略文件执行位差异（安装时会 chmod +x，git 会把 0644→0755 误判为“本地改动”导致 pull 被拒；关掉此项一劳永逸）
+git config core.filemode false 2>/dev/null || true
 ensure_env               # 首次生成 .env；已有则保留
 
 # `shop __deploy`：由 cmd_update 在 git pull 后 exec 进来，用新脚本逻辑直接部署
