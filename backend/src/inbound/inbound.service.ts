@@ -69,8 +69,9 @@ export class InboundService {
     // 不要换算成 GB —— 换算后 100GiB 套餐会变成几十字节配额，连上就被自动停用）
     const totalGB = plan.traffic > 0 ? Number(plan.traffic) : 0;
 
-    // Client object（3.6.0 客户端是一等公民，通过 /panel/api/clients/add 创建，
-    // 不再内嵌到入站的 settings.clients[] 中）
+    // Client object（3.6.0 客户端是内嵌在每条入站 settings.clients[] 里的一等公民；
+    // 原生 UI 创建时客户端直接随入站一起写进 settings。这里同构内嵌，同时仍走
+    // /clients/add 注册链接（两路都要，见下方 addInbound 与 addClient 注释））
     const isVless = protocol.toLowerCase() === 'vless';
     const client = {
       id: uuid,
@@ -86,20 +87,24 @@ export class InboundService {
       flow: isVless ? 'xtls-rprx-vision' : '',
     };
 
-    // Build protocol-specific settings（clients 置空，客户端另建；VLESS 带 flow）
+    // Build protocol-specific settings（客户端已内嵌；VLESS 带 flow，其余 flow 为空）
     let settings: string;
     switch (protocol.toLowerCase()) {
       case 'vmess': {
         settings = JSON.stringify({
-          clients: [],
+          clients: [{ ...client }],
           decryption: 'none',
           fallbacks: [],
         });
         break;
       }
       case 'vless': {
+        // fork 文档实证：这个面板的配置生成器直接读入站 settings JSON 里的
+        // settings.clients[]（delAllClients/groups/bulkAdd 都是 patch 这条 JSON）。
+        // 内嵌 = 用户随入站一起出生，重启后必然在运行配置里，不依赖 /clients/add
+        // 是否回填 DB——这是「像原生面板创建一样」的关键一步。
         settings = JSON.stringify({
-          clients: [],
+          clients: [{ ...client }],
           decryption: 'none',
           fallbacks: [],
         });
@@ -107,7 +112,7 @@ export class InboundService {
       }
       case 'trojan': {
         settings = JSON.stringify({
-          clients: [],
+          clients: [{ ...client }],
           decryption: 'none',
           fallbacks: [],
         });
@@ -240,9 +245,8 @@ export class InboundService {
     };
 
     try {
-      // 1) 建入站（settings.clients 为空，不再内嵌客户端）。
-      //    端口可能被宿主机其它服务占用（尤其 443），命中 already in use 时
-      //    放弃 443 偏好、改用随机高位端口有界重试，避免每笔订单永久卡死。
+      // 1) 建入站（settings.clients 已内嵌用户）。端口可能被宿主机其它服务占用（尤其 443），命中 already in use
+      //    时放弃 443 偏好、改用随机高位端口有界重试，避免每笔订单永久卡死。
       let response: XuiResponse | null = null;
       let xuiInboundId = 0;
       let createdInboundRecord: any = null; // 定位到的入站完整记录（含 streamSettings，供 Reality 验证）
@@ -315,11 +319,29 @@ export class InboundService {
         [xuiInboundId],
       );
       if (!clientRes?.success) {
-        // 建客户端失败则回滚入站，避免留下空入站
+        // 用户已内嵌在 settings.clients 时，clients/add 可能因「已存在」报错
+        // ——先探测该邮箱是否真的可用：能取到链接 或 能取到流量记录 都视为已注册，
+        // 继续出货；两者都没有才回滚入站。
+        let usable = false;
         try {
-          await this.serverService.deleteInbound(serverId, xuiInboundId);
+          const probe = await this.serverService.getClientLinks(serverId, client.email);
+          usable = probe?.success && Array.isArray(probe.obj) && probe.obj.length > 0;
         } catch {}
-        throw new BadRequestException(`Failed to add XUI client: ${clientRes?.msg}`);
+        if (!usable) {
+          try {
+            const traffic = await this.serverService.getClientTraffic(serverId, client.email);
+            usable = traffic?.success === true;
+          } catch {}
+        }
+        if (!usable) {
+          try {
+            await this.serverService.deleteInbound(serverId, xuiInboundId);
+          } catch {}
+          throw new BadRequestException(`Failed to add XUI client: ${clientRes?.msg}`);
+        }
+        this.logger.warn(
+          `clients/add 报错（${clientRes?.msg}）但客户端可检索，按已注册继续`,
+        );
       }
 
       // VLESS(Reality/TLS) 客户端补设 Vision 流控（clients/add 不保证接受 flow，用 bulkAdjust 确保）
@@ -359,7 +381,22 @@ export class InboundService {
         }
         // 重载只是命令；再回读运行中(已落盘)的完整配置，确认该入站真的进了运行态，
         // 而不是只有面板库记录。找不到 → 按未启用处理，回滚。
-        await this.assertInboundLiveInRunningConfig(serverId, xuiInboundId, port);
+        await this.assertInboundLiveInRunningConfig(
+          serverId,
+          xuiInboundId,
+          port,
+          client.email,
+          client.id,
+        );
+        // 顺带抓 Xray 运行期拒绝信息（文档 GET /xray/getXrayResult），配置/目标被运行期
+        // 拒收时这里能看到原因；失败不阻断。
+        try {
+          const xr = await this.serverService.getXrayResult(serverId);
+          const xt = JSON.stringify(xr?.obj);
+          if (xr?.success && xt && xt !== 'null' && /error|fail|reject|refus|invalid/i.test(xt)) {
+            this.logger.warn(`Xray 运行期提示：${xt.slice(0, 600)}`);
+          }
+        } catch {}
       } catch (e) {
         try {
           await this.serverService.deleteClient(serverId, client.email);
@@ -608,13 +645,22 @@ export class InboundService {
   }
 
   /**
-   * 重载后回读运行中(已落盘)的 Xray 配置，确认新入站真的进了运行态。
+   * 重载后回读运行中(已落盘)的 Xray 配置，确认新入站真的进了运行态，
+   * 且用户确实内嵌在该入站的 settings.clients[] 里。
    * GET /panel/api/server/getConfigJson 文档：Return the assembled Xray config
    * that's currently running on this host.（obj 是 JSON 字符串）。
-   * 只按 tag / 端口在 inbounds 中查找 —— 存在=Xray 已加载，不存在=只有面板库记录（废节点）。
-   * 回读接口失败不阻断（restartXrayService 本身已是最强证据）；确认不在运行配置里则抛错回滚。
+   * - 入站不存在（按 tag/端口查）→ 只有面板库记录（废节点）→ 抛错回滚。
+   * - 入站在、但 settings.clients[] 里没有该用户 → 这个 fork 的配置生成器没把用户
+   *   组装进去 → Xray 跑着一个 0 用户的入站，和废节点毫无区别 → 抛错回滚。
+   * 回读接口本身失败不阻断（restartXrayService 已是最强证据，这里只做增量确认）。
    */
-  private async assertInboundLiveInRunningConfig(serverId: number, inboundId: number, port: number) {
+  private async assertInboundLiveInRunningConfig(
+    serverId: number,
+    inboundId: number,
+    port: number,
+    expectedEmail: string,
+    expectedUuid?: string,
+  ) {
     let raw: any;
     try {
       const res = await this.serverService.getRunningConfigJson(serverId);
@@ -627,7 +673,7 @@ export class InboundService {
     try {
       const cfg = JSON.parse(raw);
       const inbounds = Array.isArray(cfg?.inbounds) ? cfg.inbounds : [];
-      const found = inbounds.some(
+      const found = inbounds.find(
         (i: any) =>
           (typeof i?.tag === 'string' && i.tag === `inbound-${port}`) ||
           (Number(i?.port) === port && typeof i?.protocol === 'string'),
@@ -635,9 +681,29 @@ export class InboundService {
       if (!found) {
         throw new Error(`运行配置中未找到 inbound#${inboundId}(port=${port})`);
       }
-      this.logger.log(`入站 inbound #${inboundId} 已确认进入 Xray 运行配置（port=${port}）`);
+      let fClients: any[] = [];
+      try {
+        const fSettings =
+          typeof found?.settings === 'string' ? JSON.parse(found.settings) : found?.settings;
+        fClients = Array.isArray(fSettings?.clients) ? fSettings.clients : [];
+      } catch (e) {
+        throw new Error(`运行配置入站 #${inboundId} settings 解析失败：${(e as Error)?.message}`);
+      }
+      const hasUser = fClients.some(
+        (c: any) =>
+          (expectedEmail && typeof c?.email === 'string' && c.email === expectedEmail) ||
+          (expectedUuid && (c?.id === expectedUuid || c?.password === expectedUuid)),
+      );
+      this.logger.log(
+        `入站 inbound #${inboundId} 已确认进入 Xray 运行配置（port=${port}，用户 ${expectedEmail} 嵌入=${hasUser ? 'YES' : 'NO'}）`,
+      );
+      if (!hasUser) {
+        throw new Error(
+          `运行配置入站 #${inboundId}(port=${port}) 中缺少客户端 ${expectedEmail} —— 配置生成器未组装用户`,
+        );
+      }
     } catch (e) {
-      if (e instanceof Error && e.message.includes('运行配置中未找到')) throw e;
+      if (e instanceof Error && e.message.includes('运行配置')) throw e;
       this.logger.warn(`运行配置解析失败: ${(e as Error)?.message}`);
     }
   }
@@ -769,6 +835,34 @@ export class InboundService {
     };
   }
 
+  /**
+   * 校验面板返回的连接串是否真正可用。
+   * Reality 链接缺 pbk/sid/sni（或 security 不对）→ 用户复制后必然连不上；
+   * 与其出货坏链接，不如过滤掉，让调用方回退到我们自己的本地 builder（数据自写、受控）。
+   */
+  private isUsableLink(url: string, inbound: any): boolean {
+    if (typeof url !== 'string' || !url) return false;
+    try {
+      const idx = url.indexOf('://');
+      if (idx === -1) return false;
+      const rest = url.slice(idx + 3);
+      const queryStart = rest.indexOf('?');
+      if (inbound.protocol === 'vless') {
+        if (queryStart === -1) return false; // vless 无查询串必废
+        const params = new URLSearchParams(rest.slice(queryStart));
+        const security = params.get('security');
+        if (security === 'reality') {
+          return ['pbk', 'sid', 'sni'].every((k) => !!params.get(k)) && params.get('type') === 'tcp';
+        }
+        return security === 'none' && !!params.get('type'); // vless+ws
+      }
+      // vmess / trojan / ss 无查询串或查询串非关键，面板生成即可信
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ==========================================
   // Retrieval
   // ==========================================
@@ -793,7 +887,7 @@ export class InboundService {
     try {
       const linkRes = await this.serverService.getClientLinks(inbound.serverId, inbound.email);
       if (linkRes?.success && Array.isArray(linkRes.obj)) {
-        urls = linkRes.obj.filter((url: any) => typeof url === 'string' && url.length > 0);
+        urls = linkRes.obj.filter((url: any) => this.isUsableLink(url, inbound));
       } else if (linkRes && !linkRes.success) {
         this.logger.warn(`Failed to fetch client links for ${inbound.email}: ${linkRes.msg}`);
       }

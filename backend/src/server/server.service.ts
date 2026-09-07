@@ -910,6 +910,14 @@ export class ServerService {
   }
 
   /**
+   * 抓取 Xray 运行期拒绝/错误信息（配置、目标被运行期拒收时会在这里吐出）。
+   * GET /panel/api/xray/getXrayResult — 仅在调试用，失败不阻断主流程。
+   */
+  async getXrayResult(serverId: number) {
+    return this.xuiRequest(serverId, 'GET', '/xray/getXrayResult');
+  }
+
+  /**
    * 生成新的 X25519 密钥对（Reality 用）
    * GET /panel/api/server/getNewX25519Cert（3.6.0 文档注册为 GET，用 POST 会 404）
    * 返回: { privateKey, publicKey }
@@ -960,11 +968,16 @@ export class ServerService {
       .filter((t: any) => Number(t?.latencyMs ?? Infinity) > 0)
       .sort((a: any, b: any) => Number(a?.latencyMs ?? Infinity) - Number(b?.latencyMs ?? Infinity));
     const best = viable[0];
-    const host =
-      best && typeof best.host === 'string' && best.host.length > 0 ? best.host : 'www.microsoft.com';
     const port = Number(best?.port) > 0 ? Number(best.port) : 443;
-    const target =
-      typeof best?.target === 'string' && best.target.length > 0 ? best.target : `${host}:${port}`;
+    // dest 必须是能真实拨号的 host:port。scanRealityTargets 返回的 target 字段可能携带
+    // 「聊天粘贴残渣」（如 [www.cloudflare.com:443](https://www.cloudflare.com:443)）——
+    // 直接信任它的话，Xray 冒充握手时根本连不上这个主机，节点建得再对也照样废。
+    // 一律剥壳→抽域名→校验，不合格就回退，绝不让垃圾值进 dest/serverNames。
+    const host =
+      ServerService.sanitizeRealityHost(best?.host) ??
+      ServerService.sanitizeRealityHost(best?.target) ??
+      'www.microsoft.com';
+    const target = `${host}:${port}`;
     this.realityTargetCache.set(serverId, { host, target, at: Date.now() });
     if (best) {
       this.logger.log(
@@ -974,6 +987,26 @@ export class ServerService {
       this.logger.warn(`scanRealityTargets 无可行目标 on server ${serverId}，回退 ${host}`);
     }
     return { host, target };
+  }
+
+  /**
+   * 从候选 Reality 目标中提取可用的纯域名，剔除一切非主机名残留；不合法返回 null。
+   * 典型输入是用户在面板里「从聊天粘贴」产生的 markdown 残渣：
+   *   [www.cloudflare.com](https://www.cloudflare.com)            → www.cloudflare.com
+   *   [www.cloudflare.com:443](https://www.cloudflare.com:443)     → www.cloudflare.com
+   *   https://host:port/path  /  host:443                          → host
+   */
+  private static sanitizeRealityHost(raw?: any): string | null {
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    let s = raw.trim();
+    const md = s.match(/^\[([^\]]+)\]\([^)]*\)/); // markdown 链接壳：取方括号内文本
+    if (md) s = md[1];
+    s = s.split(/\s+/)[0];
+    s = s.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, ''); // 剥 schema://
+    s = s.split('/')[0].split('?')[0];
+    if (s.includes(':')) s = s.split(':')[0]; // 剥端口
+    const m = s.match(/^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/);
+    return m ? s : null;
   }
 
   // ==========================================
