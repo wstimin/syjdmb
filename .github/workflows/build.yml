@@ -67,11 +67,7 @@ jobs:
           REPO="$GITHUB_REPOSITORY"
           ASSET=/tmp/nsimg/nodeshop-images.tar.gz
           gh release view nightly --repo "$REPO" >/dev/null 2>&1 \
-            || gh release create nightly --repo "$REPO" \
-                 --title "Nightly 预编译镜像包" \
-                 --notes "GitHub Actions 自动构建：backend / frontend / admin。
-
-服务器 \`shop → 2 更新\` 会自动下载此包 docker load，跳过本机编译。"
+            || gh release create nightly --repo "$REPO" --title "Nightly build" --notes "Auto-built images for NodeShop shop menu update."
           gh release delete-asset nightly nodeshop-images.tar.gz --repo "$REPO" --yes >/dev/null 2>&1 || true
           gh release upload nightly "$ASSET" --repo "$REPO" --clobber
-          echo "已发布: $REPO/releases/download/nightly/nodeshop-images.tar.gz"
+          echo "Published: $REPO/releases/download/nightly/nodeshop-images.tar.gz"
