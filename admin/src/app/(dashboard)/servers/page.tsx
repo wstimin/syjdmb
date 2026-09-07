@@ -189,7 +189,7 @@ export default function ServersPage() {
                 placeholder="/panel/api"
               />
               <p className="text-xs text-muted-foreground">
-                默认 /panel/api。若面板挂在 Nginx 反代子路径下，请填写实际路径。
+                默认 /panel/api。面板设置了子路径时填面板的 webBasePath（如 /shiyeotimin）或完整 API 路径（如 /shiyeotimin/panel/api），系统会自动补全 /panel/api。
               </p>
             </div>
             <div className="space-y-2">

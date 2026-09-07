@@ -67,6 +67,17 @@ export class ServerService {
     return `${server.protocol}://${server.host}:${server.port}`;
   }
 
+  /**
+   * 规范「API 路径」：3-x-ui 的 API 一律挂在 <webBasePath>/panel/api 之下。
+   * 后台表单里填了面板子路径（webBasePath，如 /shiyeotimin）时自动补上 /panel/api；
+   * 填了完整路径（/shiyeotimin/panel/api）或默认 /panel/api 则原样采用。
+   * —— 避免用户按面板 root 填就 404（/shiyeotimin/inbounds/list 而非 …/panel/api/…）
+   */
+  private normalizeApiPath(apiPath?: string): string {
+    const raw = (apiPath || '/panel/api').trim().replace(/\/+$/, '');
+    return raw.endsWith('/panel/api') ? raw : `${raw}/panel/api`;
+  }
+
   // ==========================================
   // 服务器管理（数据库操作）
   // ==========================================
@@ -200,9 +211,12 @@ export class ServerService {
     const cachedCsrf = await this.redis.get(csrfKey);
     if (cachedSession && cachedCsrf) return cachedSession;
 
-    // 面板反代子路径：apiPath 默认 /panel/api，登录/CSRF 端点挂在其前缀（剥离 /panel/api 后缀）下
-    const apiBase = server.apiPath || '/panel/api';
-    const webBasePath = apiBase.endsWith('/panel/api') ? apiBase.slice(0, -'/panel/api'.length) : '';
+    // 面板反代子路径：login/CSRF 端点挂在 webBasePath（apiPath 去掉 /panel/api 后缀）下
+    const apiBase = this.normalizeApiPath(server.apiPath);
+    const webBasePath =
+      apiBase.length > '/panel/api'.length
+        ? apiBase.slice(0, -'/panel/api'.length)
+        : '';
     const base = this.panelBaseUrl(server);
 
     // 1) 先 GET /csrf-token：公开端点，返回 token 并下发初始会话 cookie
@@ -297,8 +311,8 @@ export class ServerService {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
 
-    // apiPath 默认 /panel/api，反向代理自定义路径时从数据库读取
-    const apiBase = server.apiPath || '/panel/api';
+    // apiPath 默认 /panel/api；填了面板子路径（webBasePath）也会自动补全 /panel/api
+    const apiBase = this.normalizeApiPath(server.apiPath);
     const apiUrl = `${this.panelBaseUrl(server)}${apiBase}${path}`;
     const authValue = await this.login(serverId);
 
@@ -710,7 +724,7 @@ export class ServerService {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
 
-    const apiBase = server.apiPath || '/panel/api';
+    const apiBase = this.normalizeApiPath(server.apiPath);
     const apiUrl = `${this.panelBaseUrl(server)}${apiBase}/xray/update`;
     const authValue = await this.login(serverId);
     const useBearer = !!server.apiToken;
