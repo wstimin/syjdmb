@@ -181,14 +181,14 @@ export class InboundService {
           serverNames: [targetHost],
           privateKey: key.privateKey,
           shortIds: [shortId],
-          minVersion: '1.0.0', // 顶层也发一份（兼容部分面板字段位）
+          minVersion: '1.0.0', // 字段位①：顶层，兼容部分面板
+          minClient: '1.0.0', // 字段位②：Xray-core reality 原生名（minClient/maxClient）
           settings: {
             publicKey: key.publicKey,
             serverName: targetHost,
             fingerprint: 'chrome',
             spiderX: '/',
-            minVersion: '1.0.0', // 3-x-ui 的 RealitySettings.Settings 模型：最小客户端版本在这里（面板截图「最小客户端版本」字段）
-            maxVersion: 'x.y.z', // 最大客户端版本（面板 UI 同名默认值）
+            minVersion: '1.0.0', // 字段位③：3-x-ui RealitySettings.Settings 模型（面板 UI「最小客户端版本」对应处）
           },
         },
         tcpSettings: { header: { type: 'none' } },
@@ -552,8 +552,9 @@ export class InboundService {
       }
     }
     const rs = ss?.realitySettings;
-    // 最小客户端版本两种字段位都认：顶层 realitySettings.minVersion 或 settings.minVersion
-    const storedMin = (rs?.minVersion ?? rs?.settings?.minVersion ?? '') as string;
+    // 最小客户端版本：三种字段位都认（settings.minVersion / 顶层 minVersion / minClient，按该 fork 实际采纳的来）
+    const storedMin =
+      (rs?.settings?.minVersion ?? rs?.minVersion ?? rs?.minClient ?? rs?.settings?.minClient ?? '') as string;
     const ok =
       ss?.security === 'reality' &&
       storedMin === '1.0.0' &&
