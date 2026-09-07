@@ -927,18 +927,21 @@ export class ServerService {
   }
 
   // Reality 目标缓存（key: serverId）——避免每笔订单都触发面板全量探测
-  private realityTargetCache = new Map<number, { host: string; at: number }>();
+  private realityTargetCache = new Map<number, { host: string; target: string; at: number }>();
   private static readonly REALITY_TARGET_CACHE_TTL_MS = 30 * 60 * 1000;
 
   /**
-   * 选取延迟最低的可行 Reality 目标作为 dest/serverNames。
+   * 选取延迟最低的可行 Reality 目标。
+   * 3.6.0 文档 scanRealityTargets 返回 { host, port, target: "host:port" }：
+   *   dest 必须用 target（host:port）——面板「目标」字段和 Xray reality 的 dest 都是
+   *   "域名:端口" 格式，裸域名会被面板丢弃回退默认；serverNames/SNI 只放 host。
    * 面板返回已按可行性+延迟排序，这里再做一次防御性筛选（feasible、latency 有效），
-   * 取最小值；结果缓存 30 分钟。无可探测目标时回退 www.microsoft.com。
+   * 取最小值；结果缓存 30 分钟。无可探测目标时回退 www.microsoft.com:443。
    */
-  async pickBestRealityTarget(serverId: number): Promise<string> {
+  async pickBestRealityTarget(serverId: number): Promise<{ host: string; target: string }> {
     const cached = this.realityTargetCache.get(serverId);
     if (cached && Date.now() - cached.at < ServerService.REALITY_TARGET_CACHE_TTL_MS) {
-      return cached.host;
+      return { host: cached.host, target: cached.target };
     }
     const res = await this.scanRealityTargets(serverId);
     const list = Array.isArray(res?.obj) ? res.obj : [];
@@ -947,8 +950,12 @@ export class ServerService {
       .filter((t: any) => Number(t?.latencyMs ?? Infinity) > 0)
       .sort((a: any, b: any) => Number(a?.latencyMs ?? Infinity) - Number(b?.latencyMs ?? Infinity));
     const best = viable[0];
-    const host = best?.host || 'www.microsoft.com';
-    this.realityTargetCache.set(serverId, { host, at: Date.now() });
+    const host =
+      best && typeof best.host === 'string' && best.host.length > 0 ? best.host : 'www.microsoft.com';
+    const port = Number(best?.port) > 0 ? Number(best.port) : 443;
+    const target =
+      typeof best?.target === 'string' && best.target.length > 0 ? best.target : `${host}:${port}`;
+    this.realityTargetCache.set(serverId, { host, target, at: Date.now() });
     if (best) {
       this.logger.log(
         `Reality target for server ${serverId}: ${host} (${best?.latencyMs}ms, TLS1.3=${best?.tls13 === true}, h2=${best?.h2 === true})`,
@@ -956,7 +963,7 @@ export class ServerService {
     } else {
       this.logger.warn(`scanRealityTargets 无可行目标 on server ${serverId}，回退 ${host}`);
     }
-    return host;
+    return { host, target };
   }
 
   // ==========================================

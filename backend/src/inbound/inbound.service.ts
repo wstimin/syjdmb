@@ -131,8 +131,9 @@ export class InboundService {
     // 其它协议 → WebSocket 明文（去掉假证书路径，开箱即用）；SS → 原生 tcp
     let streamSettings: string;
     let reality: {
-      dest: string;
+      dest: string; // host（SNI/本地链接用）
       serverNames: string;
+      target: string; // host:port（发面板的 dest）
       privateKey: string;
       publicKey: string;
       shortId: string;
@@ -146,10 +147,16 @@ export class InboundService {
       //  3) minVersion=1.0.0 最小客户端版本写死
       // 任一环节失败就地报错、节点不创建 —— 绝不降级成 ws 明文（那会建出不可用节点）
       let key: { privateKey: string; publicKey: string };
-      let dest: string;
+      let targetHost = 'www.microsoft.com'; // serverNames / SNI：只放域名
+      let targetAddr = 'www.microsoft.com:443'; // dest：必须 host:port（面板「目标」字段格式）
       try {
         key = await this.serverService.getNewX25519Key(serverId);
-        dest = await this.serverService.pickBestRealityTarget(serverId);
+        // 3.6.0 文档 scanRealityTargets 返回 { host, port, target:"host:port" }：
+        //   dest → target（host:port）；裸域名会被面板丢弃回退默认（截图里 dest=example.com:443 就是这么来的）
+        //   serverNames/SNI → host（不带端口）
+        const t = await this.serverService.pickBestRealityTarget(serverId);
+        targetHost = t.host;
+        targetAddr = t.target;
       } catch (e) {
         throw new BadRequestException(
           `Reality 初始化失败（x25519 或 目标扫描）：${e.message}。节点未创建，请检查面板连接与 API Token。`,
@@ -157,8 +164,9 @@ export class InboundService {
       }
       const shortId = this.randomHex(8);
       reality = {
-        dest,
-        serverNames: dest,
+        dest: targetHost, // 落库字段：作 SNI / 本地兜底链接的 sni 参数（只存域名）
+        serverNames: targetHost,
+        target: targetAddr, // 面板 dest 专用（host:port）
         privateKey: key.privateKey,
         publicKey: key.publicKey,
         shortId,
@@ -169,15 +177,18 @@ export class InboundService {
         externalProxy: [],
         realitySettings: {
           show: false,
-          dest,
-          serverNames: [dest],
+          dest: targetAddr,
+          serverNames: [targetHost],
           privateKey: key.privateKey,
           shortIds: [shortId],
-          minVersion: '1.0.0', // 最小客户端版本：不配置部分客户端连不上（用户硬性要求，必须落库并被验证）
+          minVersion: '1.0.0', // 顶层也发一份（兼容部分面板字段位）
           settings: {
             publicKey: key.publicKey,
+            serverName: targetHost,
             fingerprint: 'chrome',
             spiderX: '/',
+            minVersion: '1.0.0', // 3-x-ui 的 RealitySettings.Settings 模型：最小客户端版本在这里（面板截图「最小客户端版本」字段）
+            maxVersion: 'x.y.z', // 最大客户端版本（面板 UI 同名默认值）
           },
         },
         tcpSettings: { header: { type: 'none' } },
@@ -271,7 +282,12 @@ export class InboundService {
       // 3-x-ui 3.6.0 原生一致性验证：add 后回读确认 reality + minVersion=1.0.0 真实落库。
       // 面板 DTO 若丢弃字段会在这一环暴露；验证失败→回滚空入站→报错，绝不出货不可用节点。
       if (isVless) {
-        const persistedOk = await this.verifyRealityPersisted(serverId, xuiInboundId, createdInboundRecord);
+        const persistedOk = await this.verifyRealityPersisted(
+          serverId,
+          xuiInboundId,
+          createdInboundRecord,
+          reality!.target, // 期望 dest（host:port）；isVless 分支必已赋值
+        );
         if (!persistedOk) {
           try {
             await this.serverService.deleteInbound(serverId, xuiInboundId);
@@ -509,13 +525,16 @@ export class InboundService {
 
   /**
    * 验证面板真实保存的入站确实是 Reality 且 minVersion=1.0.0 已落库。
-   * （3-x-ui 3.6.0 文档要求 reality 流设置含 dest/serverNames/privateKey/shortIds/minVersion）
+   * minVersion 两种字段位都认：顶层 realitySettings.minVersion 或 settings.minVersion
+   * （3-x-ui 的 Settings 模型；截图里「最小客户端版本」显示 36.3.27 就是顶层字段不被采纳、按面板默认 xray 版本走了）。
+   * dest 必须精确等于本次扫描选出的 target（host:port）——面板若丢弃 dest 会回退默认 example.com:443，这种节点直接判失败。
    * 验证失败返回 false —— 调用方据此回滚，确保绝不交付不可用节点。
    */
   private async verifyRealityPersisted(
     serverId: number,
     inboundId: number,
     record: any | null,
+    expectedDest: string,
   ): Promise<boolean> {
     let ss: any = null;
     if (record && typeof record.streamSettings === 'object' && record.streamSettings !== null) {
@@ -533,19 +552,23 @@ export class InboundService {
       }
     }
     const rs = ss?.realitySettings;
+    // 最小客户端版本两种字段位都认：顶层 realitySettings.minVersion 或 settings.minVersion
+    const storedMin = (rs?.minVersion ?? rs?.settings?.minVersion ?? '') as string;
     const ok =
       ss?.security === 'reality' &&
-      rs?.minVersion === '1.0.0' &&
+      storedMin === '1.0.0' &&
       !!rs?.privateKey &&
       Array.isArray(rs?.serverNames) &&
-      rs.serverNames.length > 0;
+      rs.serverNames.length > 0 &&
+      !!expectedDest &&
+      rs?.dest === expectedDest;
     if (ok) {
       this.logger.log(
-        `Reality 验证通过 inbound #${inboundId}: security=reality, minVersion=${rs.minVersion}, serverNames=[${rs.serverNames.join(',')}], dest=${rs.dest}`,
+        `Reality 验证通过 inbound #${inboundId}: security=reality, minVersion=${storedMin}, dest=${rs.dest}, serverNames=[${rs.serverNames.join(',')}]`,
       );
     } else {
       this.logger.error(
-        `Reality 验证失败 inbound #${inboundId}，面板实际 streamSettings=${JSON.stringify(ss ?? null).slice(0, 400)}`,
+        `Reality 验证失败 inbound #${inboundId}，期望 dest=${expectedDest}，面板实际 streamSettings=${JSON.stringify(ss ?? null).slice(0, 600)}`,
       );
     }
     return ok;
