@@ -247,8 +247,15 @@ export class InboundService {
         inboundData.tag = `inbound-${port}`;
         response = await this.serverService.addInbound(serverId, inboundData);
         const id = this.extractInboundId(response);
-        if (response?.success && id) {
-          xuiInboundId = id;
+        if (response?.success) {
+          // 3-x-ui 3.6.0 的 /inbounds/add 示例返回 obj: "string"（通常是提示文本），
+          // 不保证直接返回入站 ID；因此成功后必须回查 /inbounds/list，按端口/tag/remark 定位新入站。
+          xuiInboundId = id || (await this.findCreatedInboundId(serverId, inboundData));
+          if (xuiInboundId) break;
+          response = {
+            ...response,
+            msg: response?.msg || 'Inbound added, but failed to locate created inbound id',
+          };
           break;
         }
         if (!/already in use|in use/i.test(response?.msg || '')) break;
@@ -257,6 +264,9 @@ export class InboundService {
       }
 
       if (!xuiInboundId) {
+        // add 已成功但没定位到 id（承载端口已建好入站）—— 尽力回收该空入站，
+        // 否则每笔失败订单都会在面板累积一个游离空闲入站
+        await this.cleanupOrphanInbound(serverId, inboundData);
         throw new BadRequestException(response?.msg || 'Failed to obtain XUI inbound id');
       }
 
@@ -294,6 +304,21 @@ export class InboundService {
         }
       }
 
+      // 回读面板权威状态：clients/add 提交后，面板有权按自身规则重新生成
+      // UUID/subId。以面板实际值为准落库，保证本地兜底连接串与面板 UI 完全一致。
+      let storedUuid = client.id;
+      let storedSubId = client.subId;
+      try {
+        const readback = await this.serverService.getClientTraffic(serverId, client.email);
+        if (readback?.success && readback.obj) {
+          if (readback.obj.uuid) storedUuid = readback.obj.uuid;
+          if (readback.obj.subId) storedSubId = readback.obj.subId;
+        }
+      } catch (e) {
+        // 回读失败不阻断建节点：继续用我们生成的 uuid/subId（链接走面板 /clients/links 时不受影响）
+        this.logger.warn(`Client state readback failed for ${client.email}: ${e.message}`);
+      }
+
       // Save to database（本地落库失败要回滚已建好的 XUI 入站+客户端——
       // 否则 cron 重试会在新端口再建一个节点，面板遗留第一个永久游离节点）
       let inbound: any;
@@ -303,7 +328,7 @@ export class InboundService {
             userId,
             serverId,
             inboundId: xuiInboundId,
-            clientUuid: uuid,
+            clientUuid: storedUuid,
             protocol: protocol.toLowerCase(),
             port,
             email,
@@ -438,12 +463,57 @@ export class InboundService {
   }
 
   private extractInboundId(response: any): number {
-    // Handle different response formats
-    if (response?.obj && typeof response.obj === 'number') return response.obj;
-    if (response?.obj?.id) return response.obj.id;
-    if (response?.id) return response.id;
-    // Default: query the newest inbound
+    // 兼容少数面板/旧版本：有些会把 id 放在 obj.id / obj / id。
+    if (typeof response?.obj === 'number') return response.obj;
+    if (typeof response?.obj === 'string' && /^\d+$/.test(response.obj.trim())) {
+      return Number(response.obj.trim());
+    }
+    if (response?.obj?.id) return Number(response.obj.id) || 0;
+    if (response?.id) return Number(response.id) || 0;
     return 0;
+  }
+
+  private async findCreatedInboundId(serverId: number, inboundData: any): Promise<number> {
+    const listRes = await this.serverService.getInbounds(serverId);
+    if (!listRes?.success || !Array.isArray(listRes.obj)) {
+      this.logger.warn(`Cannot locate created inbound on server ${serverId}: ${listRes?.msg || 'invalid inbounds/list response'}`);
+      return 0;
+    }
+
+    const matched = listRes.obj
+      .filter((item: any) => {
+        const samePort = Number(item?.port) === Number(inboundData.port);
+        const sameTag = !inboundData.tag || item?.tag === inboundData.tag;
+        const sameRemark = !inboundData.remark || item?.remark === inboundData.remark;
+        const sameProtocol = !inboundData.protocol || item?.protocol === inboundData.protocol;
+        // 端口是唯一关键；tag/remark/protocol 用来避免极端情况下误匹配。
+        return samePort && (sameTag || sameRemark || sameProtocol);
+      })
+      .sort((a: any, b: any) => Number(b?.id || 0) - Number(a?.id || 0));
+
+    return Number(matched[0]?.id || 0);
+  }
+
+  /**
+   * 尽力回收「add 已成功但定位失败」的空入站。
+   * 仅按端口匹配（该端口就是本次 add 刚刚建出的），删除由面板回执不可用导致的游离节点。
+   */
+  private async cleanupOrphanInbound(serverId: number, inboundData: any) {
+    try {
+      const listRes = await this.serverService.getInbounds(serverId);
+      if (!listRes?.success || !Array.isArray(listRes.obj)) return;
+      const orphan = listRes.obj
+        .filter((item: any) => Number(item?.port) === Number(inboundData.port))
+        .sort((a: any, b: any) => Number(b?.id || 0) - Number(a?.id || 0))[0];
+      if (orphan?.id) {
+        await this.serverService.deleteInbound(serverId, orphan.id);
+        this.logger.warn(
+          `Orphan inbound port=${inboundData.port} (id=${orphan.id}) cleaned up on server ${serverId}`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(`Orphan cleanup failed on server ${serverId}: ${e.message}`);
+    }
   }
 
   private randomHex(length: number): string {
@@ -562,23 +632,46 @@ export class InboundService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Enrich with connection links
-    return inbounds.map((inbound) => {
-      try {
-        const link = this.generateConnectionLink(inbound, inbound.server);
-        // Fetch traffic from XUI
-        return {
-          ...inbound,
-          connectionUrl: link.url,
-          qrData: link.qrData,
-          trafficUsed: Number(inbound.totalTraffic),
-        };
-      } catch (e) {
-        return inbound;
-      }
-    });
+    // Enrich with connection links. 3-x-ui 3.6.0 provides the canonical URL generator:
+    // GET /panel/api/clients/links/{email}. Use it first so Reality/WS/TLS parameters match the panel UI.
+    return Promise.all(
+      inbounds.map(async (inbound) => this.enrichInboundForResponse(inbound)),
+    );
   }
 
+  private async enrichInboundForResponse(inbound: any) {
+    let urls: string[] = [];
+
+    try {
+      const linkRes = await this.serverService.getClientLinks(inbound.serverId, inbound.email);
+      if (linkRes?.success && Array.isArray(linkRes.obj)) {
+        urls = linkRes.obj.filter((url: any) => typeof url === 'string' && url.length > 0);
+      } else if (linkRes && !linkRes.success) {
+        this.logger.warn(`Failed to fetch client links for ${inbound.email}: ${linkRes.msg}`);
+      }
+    } catch (e) {
+      this.logger.warn(`Failed to fetch client links for ${inbound.email}: ${e.message}`);
+    }
+
+    if (urls.length === 0) {
+      try {
+        const localLink = this.generateConnectionLink(inbound, inbound.server);
+        urls = localLink.url ? [localLink.url] : [];
+      } catch (e) {
+        this.logger.warn(`Failed to generate fallback link for ${inbound.email}: ${e.message}`);
+      }
+    }
+
+    const totalTraffic = Number(inbound.totalTraffic || 0);
+    return {
+      ...inbound,
+      totalTraffic,
+      trafficUsed: totalTraffic,
+      connectionUrl: urls[0] || '',
+      connectionUrls: urls,
+      qrData: urls[0] || '',
+    };
+  }
   async findById(id: number, userId?: number) {
     const where: any = { id };
     if (userId) where.userId = userId;
@@ -589,13 +682,7 @@ export class InboundService {
     });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    const link = this.generateConnectionLink(inbound, inbound.server);
-
-    return {
-      ...inbound,
-      connectionUrl: link.url,
-      qrData: link.qrData,
-    };
+    return this.enrichInboundForResponse(inbound);
   }
 
   /**
@@ -632,14 +719,16 @@ export class InboundService {
 
         // —— 判定：到期或超流量 → 停用 ——
         if (expired || (limitExceeded && inbound.status !== 'EXPIRED')) {
-          // 面板端停用客户端（enable: false）
+          // 面板端停用客户端（启用切到停用用 bulkEnable/bulkDisable 原生端点，
+          //  不用 /clients/update/{email} —— 那是全量替换不是 patch，会把
+          //  totalGB/expiryTime 清空）
           //  仅当客户端当前是启用状态才调用，避免重复调用
           const clientEnabled = traffic?.obj?.enable !== false;
           if (inbound.status === 'ACTIVE' && clientEnabled) {
-            const res = await this.serverService.updateClient(
+            const res = await this.serverService.setClientEnabled(
               inbound.serverId,
               inbound.email,
-              { enable: false },
+              false,
             );
             if (!res?.success) {
               this.logger.warn(
@@ -709,13 +798,9 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    // Suspend in XUI — 3-x-ui v3.6.0 中客户端以 email 为唯一标识
+    // Suspend in XUI — 用原生 bulkDisable（update/{email} 是全量替换，只传 enable 会清字段）
     try {
-      await this.serverService.updateClient(
-        inbound.serverId,
-        inbound.email,
-        { enable: false },
-      );
+      await this.serverService.setClientEnabled(inbound.serverId, inbound.email, false);
     } catch (e) {
       this.logger.warn(`Failed to suspend in XUI: ${e.message}`);
     }
@@ -730,13 +815,9 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    // Resume in XUI — 3-x-ui v3.6.0 中客户端以 email 为唯一标识
+    // Resume in XUI — 用原生 bulkEnable（update/{email} 是全量替换，只传 enable 会清字段）
     try {
-      await this.serverService.updateClient(
-        inbound.serverId,
-        inbound.email,
-        { enable: true },
-      );
+      await this.serverService.setClientEnabled(inbound.serverId, inbound.email, true);
     } catch (e) {
       this.logger.warn(`Failed to resume in XUI: ${e.message}`);
     }
@@ -810,3 +891,5 @@ export class InboundService {
     };
   }
 }
+
+

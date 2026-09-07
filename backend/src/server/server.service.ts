@@ -536,6 +536,25 @@ export class ServerService {
   }
 
   /**
+   * 启用/停用客户端（3.6.0 面板原生端点，仅切换 enable，不动其它字段）
+   * POST /panel/api/clients/bulkEnable | bulkDisable
+   * Body: { emails: [...] }
+   * 返回: { success, obj: { changed, skipped: [{email, reason}] } }
+   * 注意：不要用 /clients/update/{email} 只传 { enable: false } —— 该端点是
+   * 【全量替换不是 patch】，会把客户端行上的 totalGB/expiryTime/tgId 等字段清空，
+   * 造成面板侧「不限流量 / 永不过期」的错乱。bulkEnable/bulkDisable 是面板为
+   * 纯 enable 切换设计的原生操作，到期/超流量/管理员停用必须走这里。
+   */
+  async setClientEnabled(serverId: number, email: string, enable: boolean) {
+    return this.xuiRequest(
+      serverId,
+      'POST',
+      enable ? '/clients/bulkEnable' : '/clients/bulkDisable',
+      { emails: [email] },
+    );
+  }
+
+  /**
    * 删除客户端
    * POST /panel/api/clients/del/{email}
    * 从所有关联的入站移除并删除客户端记录
@@ -700,7 +719,11 @@ export class ServerService {
     };
 
     const form = new URLSearchParams();
-    form.set('config', JSON.stringify(config));
+    const configStr = JSON.stringify(config);
+    form.set('config', configStr);
+    // 3.6.0 文档只说 update 是 form fields，没写明字段名；GET /xray/ 返回 obj.xraySetting，
+    // 历史实现则用 config。两个名字都发同值，面板只绑定它认识的那个（多字段无害）。
+    form.set('xraySetting', configStr);
 
     let response = await fetch(apiUrl, {
       method: 'POST',
