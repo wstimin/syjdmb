@@ -900,6 +900,16 @@ export class ServerService {
   }
 
   /**
+   * 回读运行中(当前已落盘)的 Xray 完整配置。
+   * GET /panel/api/server/getConfigJson — Return the assembled Xray config
+   * that's currently running on this host.（obj 为 JSON 字符串）
+   * 用于建节点后证明入站真的进了运行态，而非只有面板库记录。
+   */
+  async getRunningConfigJson(serverId: number) {
+    return this.xuiRequest(serverId, 'GET', '/server/getConfigJson');
+  }
+
+  /**
    * 生成新的 X25519 密钥对（Reality 用）
    * GET /panel/api/server/getNewX25519Cert（3.6.0 文档注册为 GET，用 POST 会 404）
    * 返回: { privateKey, publicKey }

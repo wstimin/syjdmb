@@ -10,6 +10,7 @@
 # =====================================================================
 set -euo pipefail
 
+SOFTWARE_VERSION="1.0.0"   # 整体版本：与 backend/frontend/admin 的 package.json 对齐
 REPO_URL="https://github.com/wstimin/syjdmb.git"
 INSTALL_DIR="${INSTALL_DIR:-/opt/nodeshop}"
 MANAGE="$INSTALL_DIR/deploy.sh"
@@ -156,6 +157,23 @@ deploy_core() {
   done
   [ "$okbe" = "1" ] && ok "后端容器已就绪"
 
+  # 后端镜像特征校验：若更新恰好跑在 CI 尚未产出最新镜像时，docker load 会拉到
+  # 旧 nightly →「代码(工作树)最新、镜像(运行)旧」错配，节点创建修复不生效。
+  # 以编译产物里的新代码特征串为准，缺失即在本机重新编译修正。
+  if docker exec nodeshop-backend sh -c 'grep -q "Xray reload failed" /app/dist/inbound/inbound.service.js' 2>/dev/null; then
+    ok "后端镜像为最新构建（含节点创建重载修复）"
+  else
+    warn "后端容器缺少最新修复特征（节点创建未重载 Xray）→ 本机编译修正..."
+    docker compose up -d --build
+    for i in $(seq 1 90); do
+      local STATE2
+      STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
+      if [ "$STATE2" = "running" ]; then break; fi
+      sleep 3
+    done
+    ok "镜像已本机编译，后端容器重启完成"
+  fi
+
   info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
   docker exec nodeshop-backend npx prisma migrate deploy || {
     warn "迁移异常，日志："; docker logs nodeshop-backend 2>&1 | tail -20; return 1; }
@@ -205,6 +223,7 @@ bootstrap_if_needed() {
 cmd_status() {
   echo; echo -e "${CYAN}-------- 当前信息 --------${NC}"
   echo "  安装目录 : $INSTALL_DIR"
+  echo "  软件版本 : ${SOFTWARE_VERSION}"
   echo "  当前版本 : $(cd "$INSTALL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo 未知)（$(cd "$INSTALL_DIR" && git log -1 --format=%cd --date=short 2>/dev/null || echo '')）"
   local ip; ip=$(hostname -I | awk '{print $1}')
   echo "  服务器IP : $ip"

@@ -221,7 +221,7 @@ export class InboundService {
       up: 0,
       down: 0,
       total: parseInt(plan.traffic.toString()) || 0,
-      remark: `user-${user.id}-${protocol}`,
+      remark: orderNo ? `Order ${orderNo}` : `user-${user.id}-${protocol}`,
       enable: true,
       expiryTime,
       listen: '',
@@ -347,6 +347,34 @@ export class InboundService {
         this.logger.warn(`Client state readback failed for ${client.email}: ${e.message}`);
       }
 
+      // —— 原生面板一致性关键步骤（此前缺失 ⇒ 建出的节点「面板有记录、Xray 无监听」= 废节点）——
+      // 3.6.0 文档 restartXrayService："Reload Xray with the current config. Typically
+      // required after structural inbound or routing changes." —— /inbounds/add 只写入面板库，
+      // 运行中的 Xray 进程不会自动加载新入站；必须重载才能真正监听该端口。
+      // 重载失败（通常是新入站的配置被 Xray 拒收、整个 config 起不来）→ 回滚并再次重载恢复原状。
+      try {
+        const restartRes = await this.serverService.restartXrayService(serverId);
+        if (!restartRes?.success) {
+          throw new Error(`Xray reload failed: ${restartRes?.msg || 'unknown'}`);
+        }
+        // 重载只是命令；再回读运行中(已落盘)的完整配置，确认该入站真的进了运行态，
+        // 而不是只有面板库记录。找不到 → 按未启用处理，回滚。
+        await this.assertInboundLiveInRunningConfig(serverId, xuiInboundId, port);
+      } catch (e) {
+        try {
+          await this.serverService.deleteClient(serverId, client.email);
+        } catch {}
+        try {
+          await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        try {
+          await this.serverService.restartXrayService(serverId);
+        } catch {}
+        throw new BadRequestException(
+          `Xray 重新加载失败（节点未真正启用，已回滚）：${e.message}`,
+        );
+      }
+
       // Save to database（本地落库失败要回滚已建好的 XUI 入站+客户端——
       // 否则 cron 重试会在新端口再建一个节点，面板遗留第一个永久游离节点）
       let inbound: any;
@@ -384,12 +412,16 @@ export class InboundService {
           },
         });
       } catch (e) {
-        // XUI 侧补偿回滚（仅限本地写失败的场景；勿动 relay 挂载，那发生在落库之后）
+        // XUI 侧补偿回滚（仅限本地写失败的场景；勿动 relay 挂载，那发生在落库之后）。
+        // 回滚后必须再重载一次 Xray，否则已确认活着的入站从面板库里消失、运行态却还在监听。
         try {
           await this.serverService.deleteClient(serverId, client.email);
         } catch {}
         try {
           await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        try {
+          await this.serverService.restartXrayService(serverId);
         } catch {}
         throw e;
       }
@@ -573,6 +605,41 @@ export class InboundService {
       );
     }
     return ok;
+  }
+
+  /**
+   * 重载后回读运行中(已落盘)的 Xray 配置，确认新入站真的进了运行态。
+   * GET /panel/api/server/getConfigJson 文档：Return the assembled Xray config
+   * that's currently running on this host.（obj 是 JSON 字符串）。
+   * 只按 tag / 端口在 inbounds 中查找 —— 存在=Xray 已加载，不存在=只有面板库记录（废节点）。
+   * 回读接口失败不阻断（restartXrayService 本身已是最强证据）；确认不在运行配置里则抛错回滚。
+   */
+  private async assertInboundLiveInRunningConfig(serverId: number, inboundId: number, port: number) {
+    let raw: any;
+    try {
+      const res = await this.serverService.getRunningConfigJson(serverId);
+      raw = typeof res?.obj === 'string' ? res.obj : res?.obj != null ? JSON.stringify(res.obj) : '';
+    } catch (e) {
+      this.logger.warn(`getConfigJson failed on server ${serverId}: ${e.message}`);
+      return;
+    }
+    if (!raw) return;
+    try {
+      const cfg = JSON.parse(raw);
+      const inbounds = Array.isArray(cfg?.inbounds) ? cfg.inbounds : [];
+      const found = inbounds.some(
+        (i: any) =>
+          (typeof i?.tag === 'string' && i.tag === `inbound-${port}`) ||
+          (Number(i?.port) === port && typeof i?.protocol === 'string'),
+      );
+      if (!found) {
+        throw new Error(`运行配置中未找到 inbound#${inboundId}(port=${port})`);
+      }
+      this.logger.log(`入站 inbound #${inboundId} 已确认进入 Xray 运行配置（port=${port}）`);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('运行配置中未找到')) throw e;
+      this.logger.warn(`运行配置解析失败: ${(e as Error)?.message}`);
+    }
   }
 
   /**
