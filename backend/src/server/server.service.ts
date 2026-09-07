@@ -254,7 +254,11 @@ export class ServerService {
     try {
       body = await response.json() as XuiResponse;
     } catch {
-      throw new BadRequestException(`XUI login failed: invalid response from ${loginUrl}`);
+      const raw = await response.text().catch(() => '');
+      throw new BadRequestException(
+        `XUI login failed: invalid response from ${loginUrl} — HTTP ${response.status}` +
+          (raw ? `, body: ${JSON.stringify(raw.slice(0, 200))}` : ''),
+      );
     }
 
     if (!body.success) {
@@ -342,8 +346,12 @@ export class ServerService {
     try {
       data = await response.json() as XuiResponse;
     } catch {
+      // 返回的不是 JSON（404/5xx HTML 页、代理错误页等）——把状态码和原始返回体带进错误，
+      // 管理端「测试」按钮直接显示，几秒钟就能判断是"打到了错误的地址/代理"还是"面板没起来"
+      const rawBody = await response.text().catch(() => '');
       throw new BadRequestException(
-        `XUI API request failed: invalid JSON response from ${path}`,
+        `XUI API request failed: invalid JSON from ${apiUrl} — HTTP ${response.status}` +
+          (rawBody ? `, body: ${JSON.stringify(rawBody.slice(0, 200))}` : ''),
       );
     }
 
@@ -755,8 +763,10 @@ export class ServerService {
     try {
       data = await response.json() as XuiResponse;
     } catch {
+      const raw = await response.text().catch(() => '');
       throw new BadRequestException(
-        `XUI API request failed: invalid JSON response from /xray/update`,
+        `XUI API request failed: invalid JSON from ${apiUrl} — HTTP ${response.status}` +
+          (raw ? `, body: ${JSON.stringify(raw.slice(0, 200))}` : ''),
       );
     }
     if (!data.success) {
