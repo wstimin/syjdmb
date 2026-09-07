@@ -18,6 +18,9 @@ MANAGE="$INSTALL_DIR/deploy.sh"
 DEFAULT_ADMIN_EMAIL="admin@nodeshop.com"
 DEFAULT_ADMIN_PASS="admin123456"
 
+# GitHub Actions 预编译镜像包（滚动标签 nightly，openssl 明文无需凭证；可用 PREBUILT_URL 覆盖）
+PREBUILT_URL="${PREBUILT_URL:-https://github.com/wstimin/syjdmb/releases/download/nightly/nodeshop-images.tar.gz}"
+
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'; NC='\033[0m'
 info(){ echo -e "${CYAN}[INFO]${NC} $*"; }
 ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
@@ -93,14 +96,44 @@ EOF
 }
 
 # =====================================================================
-# 部署核心：构建→迁移→默认管理员（非破坏，保留数据）
+# 拉取 GitHub Actions 预编译镜像包并 docker load（跳过服务器本机编译）。
+# 下载或载入失败返回 1，由调用方回退到本机 --build（功能不受影响，只是慢）。
+# =====================================================================
+load_prebuilt_images() {
+  info "拉取预编译镜像包（GitHub Releases: nightly）..."
+  local tmp
+  tmp=$(mktemp)
+  if ! curl -fsSL --connect-timeout 20 --max-time 1200 -o "$tmp" "$PREBUILT_URL"; then
+    warn "预编译包下载失败（${PREBUILT_URL}）→ 将使用服务器本机编译"
+    rm -f "$tmp"
+    return 1
+  fi
+  info "开始载入镜像（docker load）..."
+  if docker load -i "$tmp"; then
+    rm -f "$tmp"
+    ok "预编译镜像已载入，本次更新不再本机编译"
+    return 0
+  fi
+  rm -f "$tmp"
+  warn "镜像载入失败 → 将使用服务器本机编译"
+  return 1
+}
+
+# =====================================================================
+# 部署核心：拉取预编译镜像（失败回退编译）→ 启动 → 迁移 → 默认管理员
 # =====================================================================
 deploy_core() {
   # 停止旧容器但保留数据卷（更新不丢数据库/Redis）
   docker compose down 2>/dev/null || true
 
-  info "构建并启动服务（首次约 5-10 分钟）..."
-  docker compose up -d --build
+  info "构建并启动服务（优先预编译镜像，失败才本机编译）..."
+  if ! load_prebuilt_images; then
+    warn "回退：本机编译并启动（约 5-10 分钟）..."
+    docker compose up -d --build
+  elif ! docker compose up -d 2>/dev/null; then
+    warn "compose 启动失败，回退本机编译..."
+    docker compose up -d --build
+  fi
 
   info "等待数据库就绪..."
   local i okdb=0
@@ -198,7 +231,7 @@ cmd_status() {
 # 2) 更新
 cmd_update() {
   echo; echo -e "${CYAN}-------- 更新 --------${NC}"
-  warn "将拉取最新代码并重新构建，数据库与配置会保留。"
+  warn "将拉取最新代码与预编译镜像包并部署。数据库、数据卷与配置保留；镜像在云端已编译好，本机不再编译（快）。"
   read -rp "  确认更新？(y/N) " a
   [ "$a" = "y" ] || [ "$a" = "Y" ] || { info "已取消"; return; }
   info "拉取最新代码..."
@@ -206,8 +239,10 @@ cmd_update() {
     warn "git pull 失败（可能本地有改动）。可先用菜单 3 回滚，或在服务器处理后再试。"
     return
   fi
-  deploy_core || { err "更新失败"; return; }
-  ok "更新完成，数据库与配置已保留"
+  # 新代码里的 deploy_core/load_prebuilt_images 是本文件新实现的：
+  # 直接 exec 新脚本的 __deploy 分支，让本次更新立即用上预编译镜像逻辑（不再多编译一次）
+  info "已拉取新代码，切换到新部署脚本执行..."
+  exec bash "$MANAGE" __deploy
 }
 
 # 3) 旧版本 / 回滚
@@ -378,6 +413,13 @@ bootstrap_if_needed      # 首次/外部运行：装环境、落盘、装 shop�
 # 执行到这里说明已在磁盘版运行
 cd "$INSTALL_DIR"
 ensure_env               # 首次生成 .env；已有则保留
+
+# `shop __deploy`：由 cmd_update 在 git pull 后 exec 进来，用新脚本逻辑直接部署
+if [ "${1:-}" = "__deploy" ]; then
+  deploy_core || { err "部署失败，请检查上方日志"; exit 1; }
+  ok "更新完成，数据库与配置已保留"
+  exit 0
+fi
 
 # 首次部署检测：后端容器尚不存在 → 自动安装
 if ! docker inspect nodeshop-backend >/dev/null 2>&1; then

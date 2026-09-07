@@ -47,6 +47,7 @@ services:
   # Backend API (NestJS)
   # ==========================================
   backend:
+    image: nodeshop-backend:latest
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -68,6 +69,7 @@ services:
   # Frontend (User-facing, Next.js)
   # ==========================================
   frontend:
+    image: nodeshop-frontend:latest
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -86,6 +88,7 @@ services:
   # Admin Dashboard (Next.js)
   # ==========================================
   admin:
+    image: nodeshop-admin:latest
     build:
       context: ./admin
       dockerfile: Dockerfile

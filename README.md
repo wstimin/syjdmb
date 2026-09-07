@@ -123,7 +123,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy
 - 管理后台：`http://服务器IP:3002`
 - API 文档：`http://服务器IP:3001/docs`
 
-**更新/重装**：直接在服务器上再跑一次上面的命令即可。
+**更新**：在服务器上执行 `shop`，选 **2 更新**。更新流程 = 拉取最新代码 → **直接下载 GitHub Actions 云端预编译好的镜像包并 `docker load`**（本机不再编译，通常 1–2 分钟）→ 启动新容器 → 自动迁移。若预编译包拉取失败会自动回退为服务器本机编译，功能不受影响。
+
+> ⚙️ 预编译原理：仓库已配置 GitHub Actions 工作流 `.github/workflows/build.yml`——每次推送到 `master` 会自动在云端编译 backend/frontend/admin 三个 Docker 镜像，打包成 `nodeshop-images.tar.gz` 上传到仓库的滚动 Release（`nightly` 标签）。`deploy.sh` 从 `https://github.com/wstimin/syjdmb/releases/download/nightly/nodeshop-images.tar.gz` 拉取（仓库公开，无需任何凭证）。若 GitHub 仓库未启用 Actions，可在仓库 Settings → Actions ➜ 开启，或保持本机编译回退。
 
 ### 常用运维命令
 

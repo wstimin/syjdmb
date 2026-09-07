@@ -1,0 +1,77 @@
+name: build-images
+
+# 推送到 master 或手动触发时，在 GitHub Actions（云端高配）编译三个应用镜像，
+# 打包成单个 nodeshop-images.tar.gz 上传到滚动 Release（nightly），
+# 服务器 `shop → 2 更新` 直接下载 docker load，不再本机编译。
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx（启用构建缓存，二次构建秒级命中 npm 层）
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          tags: nodeshop-backend:latest
+          outputs: type=docker
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          tags: nodeshop-frontend:latest
+          outputs: type=docker
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./admin
+          file: ./admin/Dockerfile
+          tags: nodeshop-admin:latest
+          outputs: type=docker
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save all images to one tarball
+        run: |
+          mkdir -p /tmp/nsimg
+          docker save nodeshop-backend:latest nodeshop-frontend:latest nodeshop-admin:latest \
+            -o /tmp/nsimg/nodeshop-images.tar
+          gzip -1 -f /tmp/nsimg/nodeshop-images.tar
+          ls -lh /tmp/nsimg/nodeshop-images.tar.gz
+
+      - name: Publish to rolling 'nightly' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          REPO="$GITHUB_REPOSITORY"
+          ASSET=/tmp/nsimg/nodeshop-images.tar.gz
+          gh release view nightly --repo "$REPO" >/dev/null 2>&1 \
+            || gh release create nightly --repo "$REPO" \
+                 --title "Nightly 预编译镜像包" \
+                 --notes "GitHub Actions 自动构建：backend / frontend / admin。
+
+服务器 \`shop → 2 更新\` 会自动下载此包 docker load，跳过本机编译。"
+          gh release delete-asset nightly nodeshop-images.tar.gz --repo "$REPO" --yes >/dev/null 2>&1 || true
+          gh release upload nightly "$ASSET" --repo "$REPO" --clobber
+          echo "已发布: $REPO/releases/download/nightly/nodeshop-images.tar.gz"
