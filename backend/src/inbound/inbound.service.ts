@@ -139,58 +139,49 @@ export class InboundService {
     } | null = null;
 
     if (isVless) {
-      // 用面板生成 X25519 密钥对 + 随机 shortId；Reality 目标/SNI 用微软官网（安全默认）
+      // 系统默认：vless 一律建成 VLESS+Reality（用户硬性要求）：
+      //  1) 面板生成 X25519 密钥对（GET /server/getNewX25519Cert）
+      //  2) 面板探测 Reality 目标（POST /server/scanRealityTargets），
+      //     取延迟最低的可行目标作为 dest/serverNames（用户要求）
+      //  3) minVersion=1.0.0 最小客户端版本写死
+      // 任一环节失败就地报错、节点不创建 —— 绝不降级成 ws 明文（那会建出不可用节点）
       let key: { privateKey: string; publicKey: string };
+      let dest: string;
       try {
         key = await this.serverService.getNewX25519Key(serverId);
+        dest = await this.serverService.pickBestRealityTarget(serverId);
       } catch (e) {
-        // 正常情况下（3.6.0 GET 端点）不会走到这里；走到说明面板异常/不兼容，
-        // 降级为 ws 明文 —— 大声记日志，避免"看似成功却是非 Reality"无从察觉
-        this.logger.error(`getNewX25519Cert failed (${e.message}); REALITY 不可用，降级为 vless+ws 明文`);
-        key = { privateKey: '', publicKey: '' };
+        throw new BadRequestException(
+          `Reality 初始化失败（x25519 或 目标扫描）：${e.message}。节点未创建，请检查面板连接与 API Token。`,
+        );
       }
-      if (!key.privateKey) {
-        // 面板不支持/生成失败 → 回退 ws 明文，保证节点可建
-        streamSettings = JSON.stringify({
-          network: 'ws',
-          security: 'none',
-          externalProxy: [],
-          wsSettings: {
-            path: `/${uuid.slice(0, 8)}-${Date.now().toString(36)}`,
-            headers: {},
-          },
-        });
-        reality = null;
-      } else {
-        const dest = 'www.microsoft.com';
-        const shortId = this.randomHex(8);
-        reality = {
+      const shortId = this.randomHex(8);
+      reality = {
+        dest,
+        serverNames: dest,
+        privateKey: key.privateKey,
+        publicKey: key.publicKey,
+        shortId,
+      };
+      streamSettings = JSON.stringify({
+        network: 'tcp',
+        security: 'reality',
+        externalProxy: [],
+        realitySettings: {
+          show: false,
           dest,
-          serverNames: dest,
+          serverNames: [dest],
           privateKey: key.privateKey,
-          publicKey: key.publicKey,
-          shortId,
-        };
-        streamSettings = JSON.stringify({
-          network: 'tcp',
-          security: 'reality',
-          externalProxy: [],
-          realitySettings: {
-            show: false,
-            dest,
-            serverNames: [dest],
-            privateKey: key.privateKey,
-            shortIds: [shortId],
-            minVersion: '1.0.0', // 不配置部分客户端连不上
-            settings: {
-              publicKey: key.publicKey,
-              fingerprint: 'chrome',
-              spiderX: '',
-            },
+          shortIds: [shortId],
+          minVersion: '1.0.0', // 最小客户端版本：不配置部分客户端连不上（用户硬性要求，必须落库并被验证）
+          settings: {
+            publicKey: key.publicKey,
+            fingerprint: 'chrome',
+            spiderX: '/',
           },
-          tcpSettings: { header: { type: 'none' } },
-        });
-      }
+        },
+        tcpSettings: { header: { type: 'none' } },
+      });
     } else if (protocol.toLowerCase() === 'shadowsocks') {
       streamSettings = JSON.stringify({
         network: 'tcp',
@@ -211,8 +202,9 @@ export class InboundService {
       });
     }
 
-    // Port allocation：Reality 优先 443；被面板其它入站占用则随机高位
-    let port = await this.getAvailablePort(serverId, isVless);
+    // Port allocation：一律随机高位端口 —— 一台 3-xui 服务器要承载大量节点，
+    // 443 只有一个、固定偏好会互相抢占，全部走 10000-65535 随机端口（占用则换，有界重试兜底）
+    let port = await this.getAvailablePort(serverId);
 
     const inboundData = {
       up: 0,
@@ -242,6 +234,7 @@ export class InboundService {
       //    放弃 443 偏好、改用随机高位端口有界重试，避免每笔订单永久卡死。
       let response: XuiResponse | null = null;
       let xuiInboundId = 0;
+      let createdInboundRecord: any = null; // 定位到的入站完整记录（含 streamSettings，供 Reality 验证）
       for (let attempt = 0; attempt < 5; attempt++) {
         inboundData.port = port;
         inboundData.tag = `inbound-${port}`;
@@ -250,7 +243,12 @@ export class InboundService {
         if (response?.success) {
           // 3-x-ui 3.6.0 的 /inbounds/add 示例返回 obj: "string"（通常是提示文本），
           // 不保证直接返回入站 ID；因此成功后必须回查 /inbounds/list，按端口/tag/remark 定位新入站。
-          xuiInboundId = id || (await this.findCreatedInboundId(serverId, inboundData));
+          xuiInboundId = id;
+          if (!xuiInboundId) {
+            const located = await this.findCreatedInboundId(serverId, inboundData);
+            xuiInboundId = located.id;
+            createdInboundRecord = located.record;
+          }
           if (xuiInboundId) break;
           response = {
             ...response,
@@ -260,7 +258,7 @@ export class InboundService {
         }
         if (!/already in use|in use/i.test(response?.msg || '')) break;
         this.logger.warn(`Port ${port} in use on server ${serverId}, retry with a random high port`);
-        port = await this.getAvailablePort(serverId, false);
+        port = await this.getAvailablePort(serverId);
       }
 
       if (!xuiInboundId) {
@@ -268,6 +266,20 @@ export class InboundService {
         // 否则每笔失败订单都会在面板累积一个游离空闲入站
         await this.cleanupOrphanInbound(serverId, inboundData);
         throw new BadRequestException(response?.msg || 'Failed to obtain XUI inbound id');
+      }
+
+      // 3-x-ui 3.6.0 原生一致性验证：add 后回读确认 reality + minVersion=1.0.0 真实落库。
+      // 面板 DTO 若丢弃字段会在这一环暴露；验证失败→回滚空入站→报错，绝不出货不可用节点。
+      if (isVless) {
+        const persistedOk = await this.verifyRealityPersisted(serverId, xuiInboundId, createdInboundRecord);
+        if (!persistedOk) {
+          try {
+            await this.serverService.deleteInbound(serverId, xuiInboundId);
+          } catch {}
+          throw new BadRequestException(
+            '面板未保存 Reality 配置（需要 security=reality + minVersion=1.0.0 等字段）——节点已回滚，请将后台日志里的 streamSettings 反馈排查',
+          );
+        }
       }
 
       // 2) 建客户端并关联到该入站（3.6.0 文档：POST /panel/api/clients/add）
@@ -442,24 +454,22 @@ export class InboundService {
     this.logger.log(`Relay unmounted from ${relayTag} (server ${serverId})`);
   }
 
-  private async getAvailablePort(serverId: number, prefer443 = false): Promise<number> {
-    // Get existing inbounds from XUI
+  private async getAvailablePort(serverId: number): Promise<number> {
+    // Get existing inbounds from XUI，避开已占用端口
     try {
       const response = await this.serverService.getInbounds(serverId);
       const inbounds = response?.obj || [];
       const usedPorts = new Set(inbounds.map((i: any) => i.port));
 
-      // Reality 优先 443（与 HTTPS 流量混淆，更隐蔽）；被占用则退回随机高位端口
-      if (prefer443 && !usedPorts.has(443)) return 443;
-
-      // Find first available port in range 10000-65535
-      for (let port = 10000 + Math.floor(Math.random() * 20000); port <= 60000; port++) {
-        if (!usedPorts.has(port)) return port;
+      // 随机高位端口（10000-65535）：一台服务器承载多个节点，固定 443 会互相抢占
+      for (let i = 0; i < 300; i++) {
+        const candidate = 10000 + Math.floor(Math.random() * (65535 - 10000));
+        if (!usedPorts.has(candidate)) return candidate;
       }
     } catch (e) {
       this.logger.warn(`Could not fetch inbounds: ${e.message}`);
     }
-    return 10000 + Math.floor(Math.random() * 50000);
+    return 10000 + Math.floor(Math.random() * (65535 - 10000));
   }
 
   private extractInboundId(response: any): number {
@@ -473,11 +483,14 @@ export class InboundService {
     return 0;
   }
 
-  private async findCreatedInboundId(serverId: number, inboundData: any): Promise<number> {
+  private async findCreatedInboundId(
+    serverId: number,
+    inboundData: any,
+  ): Promise<{ id: number; record: any | null }> {
     const listRes = await this.serverService.getInbounds(serverId);
     if (!listRes?.success || !Array.isArray(listRes.obj)) {
       this.logger.warn(`Cannot locate created inbound on server ${serverId}: ${listRes?.msg || 'invalid inbounds/list response'}`);
-      return 0;
+      return { id: 0, record: null };
     }
 
     const matched = listRes.obj
@@ -491,7 +504,51 @@ export class InboundService {
       })
       .sort((a: any, b: any) => Number(b?.id || 0) - Number(a?.id || 0));
 
-    return Number(matched[0]?.id || 0);
+    return { id: Number(matched[0]?.id || 0), record: matched[0] || null };
+  }
+
+  /**
+   * 验证面板真实保存的入站确实是 Reality 且 minVersion=1.0.0 已落库。
+   * （3-x-ui 3.6.0 文档要求 reality 流设置含 dest/serverNames/privateKey/shortIds/minVersion）
+   * 验证失败返回 false —— 调用方据此回滚，确保绝不交付不可用节点。
+   */
+  private async verifyRealityPersisted(
+    serverId: number,
+    inboundId: number,
+    record: any | null,
+  ): Promise<boolean> {
+    let ss: any = null;
+    if (record && typeof record.streamSettings === 'object' && record.streamSettings !== null) {
+      ss = record.streamSettings;
+    } else {
+      // record 缺失（少数面板 add 回执直接给了 id）→ 回查 /inbounds/list 取该入站
+      try {
+        const listRes = await this.serverService.getInbounds(serverId);
+        if (listRes?.success && Array.isArray(listRes.obj)) {
+          const found = listRes.obj.find((i: any) => Number(i?.id) === Number(inboundId));
+          ss = found?.streamSettings;
+        }
+      } catch (e) {
+        this.logger.warn(`verifyRealityPersisted list fetch failed for inbound #${inboundId}: ${e.message}`);
+      }
+    }
+    const rs = ss?.realitySettings;
+    const ok =
+      ss?.security === 'reality' &&
+      rs?.minVersion === '1.0.0' &&
+      !!rs?.privateKey &&
+      Array.isArray(rs?.serverNames) &&
+      rs.serverNames.length > 0;
+    if (ok) {
+      this.logger.log(
+        `Reality 验证通过 inbound #${inboundId}: security=reality, minVersion=${rs.minVersion}, serverNames=[${rs.serverNames.join(',')}], dest=${rs.dest}`,
+      );
+    } else {
+      this.logger.error(
+        `Reality 验证失败 inbound #${inboundId}，面板实际 streamSettings=${JSON.stringify(ss ?? null).slice(0, 400)}`,
+      );
+    }
+    return ok;
   }
 
   /**

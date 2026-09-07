@@ -307,6 +307,7 @@ export class ServerService {
     method: 'GET' | 'POST',
     path: string,
     body?: any,
+    timeoutMs = ServerService.PANEL_TIMEOUT_MS,
   ): Promise<XuiResponse> {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
@@ -334,7 +335,7 @@ export class ServerService {
       headers,
       // @ts-ignore - undici fetch 用 dispatcher（agent 不生效）
       dispatcher: this.dispatcher,
-      signal: AbortSignal.timeout(ServerService.PANEL_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     };
 
     if (body && method === 'POST') {
@@ -912,6 +913,50 @@ export class ServerService {
       privateKey: res.obj.privateKey,
       publicKey: res.obj.publicKey || '',
     };
+  }
+
+  /**
+   * 探测 Reality 目标（3.6.0 面板原生接口）
+   * POST /panel/api/server/scanRealityTargets，body {} 空 → 面板用内置种子列表
+   * live 探测（TLS1.3+h2+X25519+可信证书），返回按可行性与延迟排序的判定数组：
+   * { feasible, host, target, latencyMs, tls13, h2, curveID, certStandardInfo... }
+   * 探测耗时较长（面板逐个域名握手），把本次请求超时放宽到 30s。
+   */
+  async scanRealityTargets(serverId: number) {
+    return this.xuiRequest(serverId, 'POST', '/server/scanRealityTargets', {}, 30000);
+  }
+
+  // Reality 目标缓存（key: serverId）——避免每笔订单都触发面板全量探测
+  private realityTargetCache = new Map<number, { host: string; at: number }>();
+  private static readonly REALITY_TARGET_CACHE_TTL_MS = 30 * 60 * 1000;
+
+  /**
+   * 选取延迟最低的可行 Reality 目标作为 dest/serverNames。
+   * 面板返回已按可行性+延迟排序，这里再做一次防御性筛选（feasible、latency 有效），
+   * 取最小值；结果缓存 30 分钟。无可探测目标时回退 www.microsoft.com。
+   */
+  async pickBestRealityTarget(serverId: number): Promise<string> {
+    const cached = this.realityTargetCache.get(serverId);
+    if (cached && Date.now() - cached.at < ServerService.REALITY_TARGET_CACHE_TTL_MS) {
+      return cached.host;
+    }
+    const res = await this.scanRealityTargets(serverId);
+    const list = Array.isArray(res?.obj) ? res.obj : [];
+    const viable = (list as any[])
+      .filter((t: any) => t?.feasible !== false && typeof t?.host === 'string' && t.host.length > 0)
+      .filter((t: any) => Number(t?.latencyMs ?? Infinity) > 0)
+      .sort((a: any, b: any) => Number(a?.latencyMs ?? Infinity) - Number(b?.latencyMs ?? Infinity));
+    const best = viable[0];
+    const host = best?.host || 'www.microsoft.com';
+    this.realityTargetCache.set(serverId, { host, at: Date.now() });
+    if (best) {
+      this.logger.log(
+        `Reality target for server ${serverId}: ${host} (${best?.latencyMs}ms, TLS1.3=${best?.tls13 === true}, h2=${best?.h2 === true})`,
+      );
+    } else {
+      this.logger.warn(`scanRealityTargets 无可行目标 on server ${serverId}，回退 ${host}`);
+    }
+    return host;
   }
 
   // ==========================================
