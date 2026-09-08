@@ -57,211 +57,137 @@ export class InboundService {
     if (!user) throw new NotFoundException('User not found');
     const email = `${user.id}-${uuidv4().slice(0, 8)}@node`;
 
-    const uuid = uuidv4();
-
-    // Calculate expiry time
-    let expiryTime = 0;
-    if (plan.duration > 0) {
-      expiryTime = Date.now() + plan.duration * 24 * 3600 * 1000;
-    }
-
-    // Traffic quota in bytes（3.6.0 面板客户端 totalGB 字段按【字节】解释，0=不限；
+    // 客户端限额（3.6.0 面板客户端 totalGB 字段按【字节】解释，0=不限；
     // 不要换算成 GB —— 换算后 100GiB 套餐会变成几十字节配额，连上就被自动停用）
+    const expiryTime =
+      plan.duration > 0 ? Date.now() + plan.duration * 24 * 3600 * 1000 : 0;
     const totalGB = plan.traffic > 0 ? Number(plan.traffic) : 0;
 
-    // Client object（3.6.0 客户端是内嵌在每条入站 settings.clients[] 里的一等公民；
-    // 原生 UI 创建时客户端直接随入站一起写进 settings。这里同构内嵌，同时仍走
-    // /clients/add 注册链接（两路都要，见下方 addInbound 与 addClient 注释））
     const isVless = protocol.toLowerCase() === 'vless';
-    const client = {
-      id: uuid,
-      email,
-      limitIp: plan.deviceLimit || 0,
-      totalGB,
-      expiryTime,
-      enable: true,
-      // fork 的 Client.tgId 是 int64：传 '' 字符串会整个被 /inbounds/add 拒收
-      // （json: cannot unmarshal string into Go struct field Client.tgId of type int64），
-      // 所以用 0 而不是 ''。其余字段类型与 fork 对齐（id/email/subId 字符串，
-      // limitIp/totalGB/expiryTime 数字，enable/reset 布尔/数字）。
-      tgId: 0,
-      subId: email.replace(/@node$/, ''),
-      reset: 0,
-      // VLESS(Reality/TLS) 用 XTLS Vision 流控；不填部分客户端连不上
-      flow: isVless ? 'xtls-rprx-vision' : '',
-    };
 
-    // Build protocol-specific settings（客户端已内嵌；VLESS 带 flow，其余 flow 为空）
-    let settings: string;
-    switch (protocol.toLowerCase()) {
-      case 'vmess': {
-        settings = JSON.stringify({
-          clients: [{ ...client }],
-          decryption: 'none',
-          fallbacks: [],
-        });
-        break;
-      }
-      case 'vless': {
-        // fork 文档实证：这个面板的配置生成器直接读入站 settings JSON 里的
-        // settings.clients[]（delAllClients/groups/bulkAdd 都是 patch 这条 JSON）。
-        // 内嵌 = 用户随入站一起出生，重启后必然在运行配置里，不依赖 /clients/add
-        // 是否回填 DB——这是「像原生面板创建一样」的关键一步。
-        settings = JSON.stringify({
-          clients: [{ ...client }],
-          decryption: 'none',
-          fallbacks: [],
-        });
-        break;
-      }
-      case 'trojan': {
-        settings = JSON.stringify({
-          clients: [{ ...client }],
-          decryption: 'none',
-          fallbacks: [],
-        });
-        break;
-      }
-      case 'shadowsocks': {
-        settings = JSON.stringify({
-          clients: [],
-          method: 'aes-256-gcm',
-          password: uuid,
-          decryption: 'none',
-        });
-        break;
-      }
-      default:
-        throw new BadRequestException(`Unsupported protocol: ${protocol}`);
-    }
-
-    // ---- Stream settings ----
-    // VLESS → VLESS+Reality（系统默认，最小客户端版本 1.0.0）
-    // 其它协议 → WebSocket 明文（去掉假证书路径，开箱即用）；SS → 原生 tcp
-    let streamSettings: string;
+    // ---- Reality 初始化（vless 系统默认）：完全复刻 3.6.0 手动创建流程 ----
+    // 安全 → Reality → 「查找目标」选延迟最低的可行目标 → 最小客户端 1.0.0
+    // 任一环节失败就地报错、节点不创建 —— 绝不降级成 ws 明文（那会建出不可用节点）
     let reality: {
-      dest: string; // host（SNI/本地链接用）
+      dest: string; // host（serverNames/SNI/本地链接用，只放纯域名）
       serverNames: string;
-      target: string; // host:port（发面板的 dest）
+      target: string; // host:port（发面板的 dest，必须是真实可拨号目标）
       privateKey: string;
       publicKey: string;
       shortId: string;
     } | null = null;
-
     if (isVless) {
-      // 系统默认：vless 一律建成 VLESS+Reality（用户硬性要求）：
-      //  1) 面板生成 X25519 密钥对（GET /server/getNewX25519Cert）
-      //  2) 面板探测 Reality 目标（POST /server/scanRealityTargets），
-      //     取延迟最低的可行目标作为 dest/serverNames（用户要求）
-      //  3) minVersion=1.0.0 最小客户端版本写死
-      // 任一环节失败就地报错、节点不创建 —— 绝不降级成 ws 明文（那会建出不可用节点）
-      let key: { privateKey: string; publicKey: string };
-      let targetHost = 'www.microsoft.com'; // serverNames / SNI：只放域名
-      let targetAddr = 'www.microsoft.com:443'; // dest：必须 host:port（面板「目标」字段格式）
       try {
-        key = await this.serverService.getNewX25519Key(serverId);
-        // 3.6.0 文档 scanRealityTargets 返回 { host, port, target:"host:port" }：
-        //   dest → target（host:port）；裸域名会被面板丢弃回退默认（截图里 dest=example.com:443 就是这么来的）
-        //   serverNames/SNI → host（不带端口）
+        const key = await this.serverService.getNewX25519Key(serverId);
         const t = await this.serverService.pickBestRealityTarget(serverId);
-        targetHost = t.host;
-        targetAddr = t.target;
+        reality = {
+          dest: t.host,
+          serverNames: t.host,
+          target: t.target,
+          privateKey: key.privateKey,
+          publicKey: key.publicKey,
+          shortId: this.randomHex(8),
+        };
       } catch (e) {
         throw new BadRequestException(
           `Reality 初始化失败（x25519 或 目标扫描）：${e.message}。节点未创建，请检查面板连接与 API Token。`,
         );
       }
-      const shortId = this.randomHex(8);
-      reality = {
-        dest: targetHost, // 落库字段：作 SNI / 本地兜底链接的 sni 参数（只存域名）
-        serverNames: targetHost,
-        target: targetAddr, // 面板 dest 专用（host:port）
-        privateKey: key.privateKey,
-        publicKey: key.publicKey,
-        shortId,
-      };
-      streamSettings = JSON.stringify({
+    }
+
+    // ---- 面板备注：跟随服务器设置的名字 + 1-100 顺序号（如 香港1 / HK3）----
+    // 与 3.6.0 手动建入站「备注」行为一致；仅用于面板侧标识。
+    const panelRemark = await this.computeRemark(server);
+
+    // ---- settings：两段式建客户端。入站先不带任何用户（clients: []）----
+    // 与 3.6.0 手动流程一致：先建入站 → 再建客户端并绑定。客户端 UUID/subId/流控
+    // 都不在入站里内嵌，全部由后续 clients/add + bulkAdjust 完成（面板服务端生成）。
+    const settings = {
+      clients: [],
+      decryption: 'none',
+      fallbacks: [],
+    };
+
+    // ---- Stream settings ----
+    // VLESS → VLESS+Reality（fork 真名 minClientVer/maxClientVer/maxTimeDiff）
+    // 其它协议 → WebSocket 明文（去掉假证书路径，开箱即用）；SS → 原生 tcp
+    let streamSettings: any;
+    if (isVless) {
+      streamSettings = {
         network: 'tcp',
         security: 'reality',
-        externalProxy: [],
         realitySettings: {
           show: false,
-          dest: targetAddr,
-          serverNames: [targetHost],
-          privateKey: key.privateKey,
-          shortIds: [shortId],
-          minVersion: '1.0.0', // 字段位①：顶层，兼容部分面板
-          minClient: '1.0.0', // 字段位②：Xray-core reality 原生名（minClient/maxClient）
+          dest: reality!.target, // 目标：延迟最低的可行目标（host:port，扫描结果原样）
+          serverNames: [reality!.dest], // serverNames/SNI：纯域名
+          privateKey: reality!.privateKey,
+          shortIds: [reality!.shortId],
+          minClientVer: '1.0.0', // 最小客户端版本（fork 字段名，面板 UI「最小客户端」对应处）
+          maxClientVer: '',
+          maxTimeDiff: 0,
+          xver: 0,
           settings: {
-            publicKey: key.publicKey,
-            serverName: targetHost,
+            publicKey: reality!.publicKey,
+            serverName: reality!.dest,
             fingerprint: 'chrome',
             spiderX: '/',
-            minVersion: '1.0.0', // 字段位③：3-x-ui RealitySettings.Settings 模型（面板 UI「最小客户端版本」对应处）
           },
         },
         tcpSettings: { header: { type: 'none' } },
-      });
+      };
     } else if (protocol.toLowerCase() === 'shadowsocks') {
-      streamSettings = JSON.stringify({
+      streamSettings = {
         network: 'tcp',
         security: 'none',
-        externalProxy: [],
         tcpSettings: { header: { type: 'none' } },
-      });
+      };
     } else {
       // vmess / trojan → ws 明文（无假证书）
-      streamSettings = JSON.stringify({
+      streamSettings = {
         network: 'ws',
         security: 'none',
-        externalProxy: [],
         wsSettings: {
-          path: `/${uuid.slice(0, 8)}-${Date.now().toString(36)}`,
+          path: `/${uuidv4().slice(0, 8)}-${Date.now().toString(36)}`,
           headers: {},
         },
-      });
+      };
     }
 
-    // Port allocation：一律随机高位端口 —— 一台 3-xui 服务器要承载大量节点，
-    // 443 只有一个、固定偏好会互相抢占，全部走 10000-65535 随机端口（占用则换，有界重试兜底）
+    // Port allocation：随机高位端口 —— 一台 3-xui 服务器要承载大量节点，
+    // 全部走 10000-65535 随机端口（占用则换，有界重试兜底）
     let port = await this.getAvailablePort(serverId);
 
+    // 3.6.0 文档 /inbounds/add 入站：10 个扁平字段、无 tag（面板自动生成 in-<port>-tcp）、
+    // settings/streamSettings/sniffing 用嵌套对象（文档「preferred」格式）、
+    // 入站级 expiryTime/total 都是 0 —— 到期/限额放在客户端层，由 clients/add 下发。
+    // sniffing 取文档示例值 {enabled:true, destOverride:["http","tls"]}。
     const inboundData = {
-      up: 0,
-      down: 0,
-      total: parseInt(plan.traffic.toString()) || 0,
-      remark: orderNo ? `Order ${orderNo}` : `user-${user.id}-${protocol}`,
       enable: true,
-      expiryTime,
+      remark: panelRemark,
       listen: '',
       port,
       // 面板 oneof 校验只认小写协议名（vless），大写 "VLESS" 会被拒
       protocol: protocol.toLowerCase(),
+      expiryTime: 0,
+      total: 0,
       settings,
       streamSettings,
-      tag: `inbound-${port}`,
-      sniffing: {
-        enabled: true,
-        destOverride: ['http', 'tls', 'quic'],
-        metadataOnly: false,
-        routeOnly: false,
-      },
+      sniffing: { enabled: true, destOverride: ['http', 'tls'] },
     };
 
     try {
-      // 1) 建入站（settings.clients 已内嵌用户）。端口可能被宿主机其它服务占用（尤其 443），命中 already in use
-      //    时放弃 443 偏好、改用随机高位端口有界重试，避免每笔订单永久卡死。
+      // 1) 建入站（settings.clients 为空）。端口可能被宿主机其它服务占用，命中 already in use
+      //    时换随机高位端口有界重试，避免每笔订单永久卡死。
       let response: XuiResponse | null = null;
       let xuiInboundId = 0;
-      let createdInboundRecord: any = null; // 定位到的入站完整记录（含 streamSettings，供 Reality 验证）
+      let createdInboundRecord: any = null; // 定位到的入站完整记录（含 streamSettings/tag，供验证+relay）
       for (let attempt = 0; attempt < 5; attempt++) {
         inboundData.port = port;
-        inboundData.tag = `inbound-${port}`;
         response = await this.serverService.addInbound(serverId, inboundData);
         const id = this.extractInboundId(response);
         if (response?.success) {
-          // 3-x-ui 3.6.0 的 /inbounds/add 示例返回 obj: "string"（通常是提示文本），
-          // 不保证直接返回入站 ID；因此成功后必须回查 /inbounds/list，按端口/tag/remark 定位新入站。
+          // 3.6.0 的 /inbounds/add 示例返回 obj: "string"（通常是提示文本），不保证直接返回入站 ID；
+          // 成功后必须回查 /inbounds/list，按端口 + 备注定位新入站（不提交 tag，靠 remark 兜底）。
           xuiInboundId = id;
           if (!xuiInboundId) {
             const located = await this.findCreatedInboundId(serverId, inboundData);
@@ -279,6 +205,12 @@ export class InboundService {
         this.logger.warn(`Port ${port} in use on server ${serverId}, retry with a random high port`);
         port = await this.getAvailablePort(serverId);
       }
+      // 面板自动生成的入站 tag：3.6.0 格式 in-<port>-tcp（/inbounds/list 实测示例）。
+      // relay 路由规则的 inboundTag 与运行配置断言都用它，不是自造的 inbound-<port>。
+      const actualTag =
+        typeof createdInboundRecord?.tag === 'string' && createdInboundRecord.tag
+          ? createdInboundRecord.tag
+          : `in-${port}-tcp`;
 
       if (!xuiInboundId) {
         // add 已成功但没定位到 id（承载端口已建好入站）—— 尽力回收该空入站，
@@ -287,7 +219,7 @@ export class InboundService {
         throw new BadRequestException(response?.msg || 'Failed to obtain XUI inbound id');
       }
 
-      // 3-x-ui 3.6.0 原生一致性验证：add 后回读确认 reality + minVersion=1.0.0 真实落库。
+      // 3.6.0 原生一致性验证：add 后回读确认 reality + minClientVer=1.0.0 真实落库。
       // 面板 DTO 若丢弃字段会在这一环暴露；验证失败→回滚空入站→报错，绝不出货不可用节点。
       if (isVless) {
         const persistedOk = await this.verifyRealityPersisted(
@@ -301,43 +233,62 @@ export class InboundService {
             await this.serverService.deleteInbound(serverId, xuiInboundId);
           } catch {}
           throw new BadRequestException(
-            '面板未保存 Reality 配置（需要 security=reality + minVersion=1.0.0 等字段）——节点已回滚，请将后台日志里的 streamSettings 反馈排查',
+            '面板未保存 Reality 配置（需要 security=reality + minClientVer=1.0.0 等字段）——节点已回滚，请将后台日志里的 streamSettings 反馈排查',
           );
         }
       }
 
-      // 2) 建客户端并关联到该入站（3.6.0 文档：POST /panel/api/clients/add）
-      //    服务端按协议自动生成 UUID/密码；我们显式传 UUID 以生成一致的连接串
+      // 2) 重载 Xray：/inbounds/add 只写入面板库，运行中的 Xray 不会自动加载新入站；
+      //    3.6.0 文档 restartXrayService 原话 "Typically required after structural inbound
+      //    or routing changes"。重载失败（通常新入站配置被 Xray 拒收）→ 回滚并再次重载恢复原状。
+      try {
+        const restartRes = await this.serverService.restartXrayService(serverId);
+        if (!restartRes?.success) {
+          throw new Error(`Xray reload failed: ${restartRes?.msg || 'unknown'}`);
+        }
+      } catch (e) {
+        try {
+          await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        try {
+          await this.serverService.restartXrayService(serverId);
+        } catch {}
+        throw new BadRequestException(
+          `Xray 重新加载失败（节点未真正启用，已回滚）：${e.message}`,
+        );
+      }
+
+      // 3) 建客户端并绑定到该入站（3.6.0 文档 clients/add：只传通用字段，UUID/subId/flow
+      //    一律不传 —— UUID/subId 由面板服务端生成，flow 走下一步 bulkAdjust）。
+      //    与手动流程一致：创建客户端 → 设流控 → 绑定新建节点（inboundIds=[xuiInboundId]）
       const clientRes = await this.serverService.addClient(
         serverId,
         {
-          email: client.email,
-          totalGB: client.totalGB,
-          expiryTime: client.expiryTime,
-          limitIp: client.limitIp,
+          email,
+          totalGB,
+          expiryTime,
+          limitIp: plan.deviceLimit || 0,
           enable: true,
-          id: client.id,
-          subId: client.subId,
-          flow: client.flow || undefined,
         },
         [xuiInboundId],
       );
       if (!clientRes?.success) {
-        // 用户已内嵌在 settings.clients 时，clients/add 可能因「已存在」报错
-        // ——先探测该邮箱是否真的可用：能取到链接 或 能取到流量记录 都视为已注册，
-        // 继续出货；两者都没有才回滚入站。
+        // 双保险：客户端是否真的注册成功（能取到流量记录 或 能取到链接）
         let usable = false;
         try {
-          const probe = await this.serverService.getClientLinks(serverId, client.email);
-          usable = probe?.success && Array.isArray(probe.obj) && probe.obj.length > 0;
+          const traffic = await this.serverService.getClientTraffic(serverId, email);
+          usable = traffic?.success === true;
         } catch {}
         if (!usable) {
           try {
-            const traffic = await this.serverService.getClientTraffic(serverId, client.email);
-            usable = traffic?.success === true;
+            const probe = await this.serverService.getClientLinks(serverId, email);
+            usable = probe?.success && Array.isArray(probe.obj) && probe.obj.length > 0;
           } catch {}
         }
         if (!usable) {
+          try {
+            await this.serverService.deleteClient(serverId, email);
+          } catch {}
           try {
             await this.serverService.deleteInbound(serverId, xuiInboundId);
           } catch {}
@@ -348,49 +299,77 @@ export class InboundService {
         );
       }
 
-      // VLESS(Reality/TLS) 客户端补设 Vision 流控（clients/add 不保证接受 flow，用 bulkAdjust 确保）
+      // 4) VLESS 客户端流控：xtls-rprx-vision（手动流程「流控设置」一步，bulkAdjust 原生端点）。
+      //    流控设置失败 = 客户端可能连不上（半废节点），直接回滚。
       if (isVless) {
         try {
-          const flowRes = await this.serverService.setClientFlow(serverId, client.email, 'xtls-rprx-vision');
-          if (!flowRes?.success) this.logger.warn(`setClientFlow failed: ${flowRes?.msg}`);
+          const flowRes = await this.serverService.setClientFlow(serverId, email, 'xtls-rprx-vision');
+          if (!flowRes?.success) throw new Error(`setClientFlow failed: ${flowRes?.msg}`);
         } catch (e) {
-          this.logger.warn(`setClientFlow error: ${e.message}`);
+          try {
+            await this.serverService.deleteClient(serverId, email);
+          } catch {}
+          try {
+            await this.serverService.deleteInbound(serverId, xuiInboundId);
+          } catch {}
+          try {
+            await this.serverService.restartXrayService(serverId);
+          } catch {}
+          throw new BadRequestException(
+            `流控设置失败（XTLS Vision 未生效，节点已回滚）：${e.message}`,
+          );
         }
       }
 
-      // 回读面板权威状态：clients/add 提交后，面板有权按自身规则重新生成
-      // UUID/subId。以面板实际值为准落库，保证本地兜底连接串与面板 UI 完全一致。
-      let storedUuid = client.id;
-      let storedSubId = client.subId;
+      // 5) 回读面板权威状态：UUID/subId 由面板生成（clients/add 未传），必须回读才能拼连接串。
+      //    getClientTraffic 返回 { uuid, subId }；失败则从 /clients/links 的 vless:// 里解析。
+      //    两种都拿不到 = 无法向用户交付连接串 → 视为建节点失败，回滚。
+      let storedUuid = '';
+      let storedSubId = '';
       try {
-        const readback = await this.serverService.getClientTraffic(serverId, client.email);
+        const readback = await this.serverService.getClientTraffic(serverId, email);
         if (readback?.success && readback.obj) {
-          if (readback.obj.uuid) storedUuid = readback.obj.uuid;
-          if (readback.obj.subId) storedSubId = readback.obj.subId;
+          storedUuid = readback.obj.uuid || '';
+          storedSubId = readback.obj.subId || '';
         }
       } catch (e) {
-        // 回读失败不阻断建节点：继续用我们生成的 uuid/subId（链接走面板 /clients/links 时不受影响）
-        this.logger.warn(`Client state readback failed for ${client.email}: ${e.message}`);
+        this.logger.warn(`Client state readback failed for ${email}: ${e.message}`);
+      }
+      if (!storedUuid) {
+        try {
+          const links = await this.serverService.getClientLinks(serverId, email);
+          const first = Array.isArray(links?.obj)
+            ? links.obj.find((u: any) => typeof u === 'string' && u.startsWith('vless://'))
+            : null;
+          const m = typeof first === 'string' ? first.match(/^vless:\/\/([^@]+)@/) : null;
+          if (m && m[1]) storedUuid = m[1];
+        } catch {}
+      }
+      if (!storedUuid && !storedSubId) {
+        try {
+          await this.serverService.deleteClient(serverId, email);
+        } catch {}
+        try {
+          await this.serverService.deleteInbound(serverId, xuiInboundId);
+        } catch {}
+        try {
+          await this.serverService.restartXrayService(serverId);
+        } catch {}
+        throw new BadRequestException('回读客户端 UUID/subId 失败（节点已回滚）');
       }
 
-      // —— 原生面板一致性关键步骤（此前缺失 ⇒ 建出的节点「面板有记录、Xray 无监听」= 废节点）——
-      // 3.6.0 文档 restartXrayService："Reload Xray with the current config. Typically
-      // required after structural inbound or routing changes." —— /inbounds/add 只写入面板库，
-      // 运行中的 Xray 进程不会自动加载新入站；必须重载才能真正监听该端口。
-      // 重载失败（通常是新入站的配置被 Xray 拒收、整个 config 起不来）→ 回滚并再次重载恢复原状。
+      // 6) 运行态最终断言（重载+clients/add+bulkAdjust 之后）：回读运行中(已落盘)的完整
+      //    Xray 配置，确认入站在运行态、客户端嵌进来了、VLESS 带 Vision 流控。
+      //    文档注明客户端级变更（clients/add / bulkAdjust）会自动更新运行中的 Xray，
+      //    无需再手动重启。找不到 → 按未启用处理，回滚。
       try {
-        const restartRes = await this.serverService.restartXrayService(serverId);
-        if (!restartRes?.success) {
-          throw new Error(`Xray reload failed: ${restartRes?.msg || 'unknown'}`);
-        }
-        // 重载只是命令；再回读运行中(已落盘)的完整配置，确认该入站真的进了运行态，
-        // 而不是只有面板库记录。找不到 → 按未启用处理，回滚。
         await this.assertInboundLiveInRunningConfig(
           serverId,
           xuiInboundId,
           port,
-          client.email,
-          client.id,
+          email,
+          storedUuid,
+          isVless,
         );
         // 顺带抓 Xray 运行期拒绝信息（文档 GET /xray/getXrayResult），配置/目标被运行期
         // 拒收时这里能看到原因；失败不阻断。
@@ -403,7 +382,7 @@ export class InboundService {
         } catch {}
       } catch (e) {
         try {
-          await this.serverService.deleteClient(serverId, client.email);
+          await this.serverService.deleteClient(serverId, email);
         } catch {}
         try {
           await this.serverService.deleteInbound(serverId, xuiInboundId);
@@ -412,12 +391,13 @@ export class InboundService {
           await this.serverService.restartXrayService(serverId);
         } catch {}
         throw new BadRequestException(
-          `Xray 重新加载失败（节点未真正启用，已回滚）：${e.message}`,
+          `节点未进入 Xray 运行配置（已回滚）：${e.message}`,
         );
       }
 
-      // Save to database（本地落库失败要回滚已建好的 XUI 入站+客户端——
-      // 否则 cron 重试会在新端口再建一个节点，面板遗留第一个永久游离节点）
+      // 7) Save to database（本地落库：settings/streamSettings 存 JSON 字符串供本地拼接连接串；
+      //    备注存订单号用于幂等，与面板 remark 完全无关。落库失败要回滚已建好的 XUI 入站+客户端
+      //    —— 否则 cron 重试会在新端口再建一个节点，面板遗留第一个永久游离节点）
       let inbound: any;
       try {
         inbound = await this.prisma.inbound.create({
@@ -429,13 +409,13 @@ export class InboundService {
             protocol: protocol.toLowerCase(),
             port,
             email,
-            settings,
-            streamSettings,
+            settings: JSON.stringify(settings),
+            streamSettings: JSON.stringify(streamSettings),
             trafficLimit: plan.traffic,
             expiryTime: plan.duration > 0 ? new Date(expiryTime) : null,
             speedLimit: plan.speedLimit,
             relayEnabled: relay,
-            relayTag: relay ? `inbound-${port}` : null,
+            relayTag: relay ? actualTag : null,
             relaySocksOutboundTag: relay ? `socks-${port}` : null,
             relaySocksHost: relay ? relaySocksHost : null,
             relaySocksPort: relay ? relaySocksPort : null,
@@ -447,16 +427,14 @@ export class InboundService {
             realityShortId: reality ? reality.shortId : null,
             realityDest: reality ? reality.dest : null,
             realityMinVersion: reality ? '1.0.0' : null,
-            remark: orderNo
-              ? `Order ${orderNo}`
-              : `Order ${inboundData.remark}`,
+            remark: orderNo ? `Order ${orderNo}` : null,
           },
         });
       } catch (e) {
         // XUI 侧补偿回滚（仅限本地写失败的场景；勿动 relay 挂载，那发生在落库之后）。
         // 回滚后必须再重载一次 Xray，否则已确认活着的入站从面板库里消失、运行态却还在监听。
         try {
-          await this.serverService.deleteClient(serverId, client.email);
+          await this.serverService.deleteClient(serverId, email);
         } catch {}
         try {
           await this.serverService.deleteInbound(serverId, xuiInboundId);
@@ -467,10 +445,10 @@ export class InboundService {
         throw e;
       }
 
-      // 购买时勾选中转：在该源节点上挂 SOCKS 出站（指向用户填的 SOCKS 节点，出口 = 该 SOCKS IP）
-      // + 一条只命中该节点端口的路由规则。不新增节点；节点全程走 SOCKS。
+      // 8) 购买时勾选中转：在该源节点上挂 SOCKS 出站（指向用户填的 SOCKS 节点，出口 = 该 SOCKS IP）
+      //    + 一条只命中该节点端口的路由规则（inboundTag = 面板真实 tag）。不新增节点；节点全程走 SOCKS。
       if (relay) {
-        await this.mountRelayOnNode(serverId, port, {
+        await this.mountRelayOnNode(serverId, port, actualTag, {
           host: relaySocksHost,
           port: relaySocksPort,
           user: relaySocksUser,
@@ -478,12 +456,46 @@ export class InboundService {
         });
       }
 
-      this.logger.log(`Inbound created: ${email} port=${port} on server ${server.name}`);
+      this.logger.log(
+        `Inbound created: ${email} port=${port} remark=${panelRemark} on server ${server.name}`,
+      );
       return inbound;
     } catch (error) {
       this.logger.error(`Failed to create inbound: ${error.message}`);
       throw new BadRequestException(`Failed to create inbound: ${error.message}`);
     }
+  }
+
+  /**
+   * 面板备注 = 服务器设置的名字 + 1-100 顺序号（如 香港1 / HK3），与手动创建一致。
+   * 遍历该服务器面板上所有入站，按 remark 前缀匹配服务器名，取 1..100 中第一个空位：
+   *  香港1、香港2…香港N 已存在 → 返回下一个未占用序号；100 个全占 → 报错拒绝创建。
+   * 读面板列表失败不阻断（仅回退到「服务器名」本身），保证建节点主流程稳。
+   */
+  private async computeRemark(server: { id: number; name: string }): Promise<string> {
+    const name = (server.name || 'Node').trim();
+    const used = new Set<number>();
+    try {
+      const res = await this.serverService.getInbounds(server.id);
+      const list = Array.isArray(res?.obj) ? res.obj : [];
+      // 匹配「服务器名 数字」（允许中间空白，兼容手建的 香港 1）
+      const re = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*(\\d{1,3})$`);
+      for (const item of list) {
+        const m = typeof item?.remark === 'string' ? item.remark.match(re) : null;
+        if (m) {
+          const n = Number(m[1]);
+          if (n >= 1 && n <= 100) used.add(n);
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`computeRemark list fetch failed for server ${server.id}: ${e.message}`);
+    }
+    for (let n = 1; n <= 100; n++) {
+      if (!used.has(n)) return `${name}${n}`;
+    }
+    throw new BadRequestException(
+      `服务器「${name}」节点数已达上限 100，无法继续创建（可删除部分旧节点后重试）`,
+    );
   }
 
   /**
@@ -495,6 +507,7 @@ export class InboundService {
   private async mountRelayOnNode(
     serverId: number,
     port: number,
+    actualTag: string, // 面板真实入站 tag（in-<port>-tcp）：路由规则 inboundTag 用它
     socks: { host?: string; port?: number; user?: string; pass?: string },
   ) {
     if (!socks.host || !socks.port) {
@@ -503,7 +516,7 @@ export class InboundService {
       );
     }
 
-    const relayTag = `inbound-${port}`;
+    const relayTag = actualTag;
     const outboundTag = `socks-${port}`;
 
     const outbound = await this.serverService.ensureUserSocksOutbound(
@@ -597,10 +610,10 @@ export class InboundService {
   }
 
   /**
-   * 验证面板真实保存的入站确实是 Reality 且 minVersion=1.0.0 已落库。
-   * minVersion 两种字段位都认：顶层 realitySettings.minVersion 或 settings.minVersion
-   * （3-x-ui 的 Settings 模型；截图里「最小客户端版本」显示 36.3.27 就是顶层字段不被采纳、按面板默认 xray 版本走了）。
-   * dest 必须精确等于本次扫描选出的 target（host:port）——面板若丢弃 dest 会回退默认 example.com:443，这种节点直接判失败。
+   * 验证面板真实保存的入站确实是 Reality 且 minClientVer=1.0.0 已落库。
+   * 最小客户端版本四种字段位都认（fork 真名 minClientVer 顶层/nested settings，
+   * 兼容旧名 settings.minVersion / 顶层 minVersion / minClient —— 按面板实际采纳的来）。
+   * dest 必须精确等于本次扫描选出的 target（host:port）——面板若丢弃 dest 会回退默认 example.com:443，直接判失败。
    * 验证失败返回 false —— 调用方据此回滚，确保绝不交付不可用节点。
    */
   private async verifyRealityPersisted(
@@ -625,9 +638,14 @@ export class InboundService {
       }
     }
     const rs = ss?.realitySettings;
-    // 最小客户端版本：三种字段位都认（settings.minVersion / 顶层 minVersion / minClient，按该 fork 实际采纳的来）
+    // 最小客户端版本：fork 字段名 minClientVer（顶层或 nested settings），旧名兜底
     const storedMin =
-      (rs?.settings?.minVersion ?? rs?.minVersion ?? rs?.minClient ?? rs?.settings?.minClient ?? '') as string;
+      (rs?.minClientVer ??
+        rs?.settings?.minClientVer ??
+        rs?.settings?.minVersion ??
+        rs?.minVersion ??
+        rs?.minClient ??
+        '') as string;
     const ok =
       ss?.security === 'reality' &&
       storedMin === '1.0.0' &&
@@ -638,7 +656,7 @@ export class InboundService {
       rs?.dest === expectedDest;
     if (ok) {
       this.logger.log(
-        `Reality 验证通过 inbound #${inboundId}: security=reality, minVersion=${storedMin}, dest=${rs.dest}, serverNames=[${rs.serverNames.join(',')}]`,
+        `Reality 验证通过 inbound #${inboundId}: security=reality, minClientVer=${storedMin}, dest=${rs.dest}, serverNames=[${rs.serverNames.join(',')}]`,
       );
     } else {
       this.logger.error(
@@ -664,6 +682,7 @@ export class InboundService {
     port: number,
     expectedEmail: string,
     expectedUuid?: string,
+    expectedVisionFlow?: boolean,
   ) {
     let raw: any;
     try {
@@ -679,7 +698,8 @@ export class InboundService {
       const inbounds = Array.isArray(cfg?.inbounds) ? cfg.inbounds : [];
       const found = inbounds.find(
         (i: any) =>
-          (typeof i?.tag === 'string' && i.tag === `inbound-${port}`) ||
+          (typeof i?.tag === 'string' &&
+            (i.tag === `inbound-${port}` || i.tag === `in-${port}-tcp`)) ||
           (Number(i?.port) === port && typeof i?.protocol === 'string'),
       );
       if (!found) {
@@ -698,12 +718,25 @@ export class InboundService {
           (expectedEmail && typeof c?.email === 'string' && c.email === expectedEmail) ||
           (expectedUuid && (c?.id === expectedUuid || c?.password === expectedUuid)),
       );
+      const hasVisionFlow =
+        expectedVisionFlow === true &&
+        fClients.some(
+          (c: any) =>
+            (c?.email && c.email === expectedEmail) &&
+            typeof c?.flow === 'string' &&
+            c.flow === 'xtls-rprx-vision',
+        );
       this.logger.log(
-        `入站 inbound #${inboundId} 已确认进入 Xray 运行配置（port=${port}，用户 ${expectedEmail} 嵌入=${hasUser ? 'YES' : 'NO'}）`,
+        `入站 inbound #${inboundId} 已确认进入 Xray 运行配置（port=${port}，用户 ${expectedEmail} 嵌入=${hasUser ? 'YES' : 'NO'}${expectedVisionFlow ? `，Vision 流控=${hasVisionFlow ? 'YES' : 'NO'}` : ''}）`,
       );
       if (!hasUser) {
         throw new Error(
           `运行配置入站 #${inboundId}(port=${port}) 中缺少客户端 ${expectedEmail} —— 配置生成器未组装用户`,
+        );
+      }
+      if (expectedVisionFlow === true && !hasVisionFlow) {
+        throw new Error(
+          `运行配置入站 #${inboundId}(port=${port}) 中客户端 ${expectedEmail} 未带 Vision 流控 —— 流控未生效`,
         );
       }
     } catch (e) {
