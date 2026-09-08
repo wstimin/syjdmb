@@ -80,7 +80,11 @@ export class InboundService {
       totalGB,
       expiryTime,
       enable: true,
-      tgId: '',
+      // fork 的 Client.tgId 是 int64：传 '' 字符串会整个被 /inbounds/add 拒收
+      // （json: cannot unmarshal string into Go struct field Client.tgId of type int64），
+      // 所以用 0 而不是 ''。其余字段类型与 fork 对齐（id/email/subId 字符串，
+      // limitIp/totalGB/expiryTime 数字，enable/reset 布尔/数字）。
+      tgId: 0,
       subId: email.replace(/@node$/, ''),
       reset: 0,
       // VLESS(Reality/TLS) 用 XTLS Vision 流控；不填部分客户端连不上
