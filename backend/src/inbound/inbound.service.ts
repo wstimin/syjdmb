@@ -74,19 +74,24 @@ export class InboundService {
       target: string; // host:port（发面板的 dest，必须是真实可拨号目标）
       privateKey: string;
       publicKey: string;
-      shortId: string;
+      shortIds: string[]; // 复刻面板 RandomUtil.randomShortIds() 的完整列表
+      shortId: string; // 本地连接串 sid 用第一个
     } | null = null;
     if (isVless) {
       try {
         const key = await this.serverService.getNewX25519Key(serverId);
         const t = await this.serverService.pickBestRealityTarget(serverId);
+        // shortIds 完全复刻面板手动流程：RandomUtil.randomShortIds() = 偶数长度
+        // 2..16 位 hex 各生成一个、乱序排列（手动创建 Reality 时面板自动预填这一串）。
+        const shortIdList = this.randomShortIds();
         reality = {
           dest: t.host,
           serverNames: t.host,
           target: t.target,
           privateKey: key.privateKey,
           publicKey: key.publicKey,
-          shortId: this.randomHex(8),
+          shortIds: shortIdList,
+          shortId: shortIdList[0],
         };
       } catch (e) {
         throw new BadRequestException(
@@ -102,9 +107,11 @@ export class InboundService {
     // ---- settings：两段式建客户端。入站先不带任何用户（clients: []）----
     // 与 3.6.0 手动流程一致：先建入站 → 再建客户端并绑定。客户端 UUID/subId/流控
     // 都不在入站里内嵌，全部由后续 clients/add + bulkAdjust 完成（面板服务端生成）。
+    // decryption + encryption 都是「none」——手动建 VLESS 默认值（面板 createDefaultVlessInboundSettings）。
     const settings = {
       clients: [],
       decryption: 'none',
+      encryption: 'none',
       fallbacks: [],
     };
 
@@ -121,7 +128,7 @@ export class InboundService {
           target: reality!.target, // 目标：延迟最低的可行目标（host:port，v3.6.0 面板真实字段名，非 'dest'）
           serverNames: [reality!.dest], // serverNames/SNI：纯域名
           privateKey: reality!.privateKey,
-          shortIds: [reality!.shortId],
+          shortIds: reality!.shortIds, // 面板 RandomUtil.randomShortIds() 同款（2..16 位偶数 hex 乱序）
           minClientVer: '1.0.0', // 最小客户端版本（面板 UI「最小客户端」对应处）
           maxClientVer: '',
           maxTimediff: 0,         // v3.6.0 面板真实字段名（小写 diff，不是 maxTimeDiff）
@@ -130,7 +137,7 @@ export class InboundService {
             publicKey: reality!.publicKey,
             serverName: reality!.dest,
             fingerprint: 'chrome',
-            spiderX: '/',
+            spiderX: this.randomSpiderX(), // 面板 randomizeSpiderX 同款：'/' + 15 位大小写+数字
           },
         },
         tcpSettings: { header: { type: 'none' } },
@@ -266,6 +273,7 @@ export class InboundService {
       //    流控（flow=xtls-rprx-vision）不走 add（文档：add 不含 flow），由下一步 bulkAdjust 设。
       const clientUuid = uuidv4();
       const clientPassword = this.randomLowerAndNum(16); // 与面板前端 RandomUtil.randomLowerAndNum(16) 同格式
+      const clientAuth = this.randomLowerAndNum(16); // Hysteria 认证（手动流程同样预填 16 位）
       const clientSubId = this.randomLowerAndNum(16);
       const clientRes = await this.serverService.addClient(
         serverId,
@@ -276,8 +284,10 @@ export class InboundService {
           tgId: 0,
           limitIp: plan.deviceLimit || 0,
           enable: true,
-          id: clientUuid,     // VLESS UUID（手动流程 randomUUID）
-          subId: clientSubId, // 订阅ID（手动流程 16 位随机）
+          id: clientUuid,          // VLESS UUID（手动流程 randomUUID）
+          subId: clientSubId,      // 订阅ID（手动流程 16 位随机）
+          password: clientPassword, // 客户端密码（手动流程预填，面板才能显示）
+          auth: clientAuth,         // Hysteria 认证（手动流程预填，面板才能显示）
         },
         [xuiInboundId],
       );
@@ -658,6 +668,9 @@ export class InboundService {
     // 目标：V3.6.0 写入字段是 target；回读时前端把 target——dest 别名映射为 dest。
     // 两处任一命中即视为已持久化（dest 是目标别名，面板落库以 target 为准）。
     const storedTarget = (rs?.target ?? rs?.dest ?? '') as string;
+    // Short IDs / SpiderX：面板手动流程预填的随机值，必须真实落库（否则连不上/半废）。
+    const storedShortIds = Array.isArray(rs?.shortIds) ? rs?.shortIds : [];
+    const storedSpiderX = (rs?.settings?.spiderX ?? rs?.spiderX ?? '') as string;
     const ok =
       ss?.security === 'reality' &&
       storedMin === '1.0.0' &&
@@ -665,10 +678,12 @@ export class InboundService {
       Array.isArray(rs?.serverNames) &&
       rs.serverNames.length > 0 &&
       !!expectedDest &&
-      storedTarget === expectedDest;
+      storedTarget === expectedDest &&
+      storedShortIds.length > 0 &&
+      !!storedSpiderX;
     if (ok) {
       this.logger.log(
-        `Reality 验证通过 inbound #${inboundId}: security=reality, minClientVer=${storedMin}, dest=${storedTarget}, serverNames=[${rs.serverNames.join(',')}]`,
+        `Reality 验证通过 inbound #${inboundId}: security=reality, minClientVer=${storedMin}, dest=${storedTarget}, serverNames=[${rs.serverNames.join(',')}], shortIds=[${storedShortIds.join(',')}], spiderX=${storedSpiderX}`,
       );
     } else {
       this.logger.error(
@@ -788,6 +803,24 @@ export class InboundService {
     return out;
   }
 
+  // 复刻 v3.6.0 面板 RandomUtil.randomShortIds()：偶数长度 2..16 位 hex 各一个、乱序。
+  // 手动创建 VLESS+Reality 时面板自动预填这一串 Short IDs；Xray 端全部有效。
+  private randomShortIds(): string[] {
+    const lengths = [2, 4, 6, 8, 10, 12, 14, 16].sort(() => Math.random() - 0.5);
+    return lengths.map((len) => this.randomHex(len));
+  }
+
+  // 复刻 v3.6.0 面板 RandomUtil.randomizeSpiderX()：'/' + 15 位 大小写字母+数字。
+  // 手动创建 Reality 时面板随机生成（默认空 spiderX 会被这步覆盖）。
+  private randomSpiderX(): string {
+    const seq = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    let out = '/';
+    for (let i = 0; i < 15; i++) {
+      out += seq.charAt(Math.floor(Math.random() * seq.length));
+    }
+    return out;
+  }
+
   // 与 v3.6.0 面板前端 RandomUtil.randomLowerAndNum(len) 同格式：小写字母+数字随机串。
   // 用于客户端密码/认证/订阅ID —— 手动流程这些字段预填 16 位随机，API 创建若不给，
   // 面板会把 VLESS 的密码/认证留空（半废节点）。
@@ -848,12 +881,16 @@ export class InboundService {
         };
         if (isReality) {
           // VLESS + Reality
+          // spiderX 从落库 streamSettings 读（面板手动流程是 '/' + 15 位随机）。
+          // 链接 spx 参数必须与服务端一致，否则客户端用默认 '/' 会对不上 → 连不上。
+          const rs = streamSettings?.realitySettings;
           params.security = 'reality';
           params.flow = 'xtls-rprx-vision';
           params.fp = 'chrome';
           params.pbk = inbound.realityPublicKey || '';
           params.sni = inbound.realityDest || '';
           params.sid = inbound.realityShortId || '';
+          params.spx = rs?.settings?.spiderX || rs?.spiderX || '/';
           const frag = `${server.name}-reality`;
           url = `vless://${uuid}@${host}:${port}?${new URLSearchParams(params).toString()}#${frag}`;
           break;
