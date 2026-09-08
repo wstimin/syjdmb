@@ -109,7 +109,7 @@ export class InboundService {
     };
 
     // ---- Stream settings ----
-    // VLESS → VLESS+Reality（fork 真名 minClientVer/maxClientVer/maxTimeDiff）
+    // VLESS → VLESS+Reality（v3.6.0 面板真实字段名：target/maxTimediff/minClientVer）
     // 其它协议 → WebSocket 明文（去掉假证书路径，开箱即用）；SS → 原生 tcp
     let streamSettings: any;
     if (isVless) {
@@ -118,13 +118,13 @@ export class InboundService {
         security: 'reality',
         realitySettings: {
           show: false,
-          dest: reality!.target, // 目标：延迟最低的可行目标（host:port，扫描结果原样）
+          target: reality!.target, // 目标：延迟最低的可行目标（host:port，v3.6.0 面板真实字段名，非 'dest'）
           serverNames: [reality!.dest], // serverNames/SNI：纯域名
           privateKey: reality!.privateKey,
           shortIds: [reality!.shortId],
-          minClientVer: '1.0.0', // 最小客户端版本（fork 字段名，面板 UI「最小客户端」对应处）
+          minClientVer: '1.0.0', // 最小客户端版本（面板 UI「最小客户端」对应处）
           maxClientVer: '',
-          maxTimeDiff: 0,
+          maxTimediff: 0,         // v3.6.0 面板真实字段名（小写 diff，不是 maxTimeDiff）
           xver: 0,
           settings: {
             publicKey: reality!.publicKey,
@@ -258,17 +258,26 @@ export class InboundService {
         );
       }
 
-      // 3) 建客户端并绑定到该入站（3.6.0 文档 clients/add：只传通用字段，UUID/subId/flow
-      //    一律不传 —— UUID/subId 由面板服务端生成，flow 走下一步 bulkAdjust）。
-      //    与手动流程一致：创建客户端 → 设流控 → 绑定新建节点（inboundIds=[xuiInboundId]）
+      // 3) 建客户端并绑定到该入站（3.6.0 面板 clients/add）。
+      //    手动创建流程在客户端表单里预填：UUID=randomUUID、密码=16 位小写字母+数字、
+      //    认证（Hysteria）=16 位随机、订阅ID=16 位随机。面板服务端对 VLESS 只自动补 UUID，
+      //    不会补 password/auth —— 所以我们自己按手动流程生成并随 clients/add 下发，
+      //    否则面板新建的客户端密码/认证为空（半废节点）。
+      //    流控（flow=xtls-rprx-vision）不走 add（文档：add 不含 flow），由下一步 bulkAdjust 设。
+      const clientUuid = uuidv4();
+      const clientPassword = this.randomLowerAndNum(16); // 与面板前端 RandomUtil.randomLowerAndNum(16) 同格式
+      const clientSubId = this.randomLowerAndNum(16);
       const clientRes = await this.serverService.addClient(
         serverId,
         {
           email,
           totalGB,
           expiryTime,
+          tgId: 0,
           limitIp: plan.deviceLimit || 0,
           enable: true,
+          id: clientUuid,     // VLESS UUID（手动流程 randomUUID）
+          subId: clientSubId, // 订阅ID（手动流程 16 位随机）
         },
         [xuiInboundId],
       );
@@ -638,7 +647,7 @@ export class InboundService {
       }
     }
     const rs = ss?.realitySettings;
-    // 最小客户端版本：fork 字段名 minClientVer（顶层或 nested settings），旧名兜底
+    // 最小客户端版本：面板字段名 minClientVer（顶层或 nested settings），旧名兜底
     const storedMin =
       (rs?.minClientVer ??
         rs?.settings?.minClientVer ??
@@ -646,6 +655,9 @@ export class InboundService {
         rs?.minVersion ??
         rs?.minClient ??
         '') as string;
+    // 目标：V3.6.0 写入字段是 target；回读时前端把 target——dest 别名映射为 dest。
+    // 两处任一命中即视为已持久化（dest 是目标别名，面板落库以 target 为准）。
+    const storedTarget = (rs?.target ?? rs?.dest ?? '') as string;
     const ok =
       ss?.security === 'reality' &&
       storedMin === '1.0.0' &&
@@ -653,10 +665,10 @@ export class InboundService {
       Array.isArray(rs?.serverNames) &&
       rs.serverNames.length > 0 &&
       !!expectedDest &&
-      rs?.dest === expectedDest;
+      storedTarget === expectedDest;
     if (ok) {
       this.logger.log(
-        `Reality 验证通过 inbound #${inboundId}: security=reality, minClientVer=${storedMin}, dest=${rs.dest}, serverNames=[${rs.serverNames.join(',')}]`,
+        `Reality 验证通过 inbound #${inboundId}: security=reality, minClientVer=${storedMin}, dest=${storedTarget}, serverNames=[${rs.serverNames.join(',')}]`,
       );
     } else {
       this.logger.error(
@@ -772,6 +784,18 @@ export class InboundService {
     let out = '';
     for (let i = 0; i < length; i++) {
       out += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return out;
+  }
+
+  // 与 v3.6.0 面板前端 RandomUtil.randomLowerAndNum(len) 同格式：小写字母+数字随机串。
+  // 用于客户端密码/认证/订阅ID —— 手动流程这些字段预填 16 位随机，API 创建若不给，
+  // 面板会把 VLESS 的密码/认证留空（半废节点）。
+  private randomLowerAndNum(length: number): string {
+    const seq = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      out += seq.charAt(Math.floor(Math.random() * seq.length));
     }
     return out;
   }

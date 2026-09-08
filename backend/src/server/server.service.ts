@@ -507,6 +507,8 @@ export class ServerService {
       enable?: boolean;
       id?: string;       // VLESS/VMess UUID，不传则自动生成
       subId?: string;    // 订阅ID，不传则自动生成
+      password?: string; // 客户端密码（trojan/ss；手动流程预填 16 位随机）
+      auth?: string;     // Hysteria 认证（手动流程预填 16 位随机）
       flow?: string;     // VLESS 流控，如 xtls-rprx-vision
     },
     inboundIds: number[],
@@ -525,6 +527,8 @@ export class ServerService {
           enable: clientData.enable ?? true,
           ...(clientData.id && { id: clientData.id }),
           ...(clientData.subId && { subId: clientData.subId }),
+          ...(clientData.password && { password: clientData.password }),
+          ...(clientData.auth && { auth: clientData.auth }),
           ...(clientData.flow && { flow: clientData.flow }),
         },
         inboundIds,
