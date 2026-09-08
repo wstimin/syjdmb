@@ -64,6 +64,9 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>({});
+  // 测试邮件
+  const [testTo, setTestTo] = useState('');
+  const [testing, setTesting] = useState(false);
 
   const set = (key: string, value: any) => setForm((f: any) => ({ ...f, [key]: value }));
 
@@ -91,6 +94,13 @@ export default function SettingsPage() {
           alipayPublicKey: s.alipayPublicKey || '',
           alipayGateway: s.alipayGateway || 'https://openapi.alipay.com/gateway.do',
           alipayNotifyUrl: s.alipayNotifyUrl || '',
+          // email
+          emailEnabled: s.emailEnabled === true || s.emailEnabled === 'true' || false,
+          emailProvider: s.emailProvider || 'log',
+          emailWebhookUrl: s.emailWebhookUrl || '',
+          emailWebhookToken: s.emailWebhookToken || '',
+          emailFromName: s.emailFromName || '',
+          emailFromAddr: s.emailFromAddr || '',
         });
       })
       .catch(() => toast.error('加载系统设置失败'))
@@ -120,12 +130,31 @@ export default function SettingsPage() {
         { key: 'alipayPublicKey', value: form.alipayPublicKey, type: 'string', group: 'payment' },
         { key: 'alipayGateway', value: form.alipayGateway, type: 'string', group: 'payment' },
         { key: 'alipayNotifyUrl', value: form.alipayNotifyUrl, type: 'string', group: 'payment' },
+        // email
+        { key: 'emailEnabled', value: form.emailEnabled, type: 'boolean', group: 'email' },
+        { key: 'emailProvider', value: form.emailProvider, type: 'string', group: 'email' },
+        { key: 'emailWebhookUrl', value: form.emailWebhookUrl, type: 'string', group: 'email' },
+        { key: 'emailWebhookToken', value: form.emailWebhookToken, type: 'string', group: 'email' },
+        { key: 'emailFromName', value: form.emailFromName, type: 'string', group: 'email' },
+        { key: 'emailFromAddr', value: form.emailFromAddr, type: 'string', group: 'email' },
       ]);
       toast.success('设置已保存');
     } catch (err: any) {
       toast.error(getErrorMessage(err));
     } finally {
       setSaving(false);
+    }
+  };
+
+  const sendTest = async () => {
+    setTesting(true);
+    try {
+      const res = await api.post('/email/test', { to: testTo });
+      toast.success(res.data?.message || '测试邮件已发送');
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -225,6 +254,61 @@ export default function SettingsPage() {
             <Field label="异步回调地址" hint="留空则默认 /api/payments/callback/alipay">
               <Input value={form.alipayNotifyUrl} onChange={(e) => set('alipayNotifyUrl', e.target.value)} />
             </Field>
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>邮件通知</CardTitle>
+            <CardDescription>用于发送节点到期提醒、找回/重置密码邮件。本系统不内置发信服务器，可选「日志」或「Webhook」两种发送方式</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Toggle
+              checked={form.emailEnabled}
+              onChange={(v) => set('emailEnabled', v)}
+              label={form.emailEnabled ? '已启用（节点到期提醒 / 找回密码等邮件生效）' : '未启用'}
+            />
+            <Field label="发送方式" hint="日志模式：邮件内容打印到后端日志，方便调试；Webhook 模式：POST JSON 到你自己搭的发信服务">
+              <select
+                value={form.emailProvider}
+                onChange={(e) => set('emailProvider', e.target.value)}
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option value="log">日志模式（后端日志可见，不上网）</option>
+                <option value="webhook">Webhook 模式（POST JSON 到你的发信服务）</option>
+              </select>
+            </Field>
+            {form.emailProvider === 'webhook' && (
+              <>
+                <Field label="Webhook 地址" hint="将收到 POST {to, subject, html, text}，非 2xx 视为发送失败">
+                  <Input value={form.emailWebhookUrl} onChange={(e) => set('emailWebhookUrl', e.target.value)} placeholder="https://your-mail-api.com/send" />
+                </Field>
+                <Field label="Webhook Token（可选）" hint="非空时请求头携带 Authorization: Bearer 该值">
+                  <Input type="password" value={form.emailWebhookToken} onChange={(e) => set('emailWebhookToken', e.target.value)} />
+                </Field>
+              </>
+            )}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="发件人名称（可选）">
+                <Input value={form.emailFromName} onChange={(e) => set('emailFromName', e.target.value)} placeholder="如 NodeShop" />
+              </Field>
+              <Field label="发件人地址（可选）">
+                <Input value={form.emailFromAddr} onChange={(e) => set('emailFromAddr', e.target.value)} placeholder="如 no-reply@your-domain.com" />
+              </Field>
+            </div>
+
+            <div className="flex items-end gap-2 border-t border-border pt-4">
+              <div className="flex-1 space-y-1.5">
+                <Label>发送测试邮件到</Label>
+                <Input type="email" value={testTo} onChange={(e) => setTestTo(e.target.value)} placeholder="填写你的邮箱，先保存设置再测试" />
+              </div>
+              <Button variant="outline" onClick={sendTest} disabled={testing || !testTo}>
+                {testing ? '发送中...' : '发送测试邮件'}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              提示：页面下方各模块修改后需点击右上角「保存设置」才会生效；邮件相关配置保存后再点「发送测试邮件」。
+            </p>
           </CardContent>
         </Card>
       </div>

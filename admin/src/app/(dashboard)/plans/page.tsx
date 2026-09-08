@@ -8,21 +8,30 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-table';
+import { PageHeader, DataTable } from '@/components/shared/data-table';
+import { StatCard } from '@/components/shared/stat-card';
+import Pagination from '@/components/shared/pagination';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+
+const PLAN_STATUSES = ['ACTIVE', 'HIDDEN', 'SOLD_OUT', 'ARCHIVED'];
 
 export default function PlansPage() {
   const [plans, setPlans] = useState<any[]>([]);
   const [servers, setServers] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
 
+  // 客户端分页（后端 /plans/admin/all 一次性返回全部）
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
+
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
     traffic: '0', deviceLimit: '1', description: '', protocols: 'vless',
-    serverIds: [] as number[],
+    sort: '0', serverIds: [] as number[],
   });
 
   const fetchPlans = () => {
@@ -32,6 +41,12 @@ export default function PlansPage() {
       .finally(() => setLoading(false));
   };
 
+  const fetchStats = () => {
+    api.get('/plans/admin/stats')
+      .then((res) => setStats(res.data.data))
+      .catch(() => { /* 统计加载失败不影响主列表 */ });
+  };
+
   // 同时加载服务器列表用于套餐绑定
   const fetchServers = () => {
     api.get('/servers')
@@ -39,11 +54,11 @@ export default function PlansPage() {
       .catch(() => toast.error('服务器列表加载失败，无法绑定'));
   };
 
-  useEffect(() => { fetchPlans(); fetchServers(); }, []);
+  useEffect(() => { fetchPlans(); fetchStats(); fetchServers(); }, []);
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', serverIds: [] });
+    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', sort: '0', serverIds: [] });
     setDialogOpen(true);
   };
 
@@ -55,6 +70,7 @@ export default function PlansPage() {
       duration: String(plan.duration), traffic: String(plan.traffic || 0),
       deviceLimit: String(plan.deviceLimit), description: plan.description || '',
       protocols: plan.protocols.join(','),
+      sort: String(plan.sort ?? 0),
       serverIds: plan.serverIds || [],
     });
     setDialogOpen(true);
@@ -90,6 +106,7 @@ export default function PlansPage() {
       description: form.description || null,
       protocols: form.protocols.split(',').map((s) => s.trim()).filter(Boolean),
       serverIds: form.serverIds,
+      sort: Number(form.sort) || 0,
       type: 'TIME_BASED',
       status: 'ACTIVE',
     };
@@ -118,6 +135,24 @@ export default function PlansPage() {
     }
   };
 
+  // 修改套餐状态（ACTIVE/HIDDEN/SOLD_OUT/ARCHIVED）
+  const changeStatus = async (plan: any, status: string) => {
+    if (status === plan.status) return;
+    try {
+      await api.put(`/plans/${plan.id}`, { status });
+      toast.success('状态已更新');
+      fetchPlans();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  // 客户端分页切片
+  const totalPlans = plans.length;
+  const totalPages = Math.max(1, Math.ceil(totalPlans / limit));
+  const safePage = Math.min(page, totalPages);
+  const pagePlans = plans.slice((safePage - 1) * limit, safePage * limit);
+
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
   const columns = [
@@ -142,7 +177,21 @@ export default function PlansPage() {
         return <span className="text-xs">{names.length ? names.join('、') : `服务器#${ids.join('#')}`}</span>;
       },
     },
-    { key: 'status', header: '状态', render: (p: any) => <StatusBadge status={p.status} /> },
+    {
+      key: 'status', header: '状态',
+      render: (p: any) => (
+        <select
+          value={p.status}
+          onChange={(e) => changeStatus(p, e.target.value)}
+          onClick={(e: any) => e.stopPropagation()}
+          className="rounded-md border bg-background px-2 py-1 text-xs"
+        >
+          {PLAN_STATUSES.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      ),
+    },
     {
       key: 'actions', header: '操作',
       render: (p: any) => (
@@ -160,9 +209,23 @@ export default function PlansPage() {
         <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建套餐</Button>
       </PageHeader>
 
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <StatCard title="套餐总数" value={stats?.totalPlans ?? 0} />
+        <StatCard title="活跃套餐" value={stats?.activePlans ?? 0} sub="状态为 ACTIVE" color="#10b981" />
+        <StatCard title="累计成交额" value={stats ? `¥${Number(stats.totalRevenue || 0).toFixed(2)}` : '¥0.00'} />
+      </div>
+
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={plans} keyField="id" emptyMessage="暂无套餐" />
+          <DataTable columns={columns} data={pagePlans} keyField="id" emptyMessage="暂无套餐" />
+          <Pagination
+            page={safePage}
+            limit={limit}
+            total={totalPlans}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            onLimitChange={(l) => { setLimit(l); setPage(1); }}
+          />
         </CardContent>
       </Card>
 
@@ -204,6 +267,10 @@ export default function PlansPage() {
             <div className="space-y-2">
               <Label>支持协议（逗号分隔）</Label>
               <Input value={form.protocols} onChange={(e) => setForm({ ...form, protocols: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>排序权重（越小越靠前）</Label>
+              <Input type="number" value={form.sort} onChange={(e) => setForm({ ...form, sort: e.target.value })} />
             </div>
             <div className="space-y-2 col-span-2">
               <Label>绑定服务器（可选多台）</Label>

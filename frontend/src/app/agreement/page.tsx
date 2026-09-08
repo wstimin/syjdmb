@@ -25,7 +25,7 @@ export default function AgreementPage() {
               <section>
                 <h2 className="text-xl font-semibold">二、服务内容</h2>
                 <p className="text-muted-foreground">
-                  本平台为用户提供网络代理节点服务，包括但不限于节点订阅、SOCKS5中转等服务。用户购买套餐后，系统将自动为指定节点开通服务。
+                  本平台为用户提供国际网络连接服务，适用于跨境办公、跨境电商、海外社媒运营与 AI 工具直连等场景（包括 SOCKS5 中转服务）。用户购买套餐后，系统将自动为指定节点开通服务。
                 </p>
               </section>
 
@@ -46,7 +46,7 @@ export default function AgreementPage() {
               <section>
                 <h2 className="text-xl font-semibold">五、费用与退款</h2>
                 <p className="text-muted-foreground">
-                  用户购买的服务费用一经支付，除因平台自身原因导致服务完全不可用的情形外，一般不予退款。卡密兑换的余额仅可用于本平台消费，不可提现。
+                  已完成的购买订单可申请退款。退款申请由平台审核：审核通过后，退款金额将退回您的账户余额（非原支付渠道，余额不可提现），该订单对应的节点将被暂停，订单使用的优惠券名额将回收。续费订单及充值订单不支持线上退款，相关费用问题请联系客服人工处理。退款申请需如实填写理由，平台对每笔退款申请保留审核与最终决定权。
                 </p>
               </section>
 
@@ -97,7 +97,7 @@ export default function AgreementPage() {
               <section>
                 <h2 className="text-xl font-semibold">2. Services</h2>
                 <p className="text-muted-foreground">
-                  We provide network proxy node services including subscription nodes and SOCKS5 relay. Nodes are automatically activated after purchase.
+                  We provide international network connectivity for cross-border business, e-commerce, overseas social media operations, and AI tools (including SOCKS5 relay). Nodes are automatically activated after purchase.
                 </p>
               </section>
 
@@ -118,7 +118,7 @@ export default function AgreementPage() {
               <section>
                 <h2 className="text-xl font-semibold">5. Payments & Refunds</h2>
                 <p className="text-muted-foreground">
-                  Payments are generally non-refundable except where our service is completely unavailable due to our own fault. Card-redeemed balances are for platform use only and non-withdrawable.
+                  Completed purchase orders may apply for a refund. Refund requests are subject to review: upon approval, the refund amount is credited to your account balance (not the original payment channel; balance is non-withdrawable), the corresponding node is suspended, and any coupon used on the order is released. Renewal orders and top-up orders are not eligible for online refunds; please contact support for manual handling. Refund applications must state a truthful reason, and the platform reserves the final review and decision right on each request.
                 </p>
               </section>
 

@@ -13,7 +13,7 @@ services:
       POSTGRES_USER: nodeadmin
       POSTGRES_PASSWORD: ${DB_PASS:-nodepassword}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"   # 仅绑定本机回环，避免数据库暴露公网
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -32,7 +32,7 @@ services:
     container_name: nodeshop-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"   # 仅绑定本机回环，避免 Redis 暴露公网
     volumes:
       - redis_data:/data
     healthcheck:
@@ -51,10 +51,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      args:
+        GIT_HASH: ${GIT_HASH:-unknown}
     container_name: nodeshop-backend
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "127.0.0.1:3001:3001"   # API 内置：仅本机可直连，公网统一走前端/管理后台的 /api 代理
     env_file:
       - .env
     depends_on:
@@ -73,6 +75,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        GIT_HASH: ${GIT_HASH:-unknown}
     container_name: nodeshop-frontend
     restart: unless-stopped
     ports:
@@ -92,6 +96,8 @@ services:
     build:
       context: ./admin
       dockerfile: Dockerfile
+      args:
+        GIT_HASH: ${GIT_HASH:-unknown}
     container_name: nodeshop-admin
     restart: unless-stopped
     ports:

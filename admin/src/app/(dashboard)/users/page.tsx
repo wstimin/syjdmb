@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Search } from 'lucide-react';
+import { Search, Download } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
+import { exportToCsv } from '@/lib/csv';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +12,7 @@ import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-tab
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import Pagination from '@/components/shared/pagination';
 
 interface AdminUser {
   id: number;
@@ -22,22 +24,68 @@ interface AdminUser {
   createdAt: string;
 }
 
+interface AdminUserDetail {
+  id: number;
+  email: string;
+  username: string | null;
+  role: string;
+  status: string;
+  balance: string;
+  balanceFrozen: string;
+  avatar: string | null;
+  language: string | null;
+  referralCode: string | null;
+  createdAt: string;
+  _count: {
+    orders: number;
+    inbounds: number;
+    referrals: number;
+  };
+}
+
 export default function UsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(20);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
   const [loading, setLoading] = useState(true);
   const [editUser, setEditUser] = useState<AdminUser | null>(null);
+  const [detailUser, setDetailUser] = useState<AdminUserDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [balanceAmount, setBalanceAmount] = useState('');
 
-  const fetchUsers = (q = '') => {
+  const fetchUsers = (pg = page, lim = limit, q = search) => {
     setLoading(true);
-    api.get('/users', { params: { page: 1, limit: 50, search: q } })
-      .then((res) => setUsers(res.data.data.users))
+    api.get('/users', { params: { page: pg, limit: lim, search: q || undefined } })
+      .then((res) => {
+        setUsers(res.data.data.users);
+        setTotal(res.data.data.total);
+        setTotalPages(res.data.data.totalPages);
+      })
       .catch((err) => toast.error(getErrorMessage(err)))
       .finally(() => setLoading(false));
   };
 
   useEffect(() => { fetchUsers(); }, []);
+
+  const handleSearch = (q = search) => {
+    setSearch(q);
+    setPage(1);
+    fetchUsers(1, limit, q);
+  };
+
+  const changePage = (p: number) => {
+    setPage(p);
+    fetchUsers(p, limit, search);
+  };
+
+  const changeLimit = (l: number) => {
+    setLimit(l);
+    setPage(1);
+    fetchUsers(1, l, search);
+  };
 
   const adjustBalance = async (id: number) => {
     if (!balanceAmount) return;
@@ -49,7 +97,7 @@ export default function UsersPage() {
       toast.success('余额已调整 / Balance adjusted');
       setEditUser(null);
       setBalanceAmount('');
-      fetchUsers(search);
+      fetchUsers();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
     }
@@ -60,9 +108,32 @@ export default function UsersPage() {
     try {
       await api.patch(`/users/${user.id}`, { status: newStatus });
       toast.success('状态已更新');
-      fetchUsers(search);
+      fetchUsers();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
+    }
+  };
+
+  const updateRole = async (user: AdminUser, role: string) => {
+    if (role === user.role) return;
+    try {
+      await api.patch(`/users/${user.id}`, { role });
+      toast.success('角色已更新');
+      fetchUsers();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  const fetchDetail = async (user: AdminUser) => {
+    setDetailLoading(true);
+    try {
+      const res = await api.get(`/users/${user.id}`);
+      setDetailUser(res.data.data);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setDetailLoading(false);
     }
   };
 
@@ -72,7 +143,20 @@ export default function UsersPage() {
     { key: 'id', header: 'ID' },
     { key: 'email', header: '邮箱', render: (u: AdminUser) => <span className="font-medium">{u.email}</span> },
     { key: 'username', header: '用户名', render: (u: AdminUser) => u.username || '—' },
-    { key: 'role', header: '角色' },
+    {
+      key: 'role', header: '角色',
+      render: (u: AdminUser) => (
+        <select
+          value={u.role}
+          onChange={(e) => updateRole(u, e.target.value)}
+          className="rounded-md border bg-background px-2 py-1 text-xs"
+        >
+          <option value="USER">USER</option>
+          <option value="ADMIN">ADMIN</option>
+          <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+        </select>
+      ),
+    },
     { key: 'status', header: '状态', render: (u: AdminUser) => <StatusBadge status={u.status} /> },
     { key: 'balance', header: '余额', render: (u: AdminUser) => <span className="text-primary font-medium">¥{Number(u.balance).toFixed(2)}</span> },
     { key: 'createdAt', header: '注册时间', render: (u: AdminUser) => new Date(u.createdAt).toLocaleDateString() },
@@ -83,6 +167,9 @@ export default function UsersPage() {
           <Button size="sm" variant="outline" onClick={() => { setEditUser(u); setBalanceAmount(''); }}>
             余额调整
           </Button>
+          <Button size="sm" variant="outline" onClick={() => fetchDetail(u)}>
+            详情
+          </Button>
           <Button size="sm" variant={u.status === 'BANNED' ? 'default' : 'destructive'} onClick={() => toggleStatus(u)}>
             {u.status === 'BANNED' ? '解封' : '封禁'}
           </Button>
@@ -91,9 +178,24 @@ export default function UsersPage() {
     },
   ];
 
+  const handleExport = () => {
+    exportToCsv(
+      users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        username: u.username || '',
+        role: u.role,
+        status: u.status,
+        balance: u.balance,
+        createdAt: u.createdAt,
+      })),
+      'users',
+    );
+  };
+
   return (
     <div>
-      <PageHeader title="用户管理" subtitle={`共 ${users.length} 位用户`}>
+      <PageHeader title="用户管理" subtitle={`共 ${total} 位用户`}>
         <div className="flex items-center gap-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -102,16 +204,20 @@ export default function UsersPage() {
               placeholder="搜索邮箱/用户名"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && fetchUsers(search)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
             />
           </div>
-          <Button variant="outline" onClick={() => fetchUsers(search)}>搜索</Button>
+          <Button variant="outline" onClick={() => handleSearch()}>搜索</Button>
+          <Button variant="outline" onClick={handleExport}>
+            <Download className="mr-1 h-4 w-4" /> 导出
+          </Button>
         </div>
       </PageHeader>
 
       <Card>
         <CardContent className="p-0">
           <DataTable columns={columns} data={users} keyField="id" emptyMessage="暂无用户" />
+          <Pagination page={page} limit={limit} total={total} totalPages={totalPages} onPageChange={changePage} onLimitChange={changeLimit} />
         </CardContent>
       </Card>
 
@@ -130,6 +236,32 @@ export default function UsersPage() {
               确认调整
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* User detail dialog */}
+      <Dialog open={!!detailUser} onOpenChange={(o) => !o && setDetailUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>用户详情：{detailUser?.email}</DialogTitle>
+          </DialogHeader>
+          {detailLoading || !detailUser ? (
+            <Skeleton className="h-40 w-full" />
+          ) : (
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">ID</span><span>{detailUser.id}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">用户名</span><span>{detailUser.username || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">角色</span><span>{detailUser.role}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">状态</span><span><StatusBadge status={detailUser.status} /></span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">余额</span><span className="text-primary font-medium">¥{Number(detailUser.balance).toFixed(2)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">冻结余额</span><span>¥{Number(detailUser.balanceFrozen).toFixed(2)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">邀请码</span><span>{detailUser.referralCode || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">注册时间</span><span>{new Date(detailUser.createdAt).toLocaleString()}</span></div>
+              <div className="flex justify-between border-t pt-2"><span className="text-muted-foreground">已完成订单</span><span>{detailUser._count.orders}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">服务器订阅</span><span>{detailUser._count.inbounds}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">旗下用户（推广）</span><span>{detailUser._count.referrals}</span></div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

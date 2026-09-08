@@ -13,6 +13,25 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 
+const STATUS_VARIANT: Record<string, any> = {
+  COMPLETED: 'success',
+  PENDING: 'warning',
+  PAID: 'warning',
+  PROCESSING: 'warning',
+  REFUNDED: 'secondary',
+  CANCELLED: 'secondary',
+  FAILED: 'danger',
+};
+const STATUS_LABEL: Record<string, string> = {
+  COMPLETED: '已完成',
+  PENDING: '待支付',
+  PAID: '已支付',
+  PROCESSING: '处理中',
+  REFUNDED: '已退款',
+  CANCELLED: '已取消',
+  FAILED: '失败',
+};
+
 export default function DashboardPage() {
   const { user, loading } = useAuth();
   const { t } = useI18n();
@@ -136,14 +155,9 @@ export default function DashboardPage() {
                     <div className="text-xs text-muted-foreground">{order.orderNo}</div>
                   </div>
                   <div className="flex items-center gap-3">
-                    <span className="font-semibold text-primary">¥{Number(order.amount)}</span>
-                    <Badge
-                      variant={
-                        order.status === 'COMPLETED' ? 'success' :
-                        order.status === 'PENDING' ? 'warning' : 'secondary'
-                      }
-                    >
-                      {order.status}
+                    <span className="font-semibold text-primary">¥{Number(order.payAmount ?? order.amount)}</span>
+                    <Badge variant={STATUS_VARIANT[order.status] || 'secondary'}>
+                      {STATUS_LABEL[order.status] || order.status}
                     </Badge>
                   </div>
                 </div>

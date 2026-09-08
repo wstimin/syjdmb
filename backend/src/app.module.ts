@@ -9,6 +9,11 @@ import { PlanModule } from './plan/plan.module';
 import { OrderModule } from './order/order.module';
 import { PaymentModule } from './payment/payment.module';
 import { CardModule } from './card/card.module';
+import { RechargeModule } from './recharge/recharge.module';
+import { TransactionsModule } from './transactions/transaction.module';
+import { CouponModule } from './coupon/coupon.module';
+import { EmailModule } from './email/email.module';
+import { RefundsModule } from './refunds/refunds.module';
 import { SocksModule } from './socks/socks.module';
 import { TicketModule } from './ticket/ticket.module';
 import { AnnouncementModule } from './announcement/announcement.module';
@@ -41,6 +46,11 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
     OrderModule,
     PaymentModule,
     CardModule,
+    RechargeModule,
+    TransactionsModule,
+    CouponModule,
+    EmailModule,
+    RefundsModule,
     SocksModule,
     TicketModule,
     AnnouncementModule,

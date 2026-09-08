@@ -114,4 +114,15 @@ export class TicketController {
     const result = await this.ticketService.getStats();
     return { success: true, data: result };
   }
+
+  // 放在所有静态子路由之后，避免 :id 吞掉 mine/stats 等静态路径
+  @Get(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Get ticket with message history' })
+  async getOne(@Param('id', ParseIntPipe) id: number) {
+    const result = await this.ticketService.findOne(id);
+    return { success: true, data: result };
+  }
 }

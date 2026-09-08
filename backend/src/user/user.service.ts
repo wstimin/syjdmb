@@ -70,10 +70,22 @@ export class UserService {
     return user;
   }
 
-  async updateProfile(userId: number, data: { username?: string; avatar?: string; language?: string }) {
+  async updateProfile(userId: number, data: any) {
+    // 严格白名单：登录后的用户只允许修改这三个字段。
+    // 之前把整个请求体直接透传给 prisma.update，等于允许任何用户把自己改成 ADMIN/改余额（提权漏洞）。
+    const allowed: Record<string, string> = {};
+    if (typeof data.username === 'string' && data.username.trim()) {
+      allowed.username = data.username.trim().slice(0, 30);
+    }
+    if (typeof data.avatar === 'string') {
+      allowed.avatar = data.avatar.slice(0, 500);
+    }
+    if (typeof data.language === 'string') {
+      allowed.language = data.language.slice(0, 10);
+    }
     return this.prisma.user.update({
       where: { id: userId },
-      data,
+      data: allowed,
       select: {
         id: true,
         uuid: true,
@@ -138,7 +150,9 @@ export class UserService {
       this.prisma.transaction.create({
         data: {
           userId,
-          type: amount > 0 ? 'ADMIN_ADJUST' : 'PURCHASE',
+          // 正负都记 ADMIN_ADJUST（金额带符号）：扣费/退款不是「购买套餐」，
+          // 用户端展示为「人工调整」，流水统计不把它当消费或收入
+          type: 'ADMIN_ADJUST',
           amount,
           balance: newBalance,
           description,

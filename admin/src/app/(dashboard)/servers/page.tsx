@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, Plug, Server as ServerIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, Plug, Server as ServerIcon, BarChart3 } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,8 @@ import { Label } from '@/components/ui/label';
 import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import Pagination from '@/components/shared/pagination';
+import { StatCard } from '@/components/shared/stat-card';
 
 export default function ServersPage() {
   const [servers, setServers] = useState<any[]>([]);
@@ -18,6 +20,17 @@ export default function ServersPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
+
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
+
+  // 服务器统计弹窗
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsServer, setStatsServer] = useState<any | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [stats, setStats] = useState<any | null>(null);
+  const [statsInbounds, setStatsInbounds] = useState<any[]>([]);
 
   const [form, setForm] = useState({
     name: '', host: '', port: '54321', protocol: 'http', apiPath: '/panel/api',
@@ -105,6 +118,46 @@ export default function ServersPage() {
     }
   };
 
+  // 打开统计弹窗：并拉取实时状态 + 节点列表
+  const openStats = async (s: any) => {
+    setStatsServer(s);
+    setStats(null);
+    setStatsInbounds([]);
+    setStatsOpen(true);
+    setStatsLoading(true);
+    try {
+      // GET /servers/:id/stats -> { success, data: { success, obj: XUI server status } }
+      const statsRes = await api.get(`/servers/${s.id}/stats`);
+      setStats(statsRes.data?.data?.obj || statsRes.data?.data);
+      // GET /servers/:id/inbounds -> { success, data: { success, obj: [...] } }
+      const inbRes = await api.get(`/servers/${s.id}/inbounds`);
+      setStatsInbounds(Array.isArray(inbRes.data?.data?.obj) ? inbRes.data.data.obj : []);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+      setStats(null);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
+
+  const closeStats = () => {
+    setStatsOpen(false);
+    setStatsServer(null);
+    setStats(null);
+    setStatsInbounds([]);
+  };
+
+  // 客户端搜索过滤（后端 GET /servers 无 search 参数）
+  const filtered = servers.filter((s: any) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return [s.name, s.host, s.country, s.flag].some((v) => String(v ?? '').toLowerCase().includes(q));
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / limit));
+  const currentPage = Math.min(page, totalPages);
+  const paged = filtered.slice((currentPage - 1) * limit, currentPage * limit);
+
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
   const columns = [
@@ -124,6 +177,9 @@ export default function ServersPage() {
       key: 'actions', header: '操作',
       render: (s: any) => (
         <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={() => openStats(s)}>
+            <BarChart3 className="mr-1 h-3 w-3" />统计
+          </Button>
           <Button size="sm" variant="outline" onClick={() => testConn(s.id)} disabled={testing === s.id}>
             <Plug className="mr-1 h-3 w-3" />{testing === s.id ? '测试中' : '测试'}
           </Button>
@@ -146,10 +202,27 @@ export default function ServersPage() {
         <code className="ml-2 rounded bg-background px-2 py-0.5 text-xs">/panel/api/*</code>
       </div>
 
+      <div className="mb-4 flex items-center gap-2">
+        <Input
+          className="max-w-xs"
+          placeholder="搜索名称 / 地址 / 地区…"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+        />
+      </div>
+
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={servers} keyField="id" emptyMessage="暂无服务器" />
+          <DataTable columns={columns} data={paged} keyField="id" emptyMessage="暂无服务器" />
         </CardContent>
+        <Pagination
+          page={currentPage}
+          limit={limit}
+          total={filtered.length}
+          totalPages={totalPages}
+          onPageChange={setPage}
+          onLimitChange={(l) => { setLimit(l); setPage(1); }}
+        />
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -233,6 +306,64 @@ export default function ServersPage() {
             </div>
           </div>
           <Button className="w-full" variant="gradient" onClick={save}>保存</Button>
+        </DialogContent>
+      </Dialog>
+
+      {/* 服务器统计弹窗 */}
+      <Dialog open={statsOpen} onOpenChange={(open) => { if (!open) closeStats(); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>服务器统计 {statsServer ? `${statsServer.flag} ${statsServer.name}` : ''}</DialogTitle>
+          </DialogHeader>
+          {statsLoading ? (
+            <div className="space-y-4"><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>
+          ) : (
+            <div className="space-y-4">
+              {!stats ? (
+                <p className="text-sm text-muted-foreground">无法获取服务器状态。</p>
+              ) : (
+                <div className="grid grid-cols-2 gap-3">
+                  <StatCard title="CPU" value={stats.cpu != null ? `${stats.cpu}%` : '-'} color="#f97316" />
+                  <StatCard
+                    title="内存"
+                    value={stats.mem?.current != null ? `${stats.mem.current}%` : (stats.mem ?? '-')}
+                    sub={stats.mem ? `${stats.mem.total ?? ''} 总 / ${stats.mem.used ?? ''} 已用` : undefined}
+                    color="#3b82f6"
+                  />
+                  <StatCard
+                    title="Xray"
+                    value={stats.xray?.running === true || stats.xray?.state === 'running' ? '运行中' : (stats.xray?.state || '未运行')}
+                    color={stats.xray?.running === true || stats.xray?.state === 'running' ? '#22c55e' : '#ef4444'}
+                  />
+                  <StatCard title="版本" value={stats.xray?.version || '-'} />
+                </div>
+              )}
+
+              <div>
+                <div className="mb-2 text-sm font-medium">
+                  服务器节点（{statsInbounds.length}）
+                </div>
+                {statsInbounds.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">该服务器上暂无节点。</p>
+                ) : (
+                  <ul className="max-h-56 space-y-1 overflow-y-auto text-sm">
+                    {statsInbounds.map((ib: any, i: number) => (
+                      <li key={ib.id ?? i} className="flex items-center justify-between rounded-md border px-3 py-2">
+                        <span>{ib.remark || `Inbound #${ib.id}`}</span>
+                        <span className="ml-2 flex items-center gap-2">
+                          {ib.port && <span className="font-mono text-xs text-muted-foreground">:{ib.port}</span>}
+                          <span className="text-xs">{ib.protocol}</span>
+                          {ib.enable === false
+                            ? <StatusBadge status="INACTIVE" />
+                            : <span className="text-emerald-500 text-xs font-medium">● 启用</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

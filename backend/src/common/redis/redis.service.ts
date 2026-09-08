@@ -46,6 +46,26 @@ export class RedisService implements OnModuleDestroy {
     return this.client.incr(key);
   }
 
+  // 原子计数 + 首建设置 TTL（Lua 一条命令内完成）：
+  // 避免「incr 成功、进程在 expire 前崩溃 → 计数器永远不过期」的脏键。
+  // 顺带自愈：旧模式留下的无 TTL 计数器（ttl<0）也会被补上过期时间。
+  private readonly INCR_WITH_WINDOW_LUA = `
+    local cur = redis.call('incr', KEYS[1])
+    if cur == 1 then
+      redis.call('expire', KEYS[1], ARGV[1])
+    else
+      local t = redis.call('ttl', KEYS[1])
+      if t < 0 then
+        redis.call('expire', KEYS[1], ARGV[1])
+      end
+    end
+    return cur`;
+
+  async incrWithWindow(key: string, windowSeconds: number): Promise<number> {
+    const current = await this.client.eval(this.INCR_WITH_WINDOW_LUA, 1, key, windowSeconds);
+    return Number(current);
+  }
+
   async expire(key: string, ttlSeconds: number): Promise<void> {
     await this.client.expire(key, ttlSeconds);
   }
@@ -62,12 +82,9 @@ export class RedisService implements OnModuleDestroy {
     return this.client.hgetall(key);
   }
 
-  // Rate limiting helper
+  // Rate limiting helper（原子版：incr + 首建 TTL 同一条命令完成，无崩溃窗口）
   async checkRateLimit(key: string, maxRequests: number, windowSeconds: number): Promise<boolean> {
-    const current = await this.incr(key);
-    if (current === 1) {
-      await this.expire(key, windowSeconds);
-    }
+    const current = await this.incrWithWindow(key, windowSeconds);
     return current <= maxRequests;
   }
 }

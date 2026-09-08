@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Delete,
+  Body,
   Param,
   Query,
   UseGuards,
@@ -39,6 +40,45 @@ export class InboundController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     const result = await this.inboundService.findById(id, userId);
+    return { success: true, data: result };
+  }
+
+  // 用户给自己的【已有节点】后期挂载/卸载 SOCKS 中转（写入该节点出站 + 路由）
+  @Post('mine/:id/relay')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Mount SOCKS relay onto my node (later attach)' })
+  async attachRelay(
+    @CurrentUser('id') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { socksId: number },
+  ) {
+    const result = await this.inboundService.attachRelay(userId, id, body.socksId);
+    return { success: true, data: result };
+  }
+
+  @Delete('mine/:id/relay')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unmount SOCKS relay from my node' })
+  async detachRelay(
+    @CurrentUser('id') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const result = await this.inboundService.detachRelay(userId, id);
+    return { success: true, data: result };
+  }
+
+  // 用户实时流量
+  @Get('mine/:id/traffic')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get my node realtime traffic' })
+  async getMyTraffic(
+    @CurrentUser('id') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const result = await this.inboundService.getMyTraffic(userId, id);
     return { success: true, data: result };
   }
 

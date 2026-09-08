@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Copy, XCircle, Check } from 'lucide-react';
+import { Plus, Copy, XCircle, Check, Search, Download } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { copyToClipboard } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
@@ -12,6 +12,11 @@ import { Label } from '@/components/ui/label';
 import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
+import Pagination from '@/components/shared/pagination';
+import { StatCard } from '@/components/shared/stat-card';
+import { exportToCsv } from '@/lib/csv';
+
+const STATUS_OPTIONS = ['ALL', 'UNUSED', 'USED', 'CANCELLED'];
 
 export default function CardsPage() {
   const [cards, setCards] = useState<any[]>([]);
@@ -23,14 +28,57 @@ export default function CardsPage() {
   const [generated, setGenerated] = useState<any>(null);
   const [copied, setCopied] = useState(false);
 
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('ALL');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(10);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [stats, setStats] = useState<any | null>(null);
+
   const fetchCards = () => {
-    api.get('/cards', { params: { page: 1, limit: 50 } })
-      .then((res) => setCards(res.data.data.cards))
+    setLoading(true);
+    api.get('/cards', {
+      params: {
+        page,
+        limit,
+        status: status === 'ALL' ? undefined : status,
+        search: search || undefined,
+      },
+    })
+      .then((res) => {
+        setCards(res.data.data.cards);
+        setTotal(res.data.data.total);
+        setTotalPages(res.data.data.totalPages);
+      })
       .catch((err) => toast.error(getErrorMessage(err)))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchCards(); }, []);
+  const fetchStats = () => {
+    api.get('/cards/stats')
+      .then((res) => setStats(res.data.data))
+      .catch(() => { /* 统计接口失败时静默，保留当前显示 */ });
+  };
+
+  useEffect(() => { fetchCards(); }, [page, limit, status]);
+
+  useEffect(() => { fetchStats(); }, []);
+
+  const resetPage = () => setPage(1);
+
+  const exportCards = () => {
+    exportToCsv(
+      cards.map((c) => ({
+        code: c.code,
+        amount: Number(c.amount),
+        status: c.status,
+        usedBy: c.user?.email || '',
+        createdAt: c.createdAt,
+      })),
+      'cards'
+    );
+  };
 
   const generate = async () => {
     try {
@@ -88,20 +136,53 @@ export default function CardsPage() {
 
   return (
     <div>
-      <PageHeader title="卡密管理" subtitle="生成和兑换卡密">
-        <Button variant="gradient" onClick={() => setDialogOpen(true)}><Plus className="mr-1 h-4 w-4" />生成卡密</Button>
+      <PageHeader title="卡密管理" subtitle={`共 ${total} 张卡密`}>
+        <div className="flex items-center gap-2">
+          <select
+            value={status}
+            onChange={(e) => { setStatus(e.target.value); resetPage(); }}
+            className="h-10 rounded-md border bg-background px-3 text-sm"
+          >
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s} value={s}>{s === 'ALL' ? '全部状态' : s}</option>
+            ))}
+          </select>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              className="w-64 pl-10"
+              placeholder="搜索卡密"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && fetchCards()}
+            />
+          </div>
+          <Button variant="outline" onClick={() => fetchCards()}>搜索</Button>
+          <Button variant="outline" onClick={exportCards}>
+            <Download className="mr-1 h-4 w-4" />导出
+          </Button>
+          <Button variant="gradient" onClick={() => setDialogOpen(true)}><Plus className="mr-1 h-4 w-4" />生成卡密</Button>
+        </div>
       </PageHeader>
 
       {/* Statistics */}
       <div className="mb-4 grid gap-4 sm:grid-cols-3">
-        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">总卡密</div><div className="text-xl font-bold">{cards.length}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">未使用</div><div className="text-xl font-bold text-blue-600">{cards.filter((c) => c.status === 'UNUSED').length}</div></CardContent></Card>
-        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">已使用</div><div className="text-xl font-bold text-emerald-600">{cards.filter((c) => c.status === 'USED').length}</div></CardContent></Card>
+        <StatCard title="总卡密" value={stats?.total ?? cards.length} />
+        <StatCard title="未使用" value={stats?.unused ?? 0} color="rgb(37 99 235)" />
+        <StatCard title="已使用" value={stats?.used ?? 0} color="rgb(5 150 105)" />
       </div>
 
       <Card>
         <CardContent className="p-0">
           <DataTable columns={columns} data={cards} keyField="id" emptyMessage="暂无卡密" />
+          <Pagination
+            page={page}
+            limit={limit}
+            total={total}
+            totalPages={totalPages}
+            onPageChange={setPage}
+            onLimitChange={(l) => { setLimit(l); resetPage(); }}
+          />
         </CardContent>
       </Card>
 

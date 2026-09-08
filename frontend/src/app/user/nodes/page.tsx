@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
-import { Copy, QrCode, Server, Wifi, Check } from 'lucide-react';
+import { Copy, QrCode, Server, Wifi, Check, Network, Loader2, RotateCcw } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn, copyToClipboard } from '@/lib/utils';
+import RenewNodeDialog from '@/components/renew-node-dialog';
 
 const STATUS_MAP: Record<string, any> = {
   ACTIVE: { label: '活跃', variant: 'success' },
@@ -26,6 +27,18 @@ export default function NodesPage() {
   const [nodes, setNodes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  // SOCKS 中转（后期挂载）
+  const [socksList, setSocksList] = useState<any[]>([]);
+  const [relayDialogId, setRelayDialogId] = useState<number | null>(null);
+  const [relaySocksId, setRelaySocksId] = useState<number | null>(null);
+  const [relayBusy, setRelayBusy] = useState(false);
+
+  // 实时流量
+  const [trafficBusy, setTrafficBusy] = useState<number | null>(null);
+
+  // 续费弹窗（到期时间或流量额度存在才可续）
+  const [renewNode, setRenewNode] = useState<any>(null);
 
   useEffect(() => {
     api.get('/inbounds/mine')
@@ -44,6 +57,74 @@ export default function NodesPage() {
     setCopiedId(id);
     toast.success(t('common.copied'));
     setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  // 打开「挂载 SOCKS」弹窗时加载用户台账
+  const openRelayDialog = async (nodeId: number) => {
+    setRelayDialogId(nodeId);
+    setRelaySocksId(null);
+    try {
+      const res = await api.get('/socks/mine');
+      setSocksList((res.data.data || []).filter((p: any) => p.status === 'ACTIVE'));
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+      setSocksList([]);
+    }
+  };
+
+  const attachRelay = async (nodeId: number) => {
+    if (!relaySocksId) {
+      toast.error('请选择一个 SOCKS 代理');
+      return;
+    }
+    setRelayBusy(true);
+    try {
+      await api.post(`/inbounds/mine/${nodeId}/relay`, { socksId: relaySocksId });
+      toast.success('中转已挂载');
+      setRelayDialogId(null);
+      refetch();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setRelayBusy(false);
+    }
+  };
+
+  const detachRelay = async (nodeId: number) => {
+    if (!confirm('确认卸载该节点的 SOCKS 中转？')) return;
+    try {
+      await api.delete(`/inbounds/mine/${nodeId}/relay`);
+      toast.success('中转已卸载');
+      refetch();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  // 实时流量刷新
+  const fetchTraffic = async (nodeId: number) => {
+    setTrafficBusy(nodeId);
+    try {
+      const res = await api.get(`/inbounds/mine/${nodeId}/traffic`);
+      const d = res.data.data;
+      setNodes((prev) =>
+        prev.map((n) =>
+          n.id === nodeId
+            ? { ...n, totalTraffic: d.total, trafficLimit: d.trafficLimit }
+            : n,
+        ),
+      );
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setTrafficBusy(null);
+    }
+  };
+
+  const refetch = () => {
+    api.get('/inbounds/mine')
+      .then((res) => setNodes(res.data.data))
+      .catch((err) => toast.error(getErrorMessage(err)));
   };
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-40 w-full" /><Skeleton className="h-40 w-full" /></div>;
@@ -119,20 +200,35 @@ export default function NodesPage() {
                     </div>
 
                     {/* Usage bar */}
-                    {trafficLimit > 0 && (
-                      <div>
-                        <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-                          <span>{t('nodes.used')}</span>
-                          <span>{pct.toFixed(0)}%</span>
-                        </div>
-                        <div className="h-2 overflow-hidden rounded-full bg-muted">
-                          <div
-                            className="h-full bg-gradient-to-r from-violet-500 to-blue-500"
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+                        <span>{t('nodes.used')} {trafficBusy === node.id && <Loader2 className="ml-1 inline h-3 w-3 animate-spin" />}</span>
+                        <button
+                          onClick={() => fetchTraffic(node.id)}
+                          disabled={trafficBusy === node.id}
+                          className="font-medium text-primary hover:underline disabled:opacity-50"
+                        >
+                          刷新
+                        </button>
                       </div>
-                    )}
+                      {trafficLimit > 0 ? (
+                        <>
+                          <div className="mb-1 text-xs">
+                            {(trafficUsed / 1024 / 1024 / 1024).toFixed(2)}GB / {(trafficLimit / 1024 / 1024 / 1024).toFixed(2)}GB
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full bg-gradient-to-r from-violet-500 to-blue-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">
+                          不限流量 · 已用 {(trafficUsed / 1024 / 1024 / 1024).toFixed(2)}GB
+                        </div>
+                      )}
+                    </div>
 
                     {/* Actions */}
                     <div className="flex gap-2">
@@ -162,6 +258,34 @@ export default function NodesPage() {
                           </div>
                         </DialogContent>
                       </Dialog>
+                      {/* 续费/续流量：不限时且不限流量的节点无法续，隐藏按钮 */}
+                      {node.expiryTime || Number(node.trafficLimit) > 0 ? (
+                        <Button size="sm" variant="gradient" onClick={() => setRenewNode(node)}>
+                          <RotateCcw className="h-4 w-4" />
+                          {t('nodes.renew')}
+                        </Button>
+                      ) : null}
+                    </div>
+
+                    {/* SOCKS 中转（后期挂载/卸载） */}
+                    <div className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-3 py-2">
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Network className="h-4 w-4" />
+                        {node.relayEnabled ? (
+                          <span>中转出口：<span className="font-mono text-foreground">{node.relaySocksHost || '—'}:{node.relaySocksPort || ''}</span></span>
+                        ) : (
+                          <span>未开启中转</span>
+                        )}
+                      </div>
+                      {node.relayEnabled ? (
+                        <Button size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => detachRelay(node.id)}>
+                          卸载中转
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="outline" className="h-7" onClick={() => openRelayDialog(node.id)} disabled={node.status !== 'ACTIVE'}>
+                          <Network className="mr-1 h-3 w-3" />挂载 SOCKS
+                        </Button>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -170,6 +294,65 @@ export default function NodesPage() {
           })}
         </div>
       )}
+
+      {/* 挂载 SOCKS 中转 弹窗 */}
+      <Dialog open={relayDialogId !== null} onOpenChange={(open) => !open && setRelayDialogId(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>挂载 SOCKS 中转</DialogTitle>
+          </DialogHeader>
+          {socksList.length === 0 ? (
+            <div className="py-6 text-center text-sm text-muted-foreground">
+              <Network className="mx-auto mb-2 h-10 w-10 text-muted-foreground/30" />
+              <p>你还没有添加 SOCKS 代理</p>
+              <Link href="/user/socks" className="mt-3 inline-block font-medium text-primary underline">
+                去「我的 SOCKS」添加
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                节点流量将全程经所选 SOCKS 代理转发，出口 IP 为该代理地址。
+              </p>
+              <div className="flex flex-col gap-2">
+                {socksList.map((p: any) => {
+                  const active = relaySocksId === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setRelaySocksId(p.id)}
+                      className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                        active ? 'border-primary bg-primary/10' : 'border-input hover:bg-accent'
+                      }`}
+                    >
+                      <span className="font-medium">{p.remark || `${p.host}:${p.port}`}</span>
+                      <span className="font-mono text-xs text-muted-foreground">{p.host}:{p.port}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <Button
+                className="w-full"
+                variant="gradient"
+                disabled={!relaySocksId || relayBusy}
+                onClick={() => relayDialogId && attachRelay(relayDialogId)}
+              >
+                {relayBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Network className="mr-2 h-4 w-4" />}
+                挂载中转
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* 续费 / 续流量 弹窗 */}
+      <RenewNodeDialog
+        node={renewNode}
+        open={renewNode !== null}
+        onClose={() => setRenewNode(null)}
+        onDone={refetch}
+      />
     </div>
   );
 }

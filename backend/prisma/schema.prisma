@@ -28,10 +28,12 @@ model User {
   referrer      User?     @relation("Referrals", fields: [referredBy], references: [id])
   referrals     User[]    @relation("Referrals")
   orders        Order[]
+  recharges     Recharge[]
   inbounds      Inbound[]
   socksProxies  SocksProxy[]
   tickets       Ticket[]
   cards         Card[]
+  refundRequests RefundRequest[]
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -151,6 +153,11 @@ model Order {
   paidAt       DateTime?
   expiresAt    DateTime?   // when the subscription expires
   autoRenew    Boolean     @default(false)
+  // 优惠券：couponId 关联使用的券；couponAppliedAmount 记录本次优惠金额（实付 = 原价 - 优惠）。
+  // 订单实付金额写 payAmount（优先于 amount 用于一切收款/流水），amount 恒为下单时原价。
+  couponId      Int?
+  coupon        Coupon?    @relation(fields: [couponId], references: [id], onDelete: SetNull)
+  couponAppliedAmount Decimal? @db.Decimal(10, 2)
   // 购买时勾选中转：把源节点的出站改为用户提供的 SOCKS 节点（出口 = 该 SOCKS 的 IP）
   relayEnabled Boolean     @default(false)
   relaySocksHost String?   // 用户填的 SOCKS 节点 IP/域名
@@ -160,7 +167,12 @@ model Order {
   // 下单时选择的服务器与系统默认协议（vless+reality），激活时使用
   serverId    Int?         // 用户选购的服务器（plan.serverIds 之一）
   protocol    String?      // 激活时的节点协议（默认 vless）
+  // 续费单：对已有节点续期/续流量（非建新节点）。激活时走 bulkAdjust 加量 + 面板自动重启。
+  renewalOfInboundId Int?  // 目标节点（Inbound.id），必须属于下单用户
+  renewalOfInbound   Inbound? @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
+  renewalAppliedAt   DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
   referralEarning Decimal? @db.Decimal(10, 2)
+  refundRequests RefundRequest[]
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
 
@@ -225,6 +237,8 @@ model Inbound {
   realityMinVersion String?  // 最小客户端版本，默认 1.0.0
   status      InboundStatus  @default(ACTIVE)
   remark      String?
+  renewalOrders Order[]      @relation("OrderRenewal") // 针对本节点的续费/续流量订单
+  expiryReminderStage Int    @default(0) // 到期提醒档位：0=未发 1=已发「3天内」 2=已发「1天内」 3=已发「已到期」（各档只发一次）
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
@@ -411,4 +425,101 @@ enum TransactionType {
   CARD_REDEEM
   REFERRAL
   ADMIN_ADJUST
+}
+
+// ==========================================
+// Refund Requests (退款申请)
+// ==========================================
+
+model RefundRequest {
+  id         Int          @id @default(autoincrement())
+  orderId    Int
+  order      Order        @relation(fields: [orderId], references: [id])
+  userId     Int
+  user       User         @relation(fields: [userId], references: [id])
+  reason     String                     // 用户申请理由
+  amount     Decimal      @db.Decimal(10, 2) // 退款金额 = 订单实付快照（payAmount ?? amount，申请时固定）
+  status     RefundStatus @default(PENDING)
+  adminNote  String?                    // 审批意见（拒绝必填，展示给用户与邮件正文）
+  reviewedBy Int?                       // 审批管理员 userId（非 FK，与 adminNote 同为审计字段）
+  reviewedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@unique([orderId, status]) // 同订单只能有一条 PENDING；拒绝/撤销后可重新申请（PENDING + 终态可共存）
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED // 用户自行撤销：PENDING → CANCELLED，支持「申请错了→改主意→重新申请」路径
+}
+
+// ==========================================
+// Coupons (优惠券)
+// ==========================================
+
+model Coupon {
+  id           Int         @id @default(autoincrement())
+  code         String      @unique       // 兑换码（创建时后端生成，用户下单时输入，自动大写）
+  name         String                    // 显示名称（如「新人 9 折券」）
+  type         CouponType                // PERCENT＝按百分比折扣；AMOUNT＝立减固定金额
+  value        Decimal     @db.Decimal(10, 2)
+  // PERCENT 语义：value 是「优惠百分比」（10 = 打 9 折，即优惠 10%）；AMOUNT 语义：value 是「立减金额」
+  minAmount    Decimal     @default(0) @db.Decimal(10, 2)   // 订单原价满多少可用；0 = 不限
+  maxDiscount  Decimal?    @db.Decimal(10, 2)               // 单笔优惠封顶；null = 不封顶
+  totalCount   Int         @default(0)    // 总发行量；0 = 不限量
+  usedCount    Int         @default(0)
+  perUserLimit Int         @default(1)    // 每用户可用次数（按非取消订单计数）
+  startAt      DateTime?                 // 生效起始；null = 创建即生效
+  endAt        DateTime?                 // 失效时间；null = 永久有效
+  status       CouponStatus @default(ACTIVE)
+  orders       Order[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([status])
+  @@index([code])
+}
+
+enum CouponType {
+  PERCENT
+  AMOUNT
+}
+
+enum CouponStatus {
+  ACTIVE
+  DISABLED
+}
+
+// ==========================================
+// Recharges (余额直充订单)
+// ==========================================
+
+model Recharge {
+  id        Int            @id @default(autoincrement())
+  orderNo   String         @unique        // RC + 日期 + 随机（与商品单 SO 前缀区分，回调按前缀分流）
+  userId    Int
+  user      User           @relation(fields: [userId], references: [id])
+  amount    Decimal        @db.Decimal(10, 2)
+  status    RechargeStatus @default(PENDING)
+  payMethod String?        // WECHAT / ALIPAY（网关发起的支付方式）
+  tradeNo   String?        // 网关交易号
+  paidAt    DateTime?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([userId, status])
+  @@index([orderNo])
+  @@index([status, createdAt])
+}
+
+enum RechargeStatus {
+  PENDING
+  PAID
+  CANCELLED
+  EXPIRED
 }

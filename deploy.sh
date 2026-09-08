@@ -2,15 +2,17 @@
 # =====================================================================
 #  NodeShop 管理工具  （命令: shop）
 #  --------------------------------------------------------------------
-#  - 首次运行（curl 管道或尚未安装时）：自动 准备环境→拉代码→生成 .env→
-#    构建→迁移→建默认管理员，全程用默认值，不打断输入。
+#  - 首次运行（curl 管道或尚未安装时）：自动 装 Docker→拉代码→生成 .env→
+#    设置管理员账号（默认值，回车即可）→构建→启动→迁移（管理员已建则保留）。
+#  - 域名反代只填一个主域名，自动生成 前端 + 管理后台 两个对外地址；
+#    API 为内置服务不对外（文档经 https://<域名>/docs 查看）。
 #  - 之后用 `shop` 调出管理菜单：查看信息 / 更新 / 回滚 / 重置登录 /
 #    添加域名反代 / 查看日志 / 退出。所有操作保留数据库与 .env。
 #  - 默认管理员: admin@nodeshop.com / admin123456（可通过菜单 4 修改）
 # =====================================================================
 set -euo pipefail
 
-SOFTWARE_VERSION="1.0.0"   # 整体版本：与 backend/frontend/admin 的 package.json 对齐
+SOFTWARE_VERSION="1.1.0"   # 整体版本：与 backend/frontend/admin 的 package.json 对齐
 REPO_URL="https://github.com/wstimin/syjdmb.git"
 INSTALL_DIR="${INSTALL_DIR:-/opt/nodeshop}"
 MANAGE="$INSTALL_DIR/deploy.sh"
@@ -28,6 +30,24 @@ ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; }
 
+# 获取公网 IP：优先向公网回显服务查询（避免 hostname -I 取到内网/VPC 私网 IP），
+# 全部失败时退回本机网卡首址。
+detect_public_ip() {
+  local ip=""
+  if command -v curl &>/dev/null; then
+    local host
+    for host in https://ip.sb https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
+      ip=$(curl -fsSL --connect-timeout 4 --max-time 6 "$host" 2>/dev/null | tr -d ' \r\n' || true)
+      case "$ip" in
+        [0-9]*.[0-9]*.[0-9]*.[0-9]*) break ;;
+        *) ip="" ;;
+      esac
+    done
+  fi
+  [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "$ip"
+}
+
 # =====================================================================
 # 环境准备：Docker 安装
 # =====================================================================
@@ -42,10 +62,16 @@ install_docker_if_needed() {
       yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1 || true
     else
       command -v git >/dev/null 2>&1 || apt-get install -y -qq git >/dev/null 2>&1 || true
+      command -v curl >/dev/null 2>&1 || apt-get install -y -qq curl >/dev/null 2>&1 || true
       curl -fsSL https://get.docker.com | sh || true
     fi
     systemctl enable docker >/dev/null 2>&1 && systemctl start docker >/dev/null 2>&1 || true
     command -v git >/dev/null 2>&1 || apt-get install -y -qq git >/dev/null 2>&1 || yum install -y git >/dev/null 2>&1 || true
+    # 终检兜底：上方 yum/get.docker.com 失败会被 || true 吞掉，不能假装装好了
+    if ! command -v docker &>/dev/null || ! docker compose version &>/dev/null; then
+      err "Docker 安装失败，请检查上方日志（常见原因：系统源不可用/网络受限）。可手动安装 Docker 后重跑本脚本。"
+      exit 1
+    fi
     ok "Docker 安装完成"
   fi
   # Docker 镜像加速（国内服务器）
@@ -78,7 +104,7 @@ ensure_env() {
   local DB_PASS JWT_SEC SERVER_IP
   DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
   JWT_SEC=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 48)
-  SERVER_IP=$(hostname -I | awk '{print $1}')
+  SERVER_IP=$(detect_public_ip)
   cat > "$INSTALL_DIR/.env" <<EOF
 DB_PASS=${DB_PASS}
 DATABASE_URL="postgresql://nodeadmin:${DB_PASS}@postgres:5432/nodeshop?schema=public"
@@ -87,9 +113,12 @@ BACKEND_PORT=3001
 JWT_SECRET="${JWT_SEC}"
 JWT_EXPIRES_IN="15m"
 JWT_REFRESH_EXPIRES_IN="7d"
+# 对外地址（公网）：FRONTEND_URL/ADMIN_URL 用于邮件链接与 CORS 白名单。
+# APP_URL 用于支付回调——回调必须公网可达，因此指向前端地址（走前端 /api 代理到后端），
+# 不指向内置的后端端口。
 FRONTEND_URL="http://${SERVER_IP}:3000"
 ADMIN_URL="http://${SERVER_IP}:3002"
-APP_URL="http://${SERVER_IP}:3001"
+APP_URL="http://${SERVER_IP}:3000"
 APP_NAME="NodeShop"
 XUI_PANELS="[]"
 EOF
@@ -101,9 +130,15 @@ EOF
 # 下载或载入失败返回 1，由调用方回退到本机 --build（功能不受影响，只是慢）。
 # =====================================================================
 load_prebuilt_images() {
+  # 回滚（菜单3）时代码已切到旧提交：禁用预编译镜像、改为本机编译旧代码，
+  # 否则会拉到最新的 nightly 镜像，导致「回滚」实际在跑最新版、等于没回滚。
+  if [ "${SKIP_PREBUILT:-0}" = "1" ]; then
+    warn "已跳过预编译镜像（回滚/本地编译模式）"
+    return 1
+  fi
   info "拉取预编译镜像包（GitHub Releases: nightly）..."
   local tmp
-  tmp=$(mktemp)
+  tmp="$INSTALL_DIR/.prebuilt-$$.tgz"   # 下载到磁盘而非 /tmp(tmpfs)：小内存 VPS 的 /tmp 可能放不下镜像包
   if ! curl -fsSL --connect-timeout 20 --max-time 1200 -o "$tmp" "$PREBUILT_URL"; then
     warn "预编译包下载失败（${PREBUILT_URL}）→ 将使用服务器本机编译"
     rm -f "$tmp"
@@ -124,16 +159,26 @@ load_prebuilt_images() {
 # 部署核心：拉取预编译镜像（失败回退编译）→ 启动 → 迁移 → 默认管理员
 # =====================================================================
 deploy_core() {
+  # 本机编译时把当前提交作为 GIT_HASH 传给 compose build（与 CI 镜像标注同构），
+  # 使「代码/镜像一致性校验」在本地编译后也能通过，避免重复重编译
+  export GIT_HASH="${GIT_HASH:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
+
   # 停止旧容器但保留数据卷（更新不丢数据库/Redis）
   docker compose down 2>/dev/null || true
 
   info "构建并启动服务（优先预编译镜像，失败才本机编译）..."
   if ! load_prebuilt_images; then
     warn "回退：本机编译并启动（约 5-10 分钟）..."
-    docker compose up -d --build
+    if ! docker compose up -d --build 2>&1; then
+      err "构建/启动失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
+      return 1
+    fi
   elif ! docker compose up -d 2>/dev/null; then
     warn "compose 启动失败，回退本机编译..."
-    docker compose up -d --build
+    if ! docker compose up -d --build 2>&1; then
+      err "构建/启动失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
+      return 1
+    fi
   fi
 
   info "等待数据库就绪..."
@@ -157,21 +202,30 @@ deploy_core() {
   done
   [ "$okbe" = "1" ] && ok "后端容器已就绪"
 
-  # 后端镜像特征校验：若更新恰好跑在 CI 尚未产出最新镜像时，docker load 会拉到
-  # 旧 nightly →「代码(工作树)最新、镜像(运行)旧」错配，节点创建修复不生效。
-  # 以编译产物里的新代码特征串为准，缺失即在本机重新编译修正。
-  if docker exec nodeshop-backend sh -c 'grep -q "Xray reload failed" /app/dist/inbound/inbound.service.js' 2>/dev/null; then
-    ok "后端镜像为最新构建（含节点创建重载修复）"
-  else
-    warn "后端容器缺少最新修复特征（节点创建未重载 Xray）→ 本机编译修正..."
-    docker compose up -d --build
-    for i in $(seq 1 90); do
-      local STATE2
-      STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
-      if [ "$STATE2" = "running" ]; then break; fi
-      sleep 3
-    done
-    ok "镜像已本机编译，后端容器重启完成"
+  # 代码/镜像一致性校验：确保「git 拉到的代码」与「运行的镜像」来自同一提交。
+  # CI 构建时在镜像内写入 /app/.git-hash（build.yml → GIT_HASH=${{ github.sha }}）；
+  # 本机编译经 compose build args 传入 GIT_HASH。镜像标注缺失（旧 CI 产物）或
+  # 与当前工作树提交不一致（CI 尚未产出最新包）→ 本机重编译兜底，保证更新即最新。
+  if command -v git >/dev/null 2>&1; then
+    local EXPECT_HASH IMG_HASH
+    EXPECT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
+    IMG_HASH=$(docker exec nodeshop-backend cat /app/.git-hash 2>/dev/null || echo "")
+    if [ -n "$EXPECT_HASH" ] && [ "$IMG_HASH" = "$EXPECT_HASH" ]; then
+      ok "镜像与代码一致（提交 ${EXPECT_HASH}）"
+    else
+      warn "镜像与代码不一致（期望提交 ${EXPECT_HASH}，镜像标注 ${IMG_HASH:-无}）→ 本机编译修正..."
+      if ! docker compose up -d --build 2>&1; then
+        err "本机编译失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
+        return 1
+      fi
+      for i in $(seq 1 90); do
+        local STATE2
+        STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
+        if [ "$STATE2" = "running" ]; then break; fi
+        sleep 3
+      done
+      ok "本机编译完成，后端容器重启"
+    fi
   fi
 
   info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
@@ -180,9 +234,9 @@ deploy_core() {
   ok "数据库迁移完成"
 
   # 默认管理员/系统设置（upsert 幂等：已存在则不覆盖）
-  info "同步系统设置与默认管理员（${DEFAULT_ADMIN_EMAIL}，已存在则不修改）..."
-  docker exec -e SEED_ADMIN_EMAIL="$DEFAULT_ADMIN_EMAIL" \
-    -e SEED_ADMIN_PASSWORD="$DEFAULT_ADMIN_PASS" \
+  info "同步系统设置与默认管理员（${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}，已存在则不修改）..."
+  docker exec -e SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}" \
+    -e SEED_ADMIN_PASSWORD="${SEED_ADMIN_PASSWORD:-$DEFAULT_ADMIN_PASS}" \
     nodeshop-backend node prisma/seed.cjs 2>/dev/null || warn "seed 提示（仅同步系统设置，不影响已有数据）"
   ok "部署完成"
 }
@@ -225,18 +279,18 @@ cmd_status() {
   echo "  安装目录 : $INSTALL_DIR"
   echo "  软件版本 : ${SOFTWARE_VERSION}"
   echo "  当前版本 : $(cd "$INSTALL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo 未知)（$(cd "$INSTALL_DIR" && git log -1 --format=%cd --date=short 2>/dev/null || echo '')）"
-  local ip; ip=$(hostname -I | awk '{print $1}')
+  local ip; ip=$(detect_public_ip)
   echo "  服务器IP : $ip"
   if [ -f "$INSTALL_DIR/domain.txt" ]; then
     local d; d=$(cat "$INSTALL_DIR/domain.txt")
     echo "  域名     : $d（已配置反代）"
     echo "  前端     : https://$d"
     echo "  管理后台 : https://admin.$d"
-    echo "  API      : https://api.$d"
+    echo "  API      : 内置服务（不对外，文档见 https://$d/docs）"
   else
     echo "  前端     : http://${ip}:3000"
     echo "  管理后台 : http://${ip}:3002"
-    echo "  API      : http://${ip}:3001/api"
+    echo "  API      : 内置服务（不对外，本机 127.0.0.1:3001）"
   fi
   echo "  管理员   : ${DEFAULT_ADMIN_EMAIL}（密码可用菜单 4 重置）"
   echo "  数据卷   : $(docker volume inspect nodeshop_postgres_data >/dev/null 2>&1 && echo '存在（数据已保留）' || echo '未创建')"
@@ -291,8 +345,8 @@ cmd_rollback() {
   if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then warn "无效的提交号：$rev"; return; fi
   info "回滚到 $rev 并重新部署（master 会指向该提交，后续更新正常，不再游离 HEAD）..."
   git checkout -B master "$rev"
-  deploy_core || { warn "回滚部署失败，代码已切换。"; return; }
-  warn "已回滚到 $rev。回到最新版请使用菜单 2「更新」。"
+  SKIP_PREBUILT=1 deploy_core || { warn "回滚部署失败，代码已切换。"; return; }
+  warn "已回滚到 $rev（仅代码回滚，数据库结构不回滚；回到最新版请使用菜单 2「更新」）。"
 }
 
 # 4) 重置登录信息
@@ -336,23 +390,28 @@ JS
 # 5) 添加域名 / 反向代理
 cmd_domain() {
   echo; echo -e "${CYAN}-------- 添加域名 / 反向代理 --------${NC}"
-  echo "  将创建三个子域，请先在 DNS 解析到本机公网 IP："
+  echo "  只需填写一个主域名，自动创建两个对外地址（互不冲突，各自独立证书）："
   echo "    https://<域名>          → 前端 (3000)"
   echo "    https://admin.<域名>    → 管理后台 (3002)"
-  echo "    https://api.<域名>      → 后端 API (3001)"
+  echo "  后端 API 为内置服务，不配置独立域名：公网请求统一经前端/管理后台的 /api 代理转发，"
+  echo "  接口文档可在 https://<域名>/docs 查看。"
+  echo "  请先把上面两个域名解析（DNS A 记录）到本机公网 IP。"
   read -rp "  请输入主域名（如 shop.example.com，回车取消）: " domain
   [ -z "$domain" ] && { info "已取消"; return; }
 
   mkdir -p "$INSTALL_DIR/proxy"
   cat > "$INSTALL_DIR/proxy/Caddyfile" <<EOF
 $domain {
-    reverse_proxy frontend:3000
+    # API 文档（Swagger）内置入口：不开独立 api 域名
+    handle /docs* {
+        reverse_proxy backend:3001
+    }
+    handle {
+        reverse_proxy frontend:3000
+    }
 }
 admin.$domain {
     reverse_proxy admin:3002
-}
-api.$domain {
-    reverse_proxy backend:3001
 }
 EOF
   cat > "$INSTALL_DIR/proxy/docker-compose.proxy.yml" <<EOF
@@ -391,7 +450,17 @@ EOF
   info "启动反向代理 (Caddy) 并自动申请证书..."
   ( cd "$INSTALL_DIR/proxy" && docker compose -f docker-compose.proxy.yml up -d ) || { warn "反代启动失败"; return; }
   ok "反向代理已启动"
-  warn "请确认 DNS A 记录已指向本机，等待证书签发后访问 https://$domain"
+  # 同步 .env 对外地址（密码重置邮件链接、CORS 白名单、支付回调地址），并重建 backend 使配置生效。
+  # 支付回调经前端 https://域名/api/... 转发到后端，因此 APP_URL 指向前端域名。
+  info "同步 .env 对外地址为 https://${domain} ..."
+  sed -i -E \
+    -e "s|^FRONTEND_URL=.*|FRONTEND_URL=\"https://${domain}\"|" \
+    -e "s|^ADMIN_URL=.*|ADMIN_URL=\"https://admin.${domain}\"|" \
+    -e "s|^APP_URL=.*|APP_URL=\"https://${domain}\"|" \
+    "$INSTALL_DIR/.env" 2>/dev/null || warn ".env 更新失败（可手动修改 FRONTEND_URL/ADMIN_URL/APP_URL）"
+  docker compose up -d --force-recreate --no-deps backend >/dev/null 2>&1 || warn "backend 重建失败，可稍后手动重启使其生效"
+  ok "对外地址已更新"
+  warn "请确认两个域名都已解析到本机，等待证书签发后访问 https://$domain 与 https://admin.$domain"
   warn "如域名未解析，Caddy 会自动用自签证书，正式可用前请先完成 DNS。"
 }
 
@@ -461,8 +530,30 @@ fi
 
 # 首次部署检测：后端容器尚不存在 → 自动安装
 if ! docker inspect nodeshop-backend >/dev/null 2>&1; then
-  info "检测到首次部署，正在安装并启动（默认管理员 ${DEFAULT_ADMIN_EMAIL}）..."
+  # 首次安装交互：设置管理员账号（README 承诺的步骤）。
+  # 已用环境变量 SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD 预设（自动化脚本）时跳过提问；直接回车用默认值。
+  if [ -z "${SEED_ADMIN_EMAIL:-}" ] && [ -z "${SEED_ADMIN_PASSWORD:-}" ]; then
+    echo; echo -e "${CYAN}-------- 设置管理员账号（回车使用默认值）--------${NC}"
+    read -rp "  管理员邮箱 [${DEFAULT_ADMIN_EMAIL}]: " SEED_ADMIN_EMAIL || true
+    read -rsp "  管理员密码 [${DEFAULT_ADMIN_PASS}]: " SEED_ADMIN_PASSWORD || true
+    echo
+    SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}"
+    SEED_ADMIN_PASSWORD="${SEED_ADMIN_PASSWORD:-$DEFAULT_ADMIN_PASS}"
+  fi
+  info "检测到首次部署，正在安装并启动（管理员 ${SEED_ADMIN_EMAIL}）..."
   deploy_core || { err "首次部署失败，请检查上方日志"; exit 1; }
+  # 安装完成摘要（README 承诺：输出访问地址和登录凭据；地址使用公网 IP）
+  INSTALL_IP=$(detect_public_ip)
+  echo; echo -e "${GREEN}════════════════ 安装完成 ════════════════${NC}"
+  echo "  前端用户端   : http://${INSTALL_IP}:3000"
+  echo "  管理后台     : http://${INSTALL_IP}:3002"
+  echo "  API          : 内置服务（不对外暴露，配置域名后在 https://<域名>/docs 查看文档）"
+  if [ -f "$INSTALL_DIR/domain.txt" ]; then
+    echo "  域名前端     : https://$(cat "$INSTALL_DIR/domain.txt")"
+    echo "  管理后台域名 : https://admin.$(cat "$INSTALL_DIR/domain.txt")"
+  fi
+  echo "  管理员       : ${SEED_ADMIN_EMAIL}（密码为你刚设置的值 / 默认 admin123456，可随时用菜单 4 重置）"
+  echo -e "${GREEN}════════════════════════════════════════════════${NC}"
   ok "安装完成！以后在任意位置输入 shop 即可调出管理菜单"
 else
   ok "已检测到已有部署，进入管理菜单"

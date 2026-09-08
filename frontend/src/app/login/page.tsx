@@ -86,6 +86,12 @@ export default function LoginPage() {
                 </div>
               </div>
 
+              <div className="flex justify-end">
+                <Link href="/forgot-password" className="text-sm font-medium text-muted-foreground hover:text-primary">
+                  忘记密码？
+                </Link>
+              </div>
+
               <Button type="submit" variant="gradient" className="w-full" size="lg" disabled={loading}>
                 {loading ? t('common.loading') : t('auth.loginBtn')}
               </Button>

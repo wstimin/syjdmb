@@ -612,6 +612,23 @@ export class ServerService {
   }
 
   /**
+   * 续费/续流量：给客户端追加到期天数与流量配额（字节）。
+   * POST /panel/api/clients/bulkAdjust  { emails, addDays, addBytes }
+   * - addDays  → 现有 expiry_time 上加天数（无限期客户端被面板跳过）
+   * - addBytes → 现有剩余配额 total 上加字节（不限流量客户端被面板跳过）
+   * 面板在调整后会检测「耗尽被停用」的客户端（超流量/已过期），一旦不再耗尽
+   * 就自动 BulkSetEnable(true) 并重载 Xray —— 即续费后节点自动复活重启。
+   * 注意：不要用 /clients/update/{email} —— 那是全量替换，会把 totalGB/expiryTime 清空。
+   */
+  async adjustClientQuota(serverId: number, email: string, addDays = 0, addBytes = 0) {
+    return this.xuiRequest(serverId, 'POST', '/clients/bulkAdjust', {
+      emails: [email],
+      addDays,
+      addBytes,
+    });
+  }
+
+  /**
    * 获取客户端连接链接
    * GET /panel/api/clients/links/{email}
    * 返回所有关联入站的协议 URL（vless://, vmess://, trojan://, ss:// 等）

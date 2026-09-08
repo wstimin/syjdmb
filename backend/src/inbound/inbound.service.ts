@@ -7,6 +7,7 @@ import {
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ServerService, XuiResponse } from '../server/server.service';
+import { EmailService } from '../email/email.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -16,6 +17,7 @@ export class InboundService {
   constructor(
     private prisma: PrismaService,
     private serverService: ServerService,
+    private emailService: EmailService,
   ) {}
 
   // ==========================================
@@ -1025,11 +1027,106 @@ export class InboundService {
     return this.enrichInboundForResponse(inbound);
   }
 
+  // ==========================================
+  // 后期挂载/卸载 SOCKS 中转（对【已有节点】操作，用户自助）
+  // 挂载：把用户台账里选的 SOCKS 代理写入该节点的出站（socks-<port>）+ 路由规则，
+  //       让该节点流量全程走 SOCKS，出口 IP = 该 SOCKS 代理地址。复用创建时的挂载逻辑。
+  // ==========================================
+
+  /** 给用户自己的一个已购节点挂 SOCKS 中转。 */
+  async attachRelay(userId: number, inboundId: number, socksId: number) {
+    const inbound = await this.prisma.inbound.findFirst({
+      where: { id: inboundId, userId },
+    });
+    if (!inbound) throw new NotFoundException('节点不存在');
+    if (inbound.status !== 'ACTIVE') {
+      throw new BadRequestException('仅对活跃节点可挂载中转');
+    }
+    if (inbound.relayEnabled || inbound.relayTag) {
+      throw new BadRequestException('该节点已挂载中转，请先卸载');
+    }
+
+    const proxy = await this.prisma.socksProxy.findFirst({
+      where: { id: socksId, userId, status: 'ACTIVE' },
+    });
+    if (!proxy) {
+      throw new BadRequestException('所选 SOCKS 代理不存在或不可用');
+    }
+
+    const serverId = inbound.serverId;
+    const port = inbound.port;
+    const relayTag = inbound.relayTag || `in-${port}-tcp`; // 3.6.0 面板标准 tag
+    const outboundTag = `socks-${port}`;
+
+    // 复用创建时的挂载逻辑（面板 outbound + 路由规则，仅变更时重启 Xray）
+    await this.mountRelayOnNode(serverId, port, relayTag, {
+      host: proxy.host,
+      port: proxy.port,
+      user: proxy.username || undefined,
+      pass: proxy.password || undefined,
+    });
+
+    // 回写本地状态
+    return this.prisma.inbound.update({
+      where: { id: inboundId },
+      data: {
+        relayEnabled: true,
+        relayTag,
+        relaySocksOutboundTag: outboundTag,
+        relaySocksHost: proxy.host,
+        relaySocksPort: proxy.port,
+        relaySocksUser: proxy.username || null,
+        relaySocksPass: proxy.password || null,
+      },
+    });
+  }
+
+  /** 卸载用户自己节点上的 SOCKS 中转。 */
+  async detachRelay(userId: number, inboundId: number) {
+    const inbound = await this.prisma.inbound.findFirst({
+      where: { id: inboundId, userId },
+    });
+    if (!inbound) throw new NotFoundException('节点不存在');
+    if (!inbound.relayEnabled && !inbound.relayTag) {
+      throw new BadRequestException('该节点未挂载中转');
+    }
+
+    await this.unmountRelayFromNode(inbound.serverId, inbound);
+
+    return this.prisma.inbound.update({
+      where: { id: inboundId },
+      data: {
+        relayEnabled: false,
+        relayTag: null,
+        relaySocksOutboundTag: null,
+        relaySocksHost: null,
+        relaySocksPort: null,
+        relaySocksUser: null,
+        relaySocksPass: null,
+      },
+    });
+  }
+
+  /** 用户实时流量（面板权威数值）。 */
+  async getMyTraffic(userId: number, inboundId: number) {
+    const inbound = await this.prisma.inbound.findFirst({
+      where: { id: inboundId, userId },
+    });
+    if (!inbound) throw new NotFoundException('节点不存在');
+
+    const traffic = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
+    const up = Number(traffic?.obj?.up || 0);
+    const down = Number(traffic?.obj?.down || 0);
+    return { up, down, total: up + down, trafficLimit: Number(inbound.trafficLimit || 0) };
+  }
+
   /**
    * 定时任务：每分钟扫描所有活跃节点
    *  - 到期判定：expiryTime 已过 → 停用（面板端 + 本地）
    *  - 流量判定：累计流量 >= 套餐限额 → 停用
-   * 判定通过后调用面板接口真正关闭客户端，否则用户仍可连接
+   * 判定通过后调用面板接口真正关闭客户端（bulkDisable），否则用户仍可连接。
+   * 只有面板确认停用后才标记本地 EXPIRED；面板调用失败时保持 ACTIVE，下轮重试，
+   * 避免「商城显示已停用、面板实际仍启用、用户继续使用」的状态错位。
    *  (由 @nestjs/schedule 的 @Cron 触发，见下方 checkExpiryAndTraffic)
    */
   async updateTraffic() {
@@ -1062,8 +1159,10 @@ export class InboundService {
           // 面板端停用客户端（启用切到停用用 bulkEnable/bulkDisable 原生端点，
           //  不用 /clients/update/{email} —— 那是全量替换不是 patch，会把
           //  totalGB/expiryTime 清空）
-          //  仅当客户端当前是启用状态才调用，避免重复调用
+          // 仅当客户端当前是启用状态才调用，避免重复调用
           const clientEnabled = traffic?.obj?.enable !== false;
+          // 面板侧本来就是停用状态（enable=false 或之前已停成功）→ 视为已生效
+          let panelDisabled = !clientEnabled;
           if (inbound.status === 'ACTIVE' && clientEnabled) {
             const res = await this.serverService.setClientEnabled(
               inbound.serverId,
@@ -1071,24 +1170,36 @@ export class InboundService {
               false,
             );
             if (!res?.success) {
+              // 面板停用失败：绝不能标记本地 EXPIRED —— 否则下轮 cron 的
+              // 「status==='ACTIVE'」门控会跳过，客户端在面板上永远保持启用、
+              // 用户仍可继续连接（商城却显示已过期）。保持 ACTIVE，下一分钟
+              // 本 cron 自动重试，直到面板真正停用为止。
               this.logger.warn(
-                `Failed to disable client ${inbound.email} on server ${inbound.serverId}: ${res?.msg}`,
+                `Failed to disable client ${inbound.email} on server ${inbound.serverId}: ${res?.msg} (will retry next minute)`,
               );
-            } else {
-              this.logger.log(
-                `Node ${inbound.email} disabled (${expired ? 'expired' : 'traffic limit'})`,
-              );
+              await this.prisma.inbound.update({
+                where: { id: inbound.id },
+                data: { totalTraffic: BigInt(total) },
+              });
+              continue;
             }
+            this.logger.log(
+              `Node ${inbound.email} disabled (${expired ? 'expired' : 'traffic limit'})`,
+            );
+            panelDisabled = true;
           }
 
-          // 本地状态更新
-          await this.prisma.inbound.update({
-            where: { id: inbound.id },
-            data: {
-              totalTraffic: BigInt(total),
-              status: expired ? 'EXPIRED' : 'EXPIRED',
-            },
-          });
+          // 面板真实停用成功（或原本就已停用）才标记本地 EXPIRED；
+          // 管理员暂停的节点保持 SUSPENDED（不被到期时间覆盖，避免丢暂停标记）
+          if (panelDisabled) {
+            await this.prisma.inbound.update({
+              where: { id: inbound.id },
+              data: {
+                totalTraffic: BigInt(total),
+                status: inbound.status === 'SUSPENDED' ? 'SUSPENDED' : 'EXPIRED',
+              },
+            });
+          }
         } else {
           // 未到期超限，仅更新流量计数
           await this.prisma.inbound.update({
@@ -1138,11 +1249,12 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    // Suspend in XUI — 用原生 bulkDisable（update/{email} 是全量替换，只传 enable 会清字段）
-    try {
-      await this.serverService.setClientEnabled(inbound.serverId, inbound.email, false);
-    } catch (e) {
-      this.logger.warn(`Failed to suspend in XUI: ${e.message}`);
+    // Suspend in XUI — 用原生 bulkDisable（update/{email} 是全量替换，只传 enable 会清字段）。
+    // 面板停用失败必须抛错、不置本地 SUSPENDED：否则商城显示已暂停、面板实际仍启用，用户继续可用。
+    const res = await this.serverService.setClientEnabled(inbound.serverId, inbound.email, false);
+    if (!res?.success) {
+      this.logger.warn(`Failed to suspend ${inbound.email} in XUI: ${res?.msg}`);
+      throw new BadRequestException(`面板停用失败（${res?.msg || '未知错误'}），节点未暂停`);
     }
 
     return this.prisma.inbound.update({
@@ -1155,11 +1267,12 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('Inbound not found');
 
-    // Resume in XUI — 用原生 bulkEnable（update/{email} 是全量替换，只传 enable 会清字段）
-    try {
-      await this.serverService.setClientEnabled(inbound.serverId, inbound.email, true);
-    } catch (e) {
-      this.logger.warn(`Failed to resume in XUI: ${e.message}`);
+    // Resume in XUI — 用原生 bulkEnable。同理，面板启用失败必须抛错，
+    // 否则本地已回 ACTIVE、面板实际仍停用，用户连不上却显示活跃。
+    const res = await this.serverService.setClientEnabled(inbound.serverId, inbound.email, true);
+    if (!res?.success) {
+      this.logger.warn(`Failed to resume ${inbound.email} in XUI: ${res?.msg}`);
+      throw new BadRequestException(`面板启用失败（${res?.msg || '未知错误'}），节点未恢复`);
     }
 
     return this.prisma.inbound.update({
@@ -1179,6 +1292,81 @@ export class InboundService {
       await this.updateTraffic();
     } catch (e) {
       this.logger.error(`Scheduled expiry/traffic check failed: ${e.message}`);
+    }
+  }
+
+  /**
+   * 到期提醒：每小时扫描活跃节点，到期前 3 天 / 1 天 / 已到期各发一封邮件（每档只会发一次，
+   * 由 inbound.expiryReminderStage 档位标记保证 —— 0=未发 1=3天内 2=1天内 3=已到期）。
+   * 停用本身由 updateTraffic 每分钟负责，这里只管提醒不重复打扰。
+   * 邮件通道未配置（emailEnabled=false）时只打日志提醒，不推进档位，避免启用后补发丢失。
+   */
+  @Cron('0 * * * *')
+  async sendExpiryReminders() {
+    try {
+      await this.runExpiryReminders();
+    } catch (e) {
+      this.logger.error(`Scheduled expiry reminder check failed: ${e.message}`);
+    }
+  }
+
+  private async runExpiryReminders() {
+    const emailEnabled = await this.emailService.isEnabled().catch(() => false);
+    const inbounds = await this.prisma.inbound.findMany({
+      where: { status: 'ACTIVE', expiryTime: { not: null } },
+      include: {
+        user: { select: { email: true, username: true } },
+        server: { select: { name: true } },
+      },
+    });
+
+    const now = Date.now();
+    for (const inbound of inbounds) {
+      try {
+        // 查询条件已过滤 expiryTime=null，这里再收窄一次类型（Prisma 类型仍是 Date | null）
+        if (!inbound.expiryTime) continue;
+        const expiryMs = new Date(inbound.expiryTime).getTime();
+        const msLeft = expiryMs - now;
+        // 已到期的由 updateTraffic cron 停用，这里不发「已到期」（到期提醒在到期前发）
+        if (msLeft <= 0) continue;
+
+        const daysLeft = Math.ceil(msLeft / 86400000);
+        // 档位：1=3天内（已过期不在此函数内处理）2=1天内；高于现有档位才发
+        let stage = 0;
+        if (daysLeft <= 3) stage = 1;
+        if (daysLeft <= 1) stage = 2;
+        if (stage <= (inbound.expiryReminderStage || 0)) continue;
+
+        const labels: Record<number, string> = { 1: '即将在 3 天内到期', 2: '将在 24 小时内到期' };
+        const subject = `节点到期提醒（${labels[stage]}）`;
+        const dateStr = new Date(expiryMs).toLocaleString('zh-CN', { hour12: false });
+        const nodeName = inbound.remark || `${inbound.server?.name || ''}-${inbound.port}`;
+        const userEmail = inbound.user?.email;
+        if (!userEmail) continue;
+
+        const ok = emailEnabled ? await this.emailService.send({
+          to: userEmail,
+          subject,
+          html: this.emailService.wrap(
+            subject,
+            `<p>您好：</p>
+             <p>您的节点 <b>${this.emailService.escapeHtml(nodeName)}</b> ${labels[stage]}（到期时间：${dateStr}）。</p>
+             <p style="color:#dc2626;">到期后节点将被停用，为避免影响使用，请尽快续期。</p>
+             <p style="margin:24px 0;">
+               <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/user/nodes" style="display:inline-block;background:#4f46e5;color:#ffffff;padding:10px 28px;border-radius:8px;text-decoration:none;font-weight:600;">前往续费</a>
+             </p>`,
+          ),
+        }) : false;
+        // 邮件通道未启用/发送失败 → 不推进档位（启用后或下轮成功时再发，不丢失提醒）
+        if (ok) {
+          await this.prisma.inbound.update({
+            where: { id: inbound.id },
+            data: { expiryReminderStage: stage },
+          });
+        }
+      } catch (e) {
+        this.logger.warn(`到期提醒处理失败 inbound#${inbound.id}: ${(e as Error).message}`);
+      }
     }
   }
 

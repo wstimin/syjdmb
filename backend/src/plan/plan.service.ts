@@ -84,19 +84,20 @@ export class PlanService {
   }
 
   async getStats() {
-    const [totalPlans, activePlans, totalRevenue] = await Promise.all([
+    const [totalPlans, activePlans] = await Promise.all([
       this.prisma.plan.count(),
       this.prisma.plan.count({ where: { status: 'ACTIVE' } }),
-      this.prisma.order.aggregate({
-        where: { status: 'COMPLETED' },
-        _sum: { amount: true },
-      }),
     ]);
+    // 收入按实付口径 COALESCE(payAmount, amount)（amount 恒为原价，优惠券单只收 payAmount）
+    const rows = await this.prisma.$queryRaw<{ revenue: number | string }[]>`
+      SELECT COALESCE(SUM(COALESCE("payAmount", "amount")), 0) AS revenue
+      FROM "Order"
+      WHERE "status" = 'COMPLETED'`;
 
     return {
       totalPlans,
       activePlans,
-      totalRevenue: totalRevenue._sum.amount || 0,
+      totalRevenue: Number((rows[0] as any)?.revenue ?? 0),
     };
   }
 }

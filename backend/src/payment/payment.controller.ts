@@ -10,15 +10,20 @@ import {
   Req,
   Res,
   HttpCode,
+  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { PaymentService } from './payment.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('Payments')
 @Controller('payments')
 export class PaymentController {
+  private readonly logger = new Logger(PaymentController.name);
+
   constructor(private paymentService: PaymentService) {}
 
   // Create a payment for an order
@@ -48,38 +53,54 @@ export class PaymentController {
     return { success: true, data: result };
   }
 
-  // Payment gateway callback
+  // ==========================================
+  // 网关回调：必须验签，验签失败直接拒绝（网关会稍后重试，不会丢失订单）
+  // ==========================================
+
   @Post('callback/wechat')
   @HttpCode(200)
-  @ApiOperation({ summary: 'WeChat Pay callback' })
+  @ApiOperation({ summary: 'WeChat Pay callback (signed)' })
   async wechatCallback(@Req() req: any, @Res() res: any) {
-    // Parse and verify WeChat notification
-    const body = req.body;
-    // In production, verify the WeChat signature here
-    const result = await this.paymentService.handlePaymentSuccess({
-      orderNo: body.out_trade_no || body.orderNo,
-      tradeNo: body.transaction_id || body.tradeNo,
-      amount: body.total_fee ? Number(body.total_fee) / 100 : body.amount,
-      payMethod: 'WECHAT',
-    });
-    // Return proper XML for WeChat
-    res.set('Content-Type', 'application/xml');
-    res.send(`<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>`);
+    try {
+      // 微信通知是 XML，main.ts 已配置 text/xml 解析器 → req.body 是原始 XML 字符串
+      const rawXml = typeof req.body === 'string' ? req.body : '';
+      const params = await this.paymentService.parseWechatCallback(rawXml);
+      // 按订单号前缀分流：RC 开头走余额直充入账，其余走商品单激活
+      await this.paymentService.settleGatewayCallback({
+        orderNo: params.out_trade_no,
+        tradeNo: params.transaction_id,
+        amount: Number(params.total_fee) / 100,
+        payMethod: 'WECHAT',
+      });
+      res.set('Content-Type', 'application/xml');
+      res.send(`<xml><return_code><![CDATA[SUCCESS]]></return_code><return_msg><![CDATA[OK]]></return_msg></xml>`);
+    } catch (e: any) {
+      this.logger.warn(`微信回调处理失败: ${e.message}`);
+      // 返回 FAIL 而不是 500：微信会按规范重试。
+      // 注意：不把服务端错误信息回显给调用方（防信息泄露），统一固定文案。
+      res.set('Content-Type', 'application/xml');
+      res.send(`<xml><return_code><![CDATA[FAIL]]></return_code><return_msg><![CDATA[HANDLE_FAILED]]></return_msg></xml>`);
+    }
   }
 
   @Post('callback/alipay')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Alipay callback' })
+  @ApiOperation({ summary: 'Alipay callback (signed)' })
   async alipayCallback(@Req() req: any, @Res() res: any) {
-    const body = req.body;
-    // In production, verify the Alipay signature here
-    const result = await this.paymentService.handlePaymentSuccess({
-      orderNo: body.out_trade_no || body.orderNo,
-      tradeNo: body.trade_no || body.tradeNo,
-      amount: body.total_amount || body.amount,
-      payMethod: 'ALIPAY',
-    });
-    res.send('success');
+    try {
+      const params = await this.paymentService.parseAlipayCallback(req.body || {});
+      await this.paymentService.settleGatewayCallback({
+        orderNo: params.out_trade_no,
+        tradeNo: params.trade_no,
+        amount: Number(params.total_amount),
+        payMethod: 'ALIPAY',
+      });
+      res.send('success');
+    } catch (e: any) {
+      this.logger.warn(`支付宝回调处理失败: ${e.message}`);
+      // 返回非 success：支付宝会按规范重试
+      res.send('fail');
+    }
   }
 
   // Payment order status (polled by the frontend after a real gateway payment)
@@ -95,15 +116,18 @@ export class PaymentController {
     return { success: true, data: result };
   }
 
-  // Manual/admin payment verification
+  // 线下/人工收款确认 —— 仅管理员可用。
+  // （此前只有登录校验，任何登录用户都能伪造"已付款"，已修复为管理员专属。）
+  // 同样按订单号前缀分流：RC 开头 → 充值单人工确认入账；SO 开头 → 商品单人工确认激活
   @Post('verify')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Verify an offline payment' })
+  @ApiOperation({ summary: '[Admin] Verify an offline payment' })
   async verifyPayment(
     @Body() body: { orderNo: string; tradeNo: string; amount: number; payMethod: string },
   ) {
-    const result = await this.paymentService.handlePaymentSuccess({
+    const result = await this.paymentService.settleGatewayCallback({
       orderNo: body.orderNo,
       tradeNo: body.tradeNo,
       amount: body.amount,

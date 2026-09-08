@@ -108,9 +108,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy
 ```
 
 脚本自动完成：
-1. 让你输入管理员邮箱和密码（有默认值，回车即可）
-2. 自动安装 Docker + Docker Compose
-3. 自动克隆项目代码
+1. 自动安装 Docker + Docker Compose
+2. 自动克隆项目代码
+3. 让你输入管理员邮箱和密码（有默认值，回车即可）
 4. 生成随机 JWT 密钥和数据库密码
 5. 构建并启动全部 5 个服务（PostgreSQL、Redis、Backend、Frontend、Admin）
 6. 自动执行数据库迁移和初始化（创建管理员账号）
@@ -118,10 +118,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy
 
 > 无需预先安装任何东西（除 root 权限），脚本会从头装好，全程只在你输入账号时停下。
 
-部署完成后访问：
-- 前端用户端：`http://服务器IP:3000`
-- 管理后台：`http://服务器IP:3002`
-- API 文档：`http://服务器IP:3001/docs`
+部署完成后访问（地址使用**公网 IP**，非内网 IP）：
+- 前端用户端：`http://公网IP:3000`
+- 管理后台：`http://公网IP:3002`
+
+> 后端 API 为**内置服务**，不对外提供端口/域名：公网请求统一走前端与管理后台的 `/api` 代理转发。接口文档（Swagger）配置域名后可在 `https://你的域名/docs` 查看。
 
 **更新**：在服务器上执行 `shop`，选 **2 更新**。更新流程 = 拉取最新代码 → **直接下载 GitHub Actions 云端预编译好的镜像包并 `docker load`**（本机不再编译，通常 1–2 分钟）→ 启动新容器 → 自动迁移。若预编译包拉取失败会自动回退为服务器本机编译，功能不受影响。
 
@@ -137,21 +138,13 @@ docker compose -f /opt/nodeshop/docker-compose.yml down              # 停止所
 
 ### 配置域名 + SSL（可选）
 
-部署完成后如需配置域名和 HTTPS：
+部署完成后在服务器上执行 `shop`，选 **5 添加域名 / 反向代理**（Caddy 自动申请并续期 HTTPS 证书，无需手动装 Nginx/certbot）：
 
-```bash
-# 安装 Nginx
-apt install -y nginx
-
-# 安装 SSL 证书工具
-apt install -y certbot python3-certbot-nginx
-
-# 申请证书（替换为你的域名）
-certbot --nginx -d your-domain.com -d admin.your-domain.com
-
-# 自动续期
-certbot renew --dry-run
-```
+- 只需输入**一个主域名**（如 `shop.example.com`），脚本自动创建两个对外地址：
+  - `https://shop.example.com` → 前端用户端
+  - `https://admin.shop.example.com` → 管理后台
+- 后端 API **不配置独立域名**（内置服务，经前端 `/api` 代理访问，文档见 `https://shop.example.com/docs`）
+- ⚠️ 配置前请先把这两个域名解析（DNS A 记录）到本机公网 IP，证书签发后即可 HTTPS 访问
 
 ## 默认管理员
 

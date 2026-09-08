@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
 import toast from 'react-hot-toast';
@@ -10,7 +11,6 @@ import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
@@ -27,13 +27,15 @@ function PurchaseContent() {
   const [order, setOrder] = useState<any>(null);
   const [method, setMethod] = useState<string>('');
   const [relay, setRelay] = useState(false);
-  // 开启中转后：用户填写自己 SOCKS 节点的信息（出口 = 该 SOCKS 节点 IP）
-  const [relayHost, setRelayHost] = useState('');
-  const [relayPort, setRelayPort] = useState('');
-  const [relayUser, setRelayUser] = useState('');
-  const [relayPass, setRelayPass] = useState('');
+  // 开启中转后：从用户自己的 SOCKS 台账里选一个已有代理（出口 = 该 SOCKS 节点 IP）
+  const [relaySocksList, setRelaySocksList] = useState<any[]>([]);
+  const [relaySocksId, setRelaySocksId] = useState<number | null>(null);
   const [payQr, setPayQr] = useState<string | null>(null);
   const [cardCode, setCardCode] = useState('');
+  const [couponCode, setCouponCode] = useState('');
+  const [couponInfo, setCouponInfo] = useState<any>(null); // validate 成功返回 {price, discount, chargeAmount}
+  const [couponError, setCouponError] = useState('');
+  const [couponValidating, setCouponValidating] = useState(false);
   const [processing, setProcessing] = useState(false);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -59,6 +61,23 @@ function PurchaseContent() {
   useEffect(() => {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
+
+  // 勾选中转时，加载用户自己的 SOCKS 台账供选择（选已有的代理，不再手填）
+  useEffect(() => {
+    if (!relay) { setRelaySocksList([]); setRelaySocksId(null); return; }
+    let active = true;
+    api.get('/socks/mine')
+      .then((res) => {
+        if (!active) return;
+        const list = (res.data.data || []).filter((p: any) => p.status === 'ACTIVE');
+        setRelaySocksList(list);
+        if (list[0]) setRelaySocksId(list[0].id);
+      })
+      .catch(() => {
+        if (active) setRelaySocksList([]);
+      });
+    return () => { active = false; };
+  }, [relay]);
 
   const startPolling = (orderNo: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
@@ -105,6 +124,14 @@ function PurchaseContent() {
       setProcessing(false);
       return;
     }
+    if (relay && relaySocksList.length === 0) {
+      toast.error('请先在「SOCKS」页添加一个 SOCKS 代理，或在下方选择一个已添加的代理');
+      return;
+    }
+    if (relay && !relaySocksId) {
+      toast.error('请选择一个 SOCKS 代理作为中转出口');
+      return;
+    }
     setProcessing(true);
     try {
       const res = await api.post('/orders', {
@@ -112,12 +139,11 @@ function PurchaseContent() {
         payMethod: m === 'card' ? undefined : m,
         serverId: selectedServerId ?? undefined, // 用户选择在这台服务器上建节点
         relay,
+        couponCode: couponCode.trim() || undefined, // 优惠券（下单即占用名额，取消支付需在「我的订单」取消以释放）
         ...(relay
           ? {
-              relaySocksHost: relayHost,
-              relaySocksPort: Number(relayPort),
-              relaySocksUser: relayUser || undefined,
-              relaySocksPass: relayPass || undefined,
+              // 优先从用户台账选代理（出口 = 该 SOCKS 节点 IP）
+              relaySocksId: relaySocksId ?? undefined,
             }
           : {}),
       });
@@ -167,6 +193,23 @@ function PurchaseContent() {
     setOrder(null);
   };
 
+  // 优惠券校验（实时显示优惠金额，不下单不占用名额）
+  const validateCoupon = async () => {
+    const code = couponCode.trim();
+    if (!code) return;
+    setCouponValidating(true);
+    setCouponError('');
+    try {
+      const res = await api.post('/coupons/validate', { code, price: Number(plan.price) });
+      setCouponInfo(res.data.data);
+    } catch (err: any) {
+      setCouponInfo(null);
+      setCouponError(getErrorMessage(err));
+    } finally {
+      setCouponValidating(false);
+    }
+  };
+
   const redeemCard = async (code: string) => {
     setProcessing(true);
     try {
@@ -201,7 +244,75 @@ function PurchaseContent() {
               {t('products.traffic')}: {Number(plan.traffic) > 0 ? `${Number(plan.traffic)/1024/1024/1024}GB` : t('products.unlimited')}
             </div>
           </div>
-          <div className="text-2xl font-bold text-primary">¥{Number(plan.price)}</div>
+          <div className="text-2xl font-bold text-primary">
+            {couponInfo ? (
+              <>
+                ¥{Number(couponInfo.chargeAmount)}
+                <span className="ml-2 text-base text-muted-foreground line-through">¥{Number(plan.price)}</span>
+              </>
+            ) : (
+              `¥${Number(plan.price)}`
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 优惠券（选填）：下单前实时校验优惠金额，不占用名额 */}
+      <Card className="mt-6 border-border/60">
+        <CardContent className="p-5">
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="优惠券码（选填）"
+              className="flex-1"
+              value={couponCode}
+              onChange={(e) => {
+                setCouponCode(e.target.value);
+                if (couponInfo) {
+                  setCouponInfo(null);
+                  setCouponError('');
+                }
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              onClick={validateCoupon}
+              disabled={couponValidating || !couponCode.trim()}
+            >
+              {couponValidating ? '校验中...' : '使用'}
+            </Button>
+          </div>
+
+          {couponError && <p className="mt-2 text-xs font-medium text-destructive">{couponError}</p>}
+
+          {couponInfo && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-primary/5 px-4 py-3 text-sm">
+              <div className="font-medium text-primary">
+                {couponInfo.coupon.name || couponInfo.coupon.code}
+                <span className="ml-2 text-xs text-muted-foreground">已优惠 ¥{Number(couponInfo.discount)}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">
+                  实付 <span className="font-semibold text-primary">¥{Number(couponInfo.chargeAmount)}</span>
+                </span>
+                <button
+                  onClick={() => {
+                    setCouponInfo(null);
+                    setCouponCode('');
+                  }}
+                  className="text-xs text-muted-foreground underline hover:text-destructive"
+                >
+                  移除
+                </button>
+              </div>
+            </div>
+          )}
+
+          {couponInfo && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              使用优惠券后若暂不支付，请到「我的订单」取消订单，优惠券名额会自动释放
+            </p>
+          )}
         </CardContent>
       </Card>
 
@@ -236,7 +347,7 @@ function PurchaseContent() {
         </Card>
       )}
 
-      {/* 开启中转（选装） — 在该源节点上挂 SOCKS，节点全程走中转，出口 = 用户填写的 SOCKS 节点 IP */}
+      {/* 开启中转（选装） — 在源节点上挂 SOCKS，节点全程走中转，出口 = 用户选择的 SOCKS 代理 IP */}
       <Card className="mt-6 border-border/60">
         <CardContent className="p-5">
           <div className="flex items-center justify-between">
@@ -251,48 +362,52 @@ function PurchaseContent() {
               <label htmlFor="relay-toggle" className="cursor-pointer">
                 <div className="text-sm font-semibold">开启中转（SOCKS 线路）</div>
                 <div className="text-xs text-muted-foreground">
-                  节点流量全程经 SOCKS 链路转发，出口 IP 为你填写的 SOCKS 节点所在地址
+                  节点流量全程经 SOCKS 链路转发，出口 IP 为你选择的 SOCKS 节点所在地址
                 </div>
               </label>
             </div>
             <span className="text-xs text-muted-foreground">选装</span>
           </div>
 
-          {/* 勾选中转后展开：填写自有 SOCKS 节点信息 */}
+          {/* 勾选中转后展开：从用户 SOCKS 台账选择出口代理 */}
           {relay && (
             <div className="mt-4 space-y-3 rounded-xl bg-muted/40 p-4">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>SOCKS 地址 *</Label>
-                  <Input
-                    value={relayHost}
-                    onChange={(e) => setRelayHost(e.target.value)}
-                    placeholder="1.2.3.4 或域名"
-                  />
+              {relaySocksList.length === 0 ? (
+                <div className="text-sm text-muted-foreground">
+                  你还没有添加 SOCKS 代理。
+                  <Link href="/user/socks" className="ml-1 font-medium text-primary underline">
+                    去「我的 SOCKS」添加
+                  </Link>
+                  ，添加后回到这里选择即可。
                 </div>
-                <div className="space-y-1.5">
-                  <Label>SOCKS 端口 *</Label>
-                  <Input
-                    value={relayPort}
-                    onChange={(e) => setRelayPort(e.target.value)}
-                    placeholder="1080"
-                    type="number"
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label>用户名（可选）</Label>
-                  <Input value={relayUser} onChange={(e) => setRelayUser(e.target.value)} />
-                </div>
-                <div className="space-y-1.5">
-                  <Label>密码（可选）</Label>
-                  <Input value={relayPass} onChange={(e) => setRelayPass(e.target.value)} type="password" />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                请填写你自有的 SOCKS5 节点；节点创建后将全程经由该 SOCKS 出站，出口 IP 为该节点地址。
-              </p>
+              ) : (
+                <>
+                  <div className="text-xs font-medium text-muted-foreground">选择出口 SOCKS 代理 *</div>
+                  <div className="flex flex-col gap-2">
+                    {relaySocksList.map((p: any) => {
+                      const active = relaySocksId === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => setRelaySocksId(p.id)}
+                          className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                            active ? 'border-primary bg-primary/10' : 'border-input hover:bg-accent'
+                          }`}
+                        >
+                          <span className="font-medium">{p.remark || `${p.host}:${p.port}`}</span>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {p.host}:{p.port}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    选择你自有的 SOCKS5 节点；节点创建后将全程经由该 SOCKS 出站，出口 IP 为该节点地址。
+                  </p>
+                </>
+              )}
             </div>
           )}
         </CardContent>
@@ -363,7 +478,12 @@ function PurchaseContent() {
               <div className="rounded-xl bg-white p-4">
                 <QRCodeSVG value={payQr} size={220} />
               </div>
-              <p className="mt-4 text-sm font-semibold text-muted-foreground">¥{Number(order.amount)}</p>
+              <p className="mt-4 text-sm font-semibold text-muted-foreground">
+                ¥{Number(order.payAmount ?? order.amount)}
+                {Number(order.payAmount ?? order.amount) < Number(order.amount) && (
+                  <span className="ml-2 text-xs line-through">¥{Number(order.amount)}</span>
+                )}
+              </p>
               <div className="mt-5 flex items-center gap-3 text-sm text-muted-foreground">
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 <span>等待支付确认中...</span>

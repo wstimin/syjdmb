@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Toaster } from 'react-hot-toast';
 import {
   LayoutDashboard, Users, Package, ShoppingCart, Server, Wifi,
-  Network, Ticket as TicketIcon, Megaphone, Settings, LogOut, Zap, CreditCard, DollarSign,
+  Network, Ticket as TicketIcon, Megaphone, Settings, LogOut, Zap, CreditCard, DollarSign, Tag, Undo2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
@@ -17,7 +17,9 @@ const navItems = [
   { href: '/plans', label: '套餐管理', icon: Package },
   { href: '/orders', label: '订单管理', icon: ShoppingCart },
   { href: '/cards', label: '卡密管理', icon: CreditCard },
+  { href: '/coupons', label: '优惠券管理', icon: Tag },
   { href: '/finances', label: '财务统计', icon: DollarSign },
+  { href: '/refunds', label: '退款管理', icon: Undo2 },
   { href: '/servers', label: '服务器管理', icon: Server },
   { href: '/inbounds', label: '节点管理', icon: Wifi },
   { href: '/socks', label: 'SOCKS管理', icon: Network },

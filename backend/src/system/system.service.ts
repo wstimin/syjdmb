@@ -55,18 +55,29 @@ export class SystemService {
 
   // Dashboard financial overview
   async getFinanceOverview() {
-    const [revenue, transactions, cards, daysAgo30, protocolGroups] = await Promise.all([
-      this.prisma.order.aggregate({
-        where: { status: 'COMPLETED' },
-        _sum: { amount: true },
-        _count: true,
-      }),
+    // 收入按实付口径（COALESCE("payAmount","amount")，amount 恒为原价）：
+    // 与 order.service.getStats 同口径，否则 ¥100 订单用券实付 ¥5，退款影响显示为 ¥100——20 倍失真。
+    const revenue = await this.prisma.$queryRaw<{ revenue: number | string; cnt: number | string }[]>`
+      SELECT COALESCE(SUM(COALESCE("payAmount", "amount")), 0) AS revenue,
+             COUNT(*) AS cnt
+      FROM "Order"
+      WHERE "status" = 'COMPLETED'`;
+
+    // 已退款统计（管理页「退款净额」展示，让退款作为冲减可见而非叠加进流水）
+    const refundAgg = await this.prisma.refundRequest.aggregate({
+      where: { status: 'APPROVED' },
+      _sum: { amount: true },
+      _count: { _all: true },
+    });
+
+    const [transactions, cards, daysAgo30, protocolGroups] = await Promise.all([
       // Recent orders as financial transactions (Order has user relation; Transaction model = TicketMessage)
+      // 已退款订单剔除：退款单不是收入，不能混进「交易记录」当成交
       this.prisma.order.findMany({
         orderBy: { createdAt: 'desc' },
         take: 10,
         include: { user: { select: { email: true, username: true } } },
-        where: { status: { not: 'CANCELLED' } },
+        where: { status: { notIn: ['CANCELLED', 'REFUNDED'] } },
       }),
       this.prisma.card.aggregate({
         where: { status: 'USED' },
@@ -77,7 +88,7 @@ export class SystemService {
           status: 'COMPLETED',
           paidAt: { gte: this.daysAgo(30) },
         },
-        select: { amount: true, paidAt: true },
+        select: { payAmount: true, amount: true, paidAt: true },
       }),
       this.prisma.inbound.groupBy({
         by: ['protocol'],
@@ -86,7 +97,7 @@ export class SystemService {
       }),
     ]);
 
-    // 收入趋势：近30天按天聚合真实 COMPLETED 订单金额
+    // 收入趋势：近30天按天聚合真实 COMPLETED 订单实付金额（与收入口径一致）
     const revenueMap = new Map<string, number>();
     for (let i = 29; i >= 0; i--) {
       const d = this.daysAgo(i);
@@ -95,7 +106,7 @@ export class SystemService {
     for (const o of daysAgo30) {
       if (!o.paidAt) continue;
       const day = this.formatDay(o.paidAt);
-      revenueMap.set(day, (revenueMap.get(day) || 0) + Number(o.amount));
+      revenueMap.set(day, (revenueMap.get(day) || 0) + Number(o.payAmount ?? o.amount));
     }
     const revenueData = Array.from(revenueMap.entries()).map(([date, revenue]) => ({
       date,
@@ -109,8 +120,10 @@ export class SystemService {
     }));
 
     return {
-      totalRevenue: revenue._sum.amount || 0,
-      totalOrders: revenue._count,
+      totalRevenue: Number((revenue as any)[0]?.revenue ?? 0),
+      totalOrders: Number((revenue as any)[0]?.cnt ?? 0),
+      refundedAmount: Number(refundAgg._sum.amount || 0),
+      refundedCount: refundAgg._count._all,
       cardRevenue: cards._sum.amount || 0,
       recentTransactions: transactions,
       revenueData,

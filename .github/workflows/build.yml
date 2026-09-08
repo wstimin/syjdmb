@@ -27,6 +27,7 @@ jobs:
           context: ./backend
           file: ./backend/Dockerfile
           tags: nodeshop-backend:latest
+          build-args: GIT_HASH=${{ github.sha }}
           outputs: type=docker
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -37,6 +38,7 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           tags: nodeshop-frontend:latest
+          build-args: GIT_HASH=${{ github.sha }}
           outputs: type=docker
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -47,6 +49,7 @@ jobs:
           context: ./admin
           file: ./admin/Dockerfile
           tags: nodeshop-admin:latest
+          build-args: GIT_HASH=${{ github.sha }}
           outputs: type=docker
           cache-from: type=gha
           cache-to: type=gha,mode=max

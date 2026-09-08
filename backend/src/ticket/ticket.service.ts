@@ -153,4 +153,17 @@ export class TicketService {
     ]);
     return { open, pending, replied, closed, total: open + pending + replied + closed };
   }
+
+  /** 管理端查看单个工单的完整消息历史（含发送方与时间）。 */
+  async findOne(ticketId: number) {
+    const ticket = await this.prisma.ticket.findUnique({
+      where: { id: ticketId },
+      include: {
+        user: { select: { id: true, email: true, username: true } },
+        messages: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!ticket) throw new NotFoundException('Ticket not found');
+    return ticket;
+  }
 }

@@ -33,10 +33,13 @@ export class OrderController {
       serverId?: number;
       protocol?: string;
       relay?: boolean;
+      relaySocksId?: number;
       relaySocksHost?: string;
       relaySocksPort?: number;
       relaySocksUser?: string;
       relaySocksPass?: string;
+      renewalOfInboundId?: number; // 续费单：对已有节点续期/续流量
+      couponCode?: string;         // 优惠券码（实付按券后金额，amount 恒为原价）
     },
   ) {
     const result = await this.orderService.createOrder({
@@ -46,11 +49,24 @@ export class OrderController {
       serverId: body.serverId,
       protocol: body.protocol,
       relay: body.relay,
+      relaySocksId: body.relaySocksId,
       relaySocksHost: body.relaySocksHost,
       relaySocksPort: body.relaySocksPort,
       relaySocksUser: body.relaySocksUser,
       relaySocksPass: body.relaySocksPass,
+      renewalOfInboundId: body.renewalOfInboundId,
+      couponCode: body.couponCode,
     });
+    return { success: true, data: result };
+  }
+
+  @Post(':id/cancel-self')
+  @ApiOperation({ summary: 'Cancel my unpaid order' })
+  async cancelSelf(
+    @CurrentUser('id') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const result = await this.orderService.cancelSelf(id, userId);
     return { success: true, data: result };
   }
 
@@ -64,11 +80,14 @@ export class OrderController {
     return { success: true, data: result };
   }
 
-  // After payment (balance/gateway) is confirmed, activate the node
+  // After payment (balance/gateway) is confirmed, activate the node（仅允许激活自己的订单）
   @Post(':id/activate')
-  @ApiOperation({ summary: 'Activate order and create node' })
-  async activate(@Param('id', ParseIntPipe) id: number) {
-    const result = await this.orderService.activateOrder(id);
+  @ApiOperation({ summary: 'Activate my order and create node' })
+  async activate(
+    @CurrentUser('id') userId: number,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const result = await this.orderService.activateOrder(id, userId);
     return { success: true, data: result };
   }
 
@@ -76,10 +95,13 @@ export class OrderController {
   @ApiOperation({ summary: 'Get my orders' })
   async getMine(
     @CurrentUser('id') userId: number,
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
-    const result = await this.orderService.getUserOrders(userId, page || 1, limit || 20);
+    // 分页参数钳制：负值/0/非数字落入合法范围，避免 OFFSET 为负导致数据库报错
+    const p = Math.max(1, parseInt(page || '', 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit || '', 10) || 20));
+    const result = await this.orderService.getUserOrders(userId, p, l);
     return { success: true, data: result };
   }
 
@@ -99,14 +121,16 @@ export class OrderController {
   @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiOperation({ summary: '[Admin] List all orders' })
   async findAll(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
     @Query('status') status?: string,
     @Query('search') search?: string,
   ) {
+    const p = Math.max(1, parseInt(page || '', 10) || 1);
+    const l = Math.min(100, Math.max(1, parseInt(limit || '', 10) || 20));
     const result = await this.orderService.findAll(
-      page || 1,
-      limit || 20,
+      p,
+      l,
       status,
       search,
     );

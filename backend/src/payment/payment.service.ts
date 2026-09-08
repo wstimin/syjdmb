@@ -3,13 +3,14 @@ import {
   Logger,
   BadRequestException,
   NotFoundException,
+  ConflictException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { OrderService } from '../order/order.service';
 import { SystemService } from '../system/system.service';
-import { createHash, createPrivateKey, sign as rsaSign } from 'crypto';
+import { createHash, createPrivateKey, createPublicKey, sign as rsaSign, verify as rsaVerify } from 'crypto';
 
 @Injectable()
 export class PaymentService {
@@ -70,13 +71,43 @@ export class PaymentService {
 
     switch (method) {
       case 'wechat':
-        return this.createWechatPayment(order);
+        // 实付金额 = 优惠后金额（payAmount，优惠券已在此下单时算好）；amount 恒为原价
+        return this.createWechatPayment({
+          id: order.id,
+          orderNo: order.orderNo,
+          amount: Number(order.payAmount ?? order.amount),
+          type: 'order',
+        });
       case 'alipay':
-        return this.createAlipayPayment(order);
+        return this.createAlipayPayment({
+          id: order.id,
+          orderNo: order.orderNo,
+          amount: Number(order.payAmount ?? order.amount),
+          type: 'order',
+        });
       case 'card':
-        return { needCardCode: true, orderId: order.id, amount: order.amount };
+        return { needCardCode: true, orderId: order.id, amount: order.payAmount ?? order.amount };
       case 'balance':
         return this.payWithBalance(order);
+      default:
+        throw new BadRequestException(`Unsupported payment method: ${method}`);
+    }
+  }
+
+  /**
+   * 统一网关下单（商品单 / 余额直充共用）：
+   * ref.type = 'order' → 商品订单；'recharge' → 余额直充单。
+   * 生成的支付二维码/链接与实体校验逻辑完全相同，仅 payMethod 落库位置不同。
+   */
+  async createGatewayRefPayment(
+    ref: { id: number; orderNo: string; amount: number; subject?: string; type: 'order' | 'recharge' },
+    method: string,
+  ) {
+    switch (method) {
+      case 'wechat':
+        return this.createWechatPayment(ref);
+      case 'alipay':
+        return this.createAlipayPayment(ref);
       default:
         throw new BadRequestException(`Unsupported payment method: ${method}`);
     }
@@ -102,32 +133,34 @@ export class PaymentService {
     if (card.status === 'USED') throw new BadRequestException('Card key already used');
     if (card.status === 'CANCELLED') throw new BadRequestException('Card key cancelled');
 
-    // Redeem in transaction
+    // 事务内原子占卡：用 updateMany(status=UNUSED) 抢占，count=0 说明已被并发请求兑走，
+    // 杜绝「同一张卡并发双兑、余额充两次」的 TOCTOU 漏洞。
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({ where: { id: userId } });
       if (!user) throw new NotFoundException('User not found');
 
-      const newBalance = Number(user.balance) + Number(card.amount);
-
-      // Update card
-      await tx.card.update({
-        where: { id: card.id },
+      const claimed = await tx.card.updateMany({
+        where: { id: card.id, status: 'UNUSED' },
         data: { status: 'USED', usedBy: userId, usedAt: new Date() },
       });
+      if (claimed.count === 0) {
+        throw new BadRequestException('Card key already used');
+      }
 
-      // Update user balance
-      await tx.user.update({
+      // 原子加余额（递增），绝不用「读→算→写绝对数」：并发与充值/另一张卡到账时
+      // 会互相覆盖，丢失一次入账
+      const updated = await tx.user.update({
         where: { id: userId },
-        data: { balance: newBalance },
+        data: { balance: { increment: Number(card.amount) } },
       });
 
-      // Record transaction
+      // Record transaction（交易后余额 = 递增后的真实值）
       await tx.transaction.create({
         data: {
           userId,
           type: 'CARD_REDEEM',
           amount: card.amount,
-          balance: newBalance,
+          balance: updated.balance,
           description: `Card redemption: ${code}`,
           relatedId: code,
         },
@@ -135,7 +168,7 @@ export class PaymentService {
 
       return {
         amount: card.amount,
-        balance: newBalance,
+        balance: updated.balance,
         message: `Successfully redeemed ${card.amount}`,
       };
     });
@@ -155,7 +188,8 @@ export class PaymentService {
       orderId: order.id,
       status: order.status, // PENDING / PAID / COMPLETED / PROCESSING / CANCELLED
       paid: order.status === 'COMPLETED' || order.status === 'PAID' || order.status === 'PROCESSING',
-      amount: order.amount,
+      amount: order.payAmount ?? order.amount, // 实付（优惠后）
+      originalAmount: order.amount, // 原价
     };
   }
 
@@ -163,7 +197,13 @@ export class PaymentService {
   // WeChat Pay (Native QR Code) - 真实下单
   // ==========================================
 
-  private async createWechatPayment(order: any) {
+  private async createWechatPayment(ref: {
+    id: number;
+    orderNo: string;
+    amount: number;
+    subject?: string;
+    type: 'order' | 'recharge';
+  }) {
     const config = await this.getWechatConfig();
     if (!config.enabled || !config.appId || !config.mchId || !config.apiKey) {
       throw new BadRequestException('微信支付未配置完整（需 appId/商户号/apiKey），请到管理后台-系统设置-支付配置填写');
@@ -175,9 +215,9 @@ export class PaymentService {
       appid: config.appId,
       mch_id: config.mchId,
       nonce_str: this.buildNonce(32),
-      body: `NodeShop-${order.planName || order.orderNo}`.slice(0, 128),
-      out_trade_no: order.orderNo,
-      total_fee: String(Math.round(Number(order.amount) * 100)), // 分
+      body: `NodeShop-${ref.subject || ref.orderNo}`.slice(0, 128),
+      out_trade_no: ref.orderNo,
+      total_fee: String(Math.round(Number(ref.amount) * 100)), // 分
       spbill_create_ip: this.getClientIp(),
       notify_url: config.notifyUrl || process.env.WECHAT_NOTIFY_URL || `${this.getAppUrl()}/api/payments/callback/wechat`,
       trade_type: 'NATIVE',
@@ -203,15 +243,23 @@ export class PaymentService {
 
     const codeUrl = result.code_url; // 真实支付二维码内容
 
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: { payMethod: 'WECHAT' },
-    });
+    // 支付方式落库：商品单写到 Order，直充单写到 Recharge
+    if (ref.type === 'recharge') {
+      await this.prisma.recharge.update({
+        where: { id: ref.id },
+        data: { payMethod: 'WECHAT' },
+      });
+    } else {
+      await this.prisma.order.update({
+        where: { id: ref.id },
+        data: { payMethod: 'WECHAT' },
+      });
+    }
 
     return {
       method: 'wechat',
-      orderNo: order.orderNo,
-      amount: order.amount,
+      orderNo: ref.orderNo,
+      amount: ref.amount,
       paymentId: params.out_trade_no,
       codeUrl,
       qrContent: codeUrl,
@@ -223,7 +271,13 @@ export class PaymentService {
   // Alipay - 真实下单
   // ==========================================
 
-  private async createAlipayPayment(order: any) {
+  private async createAlipayPayment(ref: {
+    id: number;
+    orderNo: string;
+    amount: number;
+    subject?: string;
+    type: 'order' | 'recharge';
+  }) {
     const config = await this.getAlipayConfig();
     if (!config.enabled || !config.appId || !config.privateKey) {
       throw new BadRequestException('支付宝未配置完整（需 appId/应用私钥），请到管理后台-系统设置-支付配置填写');
@@ -231,9 +285,9 @@ export class PaymentService {
 
     // 支付宝当面付/扫码 (alipay.trade.precreate)
     const bizContent = JSON.stringify({
-      out_trade_no: order.orderNo,
-      total_amount: Number(order.amount).toFixed(2),
-      subject: `NodeShop-${order.orderNo}`,
+      out_trade_no: ref.orderNo,
+      total_amount: Number(ref.amount).toFixed(2),
+      subject: ref.subject ? `NodeShop-${ref.subject}` : `NodeShop-${ref.orderNo}`,
       timeout_express: '30m',
     });
 
@@ -252,30 +306,157 @@ export class PaymentService {
     // RSA2 签名并追加签名参数
     params.sign = this.alipaySign(params, config.privateKey);
 
-    // 拼接真实网关请求 URL
-    const query = Object.entries(params)
+    // 发起真实网关请求：alipay.trade.precreate 是服务端到服务端的 API，
+    // 必须 POST x-www-form-urlencoded 到网关，响应体里才带可扫码的 qr_code。
+    // （把网关 API URL 直接当二维码内容返回是错的——支付宝里扫它只会看到 JSON，钱永远付不出去。）
+    const formBody = Object.entries(params)
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
       .join('&');
-    const payUrl = `${config.gateway}?${query}`;
+    let respJson: any;
+    try {
+      const apiRes = await fetch(config.gateway, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=utf-8' },
+        body: formBody,
+      });
+      respJson = await apiRes.json();
+    } catch (e) {
+      this.logger.error(`支付宝下单网关请求失败: ${(e as Error).message}`);
+      throw new BadRequestException('支付宝下单失败：网关请求异常，请稍后重试');
+    }
+    const resp = respJson?.alipay_trade_precreate_response;
+    if (!resp || !resp.code) {
+      throw new BadRequestException('支付宝下单失败：网关返回异常');
+    }
+    if (resp.code !== '10000') {
+      this.logger.error(
+        `支付宝下单失败: code=${resp.code} msg=${resp.msg || ''} sub_msg=${resp.sub_msg || ''}`,
+      );
+      throw new BadRequestException(
+        `支付宝下单失败：${resp.sub_msg || resp.msg || '未知错误'}`,
+      );
+    }
+    // 可选校验网关响应签名（公钥配置齐全时 fail-closed，防网关响应被篡改）
+    if (config.publicKey && respJson.sign) {
+      const content = Object.keys(resp)
+        .filter((k) => resp[k] !== '' && resp[k] !== undefined)
+        .sort()
+        .map((k) => `${k}=${resp[k]}`)
+        .join('&');
+      if (!this.alipayVerifySignature(content, respJson.sign, config.publicKey)) {
+        this.logger.warn(`支付宝网关响应验签失败: ${ref.orderNo}`);
+        throw new BadRequestException('支付宝下单失败：网关响应签名校验未通过');
+      }
+    }
+    const qrCode = String(resp.qr_code || '');
+    if (!qrCode) {
+      throw new BadRequestException('支付宝下单失败：未返回支付二维码');
+    }
 
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: { payMethod: 'ALIPAY' },
-    });
+    // 支付方式落库：只有网关下单成功才标记；网关失败不落库，保持可取消/可换支付方式
+    if (ref.type === 'recharge') {
+      await this.prisma.recharge.update({
+        where: { id: ref.id },
+        data: { payMethod: 'ALIPAY' },
+      });
+    } else {
+      await this.prisma.order.update({
+        where: { id: ref.id },
+        data: { payMethod: 'ALIPAY' },
+      });
+    }
 
     return {
       method: 'alipay',
-      orderNo: order.orderNo,
-      amount: order.amount,
-      paymentId: order.orderNo,
-      payUrl, // 真实支付跳转/二维码内容
-      qrContent: payUrl,
+      orderNo: ref.orderNo,
+      amount: ref.amount,
+      paymentId: ref.orderNo,
+      codeUrl: qrCode,
+      qrContent: qrCode, // 真实扫码内容（https://qr.alipay.com/...）
+      expiresIn: 1800,
     };
   }
 
   // ==========================================
   // Payment Callback / Verification
   // ==========================================
+
+  /**
+   * 微信支付通知验签：解析 XML → 校验 return_code/result_code → 校验 MD5 签名。
+   * 验签失败抛 BadRequestException（返回 FAIL，微信稍后重试）。
+   */
+  async parseWechatCallback(rawXml: string): Promise<Record<string, string>> {
+    const config = await this.getWechatConfig();
+    if (!config.enabled || !config.apiKey) {
+      throw new BadRequestException('微信支付未配置（缺 apiKey），无法验证回调签名');
+    }
+    // 解析 XML（parseXml 是异步的，必须 await——漏掉会把 Promise 当对象用，
+    // 回调验签永远失败、微信无限重试、订单永远到不了账）
+    const params = await this.parseXml(String(rawXml || ''));
+    if (!params || !params.out_trade_no) {
+      throw new BadRequestException('微信回调参数缺失（无 out_trade_no）');
+    }
+    if (params.return_code !== 'SUCCESS' || params.result_code !== 'SUCCESS') {
+      throw new BadRequestException(`微信回调状态异常: return_code=${params.return_code}, result_code=${params.result_code}`);
+    }
+    if (!this.wechatVerifySign(params, config.apiKey)) {
+      // 防伪造：任何验签失败都必须拒绝，绝不写入支付成功
+      this.logger.warn(`微信回调验签失败: ${params.out_trade_no}`);
+      throw new BadRequestException('微信回调签名校验失败');
+    }
+    return params;
+  }
+
+  /**
+   * 支付宝异步通知验签：RSA2 校验 sign + trade_status 必须是 TRADE_SUCCESS/TRADE_FINISHED。
+   * 验签失败抛 BadRequestException（返回 fail，支付宝稍后重试）。
+   */
+  async parseAlipayCallback(body: Record<string, any>): Promise<Record<string, string>> {
+    const config = await this.getAlipayConfig();
+    if (!config.enabled || !config.publicKey) {
+      throw new BadRequestException('支付宝未配置（缺应用公钥），无法验证回调签名');
+    }
+    const params: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body || {})) {
+      if (typeof v === 'string') params[k] = v;
+    }
+    const sign = params.sign;
+    if (!sign || !params.out_trade_no) {
+      throw new BadRequestException('支付宝回调参数缺失（无 out_trade_no/sign）');
+    }
+    // 支付宝验签规则：排除 sign/sign_type，其余参数按 key 升序拼 a=b&c=d
+    const content = Object.keys(params)
+      .filter((k) => k !== 'sign' && k !== 'sign_type' && params[k] !== '' && params[k] !== undefined)
+      .sort()
+      .map((k) => `${k}=${params[k]}`)
+      .join('&');
+    // 应用公钥：兼容 PEM 与裸 base64 两种格式
+    let pem = config.publicKey.trim();
+    if (!pem.includes('-----BEGIN')) {
+      pem = `-----BEGIN PUBLIC KEY-----\n${pem}\n-----END PUBLIC KEY-----`;
+    }
+    try {
+      const publicKey = createPublicKey(pem);
+      const ok = rsaVerify('RSA-SHA256', Buffer.from(content, 'utf8'), publicKey, Buffer.from(sign, 'base64'));
+      if (!ok) {
+        this.logger.warn(`支付宝回调验签失败: ${params.out_trade_no}`);
+        throw new BadRequestException('支付宝回调签名校验失败');
+      }
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException(`支付宝回调签名校验失败: ${(e as Error).message}`);
+    }
+    const tradeStatus = params.trade_status;
+    // 失败关闭：交易状态必须精确等于成功/已完成，缺失或任何其他值一律拒绝
+    if (!tradeStatus || !['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(tradeStatus)) {
+      throw new BadRequestException(`支付宝回调交易状态未完成: ${tradeStatus || 'missing'}`);
+    }
+    // 回调必须属于本商户配置的 app_id（防跨应用串号）
+    if (params.app_id && config.appId && params.app_id !== config.appId) {
+      throw new BadRequestException(`支付宝回调 app_id 不匹配: ${params.app_id}`);
+    }
+    return params;
+  }
 
   /**
    * Verify payment and activate order.
@@ -289,43 +470,97 @@ export class PaymentService {
   }) {
     const { orderNo, tradeNo, amount, payMethod } = params;
 
+    // 基础入参校验（不信任外部传入）
+    if (!orderNo || typeof orderNo !== 'string') {
+      throw new BadRequestException('Missing orderNo');
+    }
+    if (!tradeNo || typeof tradeNo !== 'string') {
+      throw new BadRequestException('Missing tradeNo');
+    }
+    const normalizedMethod = String(payMethod || '').toUpperCase();
+    if (!['WECHAT', 'ALIPAY', 'OFFLINE', 'BALANCE'].includes(normalizedMethod)) {
+      throw new BadRequestException(`Unsupported payMethod: ${payMethod}`);
+    }
+    // PayMethod 枚举不包含 OFFLINE（人工确认不是真实支付渠道）。
+    // 先归一：OFFLINE → null 落库（该列可空），避免 Prisma 运行时枚举校验直接拒写。
+    const storedMethod = normalizedMethod === 'OFFLINE' ? null : (normalizedMethod as any);
+    if (!(Number(amount) > 0)) {
+      throw new BadRequestException('Invalid payment amount');
+    }
+
     const order = await this.prisma.order.findUnique({
       where: { orderNo },
     });
     if (!order) throw new NotFoundException('Order not found');
 
+    // 终态处理：已完成直接返回；已取消/已失败/已退款/已过期一律拒绝恢复
+    // （防"取消后又收款""退款后又收款"类绕过）
     if (order.status === 'COMPLETED') {
       return { success: true, message: 'Already completed' };
     }
+    if (['CANCELLED', 'FAILED', 'REFUNDED', 'EXPIRED'].includes(order.status)) {
+      this.logger.warn(`Payment callback for terminal order ${orderNo} (${order.status}) rejected`);
+      throw new BadRequestException(`Order is ${order.status.toLowerCase()}`);
+    }
 
-    // Verify amount matches
-    if (Number(order.amount) > amount) {
-      this.logger.warn(`Payment amount mismatch for ${orderNo}`);
+    // Verify amount matches（允许用户多付，不允许少付）。实付以 payAmount（优惠后）为准
+    const chargeAmount = Number(order.payAmount ?? order.amount);
+    if (chargeAmount > amount) {
+      this.logger.warn(`Payment amount mismatch for ${orderNo}: expected ${chargeAmount} got ${amount}`);
       throw new BadRequestException('Payment amount mismatch');
     }
 
-    // Mark as paid
-    await this.prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'PAID',
-        paidAt: new Date(),
-        payMethod: payMethod as any,
-        tradeNo,
-      },
+    // 认领 + 流水同一事务：确保「订单已收款(PAID)」与「PURCHASE 流水落库」原子，
+    // 杜绝崩溃在两者之间 → 钱已收但流水缺失，统计与用户账单永久少计。
+    const claimed = await this.prisma.$transaction(async (tx) => {
+      // 原子收款标记：只有仍为 PENDING 的订单能抢占成功。
+      // 并发双回调 / 回调与余额支付竞争 → 只有一方 count=1，另方可直接拿到幂等结果，
+      // 不会重复写 PURCHASE 流水、不会重复走激活。
+      const res = await tx.order.updateMany({
+        where: { id: order.id, status: 'PENDING' },
+        data: {
+          status: 'PAID',
+          paidAt: new Date(),
+          payMethod: storedMethod,
+          tradeNo,
+        },
+      });
+      if (res.count === 0) {
+        const cur = await tx.order.findUnique({
+          where: { id: order.id },
+          select: { status: true },
+        });
+        if (cur && ['PAID', 'PROCESSING', 'COMPLETED'].includes(cur.status)) {
+          return { alreadyPaid: true };
+        }
+        throw new ConflictException('Order state changed, please retry');
+      }
+
+      // 网关支付不改动余额，但流水 balance 字段对外语义是「交易后余额」：
+      // 快照该用户真实余额，避免前端把流水里的 0 当成用户余额清零。
+      const userBal = await tx.user.findUnique({
+        where: { id: order.userId },
+        select: { balance: true },
+      });
+      if (!userBal) throw new NotFoundException('User not found');
+
+      // Record transaction（金额记实付：优惠券后金额）
+      await tx.transaction.create({
+        data: {
+          userId: order.userId,
+          type: 'PURCHASE',
+          amount: chargeAmount,
+          balance: userBal.balance,
+          description: `Order ${orderNo}`,
+          relatedId: orderNo,
+        },
+      });
+      return { alreadyPaid: false };
     });
 
-    // Record transaction
-    await this.prisma.transaction.create({
-      data: {
-        userId: order.userId,
-        type: 'PURCHASE',
-        amount: order.amount,
-        balance: 0,
-        description: `Order ${orderNo}`,
-        relatedId: orderNo,
-      },
-    });
+    if (claimed.alreadyPaid) {
+      return { success: true, message: 'Already paid' };
+    }
 
     // Activate the node (create inbound in XUI)
     try {
@@ -333,17 +568,139 @@ export class PaymentService {
       return { success: true, data: activation };
     } catch (e) {
       this.logger.error(`Failed to activate order ${orderNo}: ${e.message}`);
-      // Order is paid but activation failed - mark as processing for manual review
-      await this.prisma.order.update({
-        where: { id: order.id },
-        data: { status: 'PROCESSING' },
-      });
+      // Order is paid but activation failed. 只有仍处中间态才标记 PROCESSING 等 cron 重试；
+      // 终态（如续费校验失败置的 FAILED）保持原样，避免把失败订单被"复活"成处理中。
+      try {
+        const cur = await this.prisma.order.findUnique({
+          where: { id: order.id },
+          select: { status: true },
+        });
+        if (cur && ['PENDING', 'PAID'].includes(cur.status)) {
+          await this.prisma.order.update({
+            where: { id: order.id },
+            data: { status: 'PROCESSING' },
+          });
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to update order status after activation error: ${(err as Error).message}`);
+      }
       return { success: false, message: `Payment received but activation failed: ${e.message}`, orderId: order.id };
     }
   }
 
   private payWithBalance(order: any) {
     return this.orderService.payWithBalance(order.userId, order.id);
+  }
+
+  // ==========================================
+  // 余额直充结算（余额充值单专享）
+  // ==========================================
+
+  /**
+   * 网关回调统一切口：按订单号前缀分流。
+   * - RC 开头 → 余额直充单（handleRechargeSuccess：充值入账）
+   * - 其他（SO 等）→ 商品单（handlePaymentSuccess：激活节点）
+   */
+  async settleGatewayCallback(params: {
+    orderNo: string;
+    tradeNo: string;
+    amount: number;
+    payMethod: string;
+  }) {
+    if (String(params.orderNo || '').startsWith('RC')) {
+      return this.handleRechargeSuccess(params);
+    }
+    return this.handlePaymentSuccess(params);
+  }
+
+  /**
+   * 直充单收款确认：原子认领（只有 PENDING 能抢到，防并发双回调重复入账）+ 校验金额 + 入账余额。
+   * 复用与商品单相同的安全约束：终态不可复活、允许多付不允许少付。
+   */
+  async handleRechargeSuccess(options: {
+    orderNo: string;
+    tradeNo: string;
+    amount: number;
+    payMethod: string;
+  }) {
+    const { orderNo, tradeNo, amount, payMethod } = options;
+
+    if (!orderNo || typeof orderNo !== 'string') {
+      throw new BadRequestException('Missing orderNo');
+    }
+    if (!tradeNo || typeof tradeNo !== 'string') {
+      throw new BadRequestException('Missing tradeNo');
+    }
+    const normalizedMethod = String(payMethod || '').toUpperCase();
+    if (!['WECHAT', 'ALIPAY', 'OFFLINE'].includes(normalizedMethod)) {
+      throw new BadRequestException(`Unsupported payMethod: ${payMethod}`);
+    }
+    // 同上：OFLLINE 归一为 null 落库，避免写入 PayMethod 枚举外值被 Prisma 拒绝
+    const storedMethod = normalizedMethod === 'OFFLINE' ? null : (normalizedMethod as any);
+    if (!(Number(amount) > 0)) {
+      throw new BadRequestException('Invalid payment amount');
+    }
+
+    const recharge = await this.prisma.recharge.findUnique({ where: { orderNo } });
+    if (!recharge) throw new NotFoundException('Recharge order not found');
+
+    // 终态：已入账直接幂等返回；已取消/已过期拒绝复活（防「取消后又收款」绕过）
+    if (recharge.status === 'PAID') {
+      return { success: true, message: 'Already paid' };
+    }
+    if (['CANCELLED', 'EXPIRED'].includes(recharge.status)) {
+      this.logger.warn(`Recharge callback for terminal order ${orderNo} (${recharge.status}) rejected`);
+      throw new BadRequestException(`Recharge order is ${recharge.status.toLowerCase()}`);
+    }
+
+    // 金额校验：允许多付，不允许少付
+    if (Number(recharge.amount) > amount) {
+      this.logger.warn(`Recharge amount mismatch for ${orderNo}: expected ${recharge.amount} got ${amount}`);
+      throw new BadRequestException('Recharge payment amount mismatch');
+    }
+
+    // 认领 + 入账必须在同一事务：否则「先标记 PAID、后加余额」之间崩溃会让充值单
+    // 停留在 PAID 而余额永远不入账（网关重试拿到"Already paid"幂等返回，直接跳过入账）。
+    const credited = await this.prisma.$transaction(async (tx) => {
+      // 原子占单：仅 PENDING 能抢成功；并发双回调只有一方写入，另一方幂等返回
+      const claimed = await tx.recharge.updateMany({
+        where: { id: recharge.id, status: 'PENDING' },
+        data: { status: 'PAID', paidAt: new Date(), payMethod: storedMethod, tradeNo },
+      });
+      if (claimed.count === 0) {
+        const cur = await tx.recharge.findUnique({
+          where: { id: recharge.id },
+          select: { status: true },
+        });
+        if (cur && cur.status === 'PAID') return { alreadyPaid: true };
+        throw new ConflictException('Recharge state changed, please retry');
+      }
+
+      // 原子递增余额，绝不用「读→算→写绝对数」：并发充值 / 余额支付会互相覆盖，丢失一次入账
+      const updated = await tx.user.update({
+        where: { id: recharge.userId },
+        data: { balance: { increment: Number(recharge.amount) } },
+      });
+
+      // 入账流水（与余额变更同事务。）
+      await tx.transaction.create({
+        data: {
+          userId: recharge.userId,
+          type: 'RECHARGE',
+          amount: recharge.amount,
+          balance: updated.balance,
+          description: `Recharge order ${orderNo}`,
+          relatedId: orderNo,
+        },
+      });
+      return { alreadyPaid: false, newBalance: updated.balance };
+    });
+
+    if (credited.alreadyPaid) {
+      return { success: true, message: 'Already paid' };
+    }
+    this.logger.log(`Recharge ${orderNo} credited ${recharge.amount} to user ${recharge.userId}`);
+    return { success: true, data: { orderNo, amount: recharge.amount, balance: credited.newBalance } };
   }
 
   // ==========================================
@@ -369,6 +726,20 @@ export class PaymentService {
       .join('&');
     const signStr = `${str}&key=${apiKey}`;
     return createHash('md5').update(signStr, 'utf8').digest('hex').toUpperCase();
+  }
+
+  private wechatVerifySign(params: Record<string, string>, apiKey: string): boolean {
+    // 回调验签：排除 sign 字段本身与空值参数，其余与下单同规则
+    const received = String(params.sign || '');
+    if (!received) return false;
+    const { sign, ...rest } = params;
+    const str = Object.keys(rest)
+      .sort()
+      .filter((k) => rest[k] !== '' && rest[k] !== undefined && rest[k] !== null)
+      .map((k) => `${k}=${rest[k]}`)
+      .join('&');
+    const expected = createHash('md5').update(`${str}&key=${apiKey}`, 'utf8').digest('hex').toUpperCase();
+    return expected === received;
   }
 
   private buildWechatXml(params: Record<string, string>): string {
@@ -415,6 +786,25 @@ export class PaymentService {
     const keyObject = createPrivateKey(pem);
     const signature = rsaSign('RSA-SHA256', Buffer.from(content, 'utf8'), keyObject);
     return signature.toString('base64');
+  }
+
+  /** 校验支付宝网关/回调返回的 RSA2 签名（内容串 + sign；公钥兼容 PEM 与裸 base64） */
+  private alipayVerifySignature(content: string, sign: string, publicKey: string): boolean {
+    let pem = publicKey.trim();
+    if (!pem.includes('-----BEGIN')) {
+      pem = `-----BEGIN PUBLIC KEY-----\n${pem}\n-----END PUBLIC KEY-----`;
+    }
+    try {
+      const pub = createPublicKey(pem);
+      return rsaVerify(
+        'RSA-SHA256',
+        Buffer.from(content, 'utf8'),
+        pub,
+        Buffer.from(String(sign || ''), 'base64'),
+      );
+    } catch {
+      return false;
+    }
   }
 
   // --- Misc helpers ---

@@ -15,9 +15,9 @@ export function Navbar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
+  // 导航不含「套餐」入口（套餐页从首页 CTA / 页脚 / 用户中心可达）
   const links = [
     { href: '/', label: t('common.home') },
-    { href: '/products', label: t('common.products') },
     { href: user ? '/user/dashboard' : '/login', label: t('common.dashboard') },
   ];
 
