@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { cn } from '@/lib/utils';
+import { cn, copyToClipboard } from '@/lib/utils';
 
 const STATUS_MAP: Record<string, any> = {
   ACTIVE: { label: '活跃', variant: 'success' },
@@ -35,14 +35,15 @@ export default function NodesPage() {
   }, []);
 
   const copyLink = async (id: number, url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopiedId(id);
-      toast.success(t('common.copied'));
-      setTimeout(() => setCopiedId(null), 2000);
-    } catch {
+    // copyToClipboard 自带 HTTP 兜底（非 https 下 navigator.clipboard 不可用）
+    const ok = await copyToClipboard(url);
+    if (!ok) {
       toast.error('复制失败 / Copy failed');
+      return;
     }
+    setCopiedId(id);
+    toast.success(t('common.copied'));
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-40 w-full" /><Skeleton className="h-40 w-full" /></div>;

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Plus, Copy, XCircle, Check } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
+import { copyToClipboard } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -57,11 +58,14 @@ export default function CardsPage() {
     }
   };
 
-  const copyAll = () => {
+  const copyAll = async () => {
     if (!generated) return;
-    navigator.clipboard.writeText(generated.codes.join('\n'));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // HTTP 环境下 navigator.clipboard 不可用，走 copyToClipboard 的 execCommand 兜底
+    const ok = await copyToClipboard(generated.codes.join('\n'));
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;

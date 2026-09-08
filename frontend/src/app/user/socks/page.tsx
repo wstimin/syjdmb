@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { Server, Plus, Trash2, Copy, Check } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { copyToClipboard } from '@/lib/utils';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -70,11 +71,14 @@ export default function SocksPage() {
   };
 
   const copyConn = async (str: string, key: string) => {
-    try {
-      await navigator.clipboard.writeText(str);
-      setCopied(key);
-      setTimeout(() => setCopied(null), 2000);
-    } catch { /* ignore */ }
+    // HTTP 环境下 navigator.clipboard 不可用，走 copyToClipboard 的 execCommand 兜底
+    const ok = await copyToClipboard(str);
+    if (!ok) {
+      toast.error('复制失败 / Copy failed');
+      return;
+    }
+    setCopied(key);
+    setTimeout(() => setCopied(null), 2000);
   };
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-40 w-full" /></div>;
