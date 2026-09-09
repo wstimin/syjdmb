@@ -39,6 +39,7 @@ export class OrderController {
       relaySocksUser?: string;
       relaySocksPass?: string;
       renewalOfInboundId?: number; // 续费单：对已有节点续期/续流量
+      renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：到期续费 / 流量重置（不传=旧版叠加行为）
       couponCode?: string;         // 优惠券码（实付按券后金额，amount 恒为原价）
     },
   ) {
@@ -55,6 +56,7 @@ export class OrderController {
       relaySocksUser: body.relaySocksUser,
       relaySocksPass: body.relaySocksPass,
       renewalOfInboundId: body.renewalOfInboundId,
+      renewType: body.renewType,
       couponCode: body.couponCode,
     });
     return { success: true, data: result };

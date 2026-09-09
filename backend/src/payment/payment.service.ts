@@ -10,6 +10,7 @@ import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { OrderService } from '../order/order.service';
 import { SystemService } from '../system/system.service';
+import { CouponService } from '../coupon/coupon.service';
 import { createHash, createPrivateKey, createPublicKey, sign as rsaSign, verify as rsaVerify } from 'crypto';
 
 @Injectable()
@@ -22,6 +23,7 @@ export class PaymentService {
     private configService: ConfigService,
     private orderService: OrderService,
     private systemService: SystemService,
+    private couponService: CouponService,
   ) {}
 
   // ==========================================
@@ -118,20 +120,63 @@ export class PaymentService {
   // ==========================================
 
   async redeemCard(userId: number, code: string): Promise<any> {
-    // 卡密生成时格式为 XXXX-XXXX-XXXX-XXXX（大写、每 4 位一组带连字符）。
-    // 用户录入时可能去掉连字符、写小写或带空格，这里统一规范化：
-    // 去除所有非字母数字字符再转大写，与库中存储的卡密（去格式后）比对。
+    // 卡密对外格式：[前缀-]XXXX-XXXX-XXXX-XXXX（大写、序列固定 16 位，前缀为管理员生成时可自定义）。
+    // 用户录入时可能去掉连字符、写小写或带空格 → 统一规范化（去所有非字母数字再转大写）。
     const normalizedInput = String(code || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
-    if (!normalizedInput) throw new BadRequestException('Invalid card key');
+    if (!normalizedInput) throw new BadRequestException('卡密无效');
+    // 【对抗复核确认】不整体拒绝超长输入：管理端生成卡时对前缀长度无上限（card.service
+    // 原样保存前缀，旧实现靠 JS 全量匹配可兑超长前缀卡）—— 硬性 `>64 判无效` 等于冻结
+    // 这些历史卡（旧逻辑能兑、新逻辑直接拒绝）。代价只体现在枚举工作量，因此把
+    // 「可疑超长」直接跳过索引枚举、交给下方回退 2 的 SQL 归一化等值（一次全表扫描，
+    // 与旧实现同量级），两种长度都能兑。
 
-    const cards = await this.prisma.card.findMany();
-    const card = cards.find(
-      (c) => String(c.code).replace(/[^a-zA-Z0-9]/g, '').toUpperCase() === normalizedInput,
-    );
-
-    if (!card) throw new BadRequestException('Invalid card key');
-    if (card.status === 'USED') throw new BadRequestException('Card key already used');
-    if (card.status === 'CANCELLED') throw new BadRequestException('Card key cancelled');
+    // 索引化查询（不再全表加载 JS 正则比对）。序列固定 16 位，但前缀边界未知：
+    // 输入去连字符后「前缀在哪结束、序列从哪开始」无从分辨 → 枚举候选边界，拼回
+    // 「前缀-XXXX-XXXX-XXXX-XXXX」逐档做唯一索引精确查。库中只有一个真前缀边界，
+    // 只有它能精确命中，其余边界全是 findUnique miss（无害）。老卡无前缀时 pre=0 命中。
+    // 【复核⑤⑥⑦修订】候选顺序与边界规则：
+    //  - enumMaxPre = min(len-16, 32)：前缀 ≤32 字符走索引枚举（代价 ≤33 次 findUnique
+    //    miss）；更长前缀直接交给 SQL 归一化等值兜底，不受上限影响
+    //  - 每个边界先试「前缀-序列」再试裸序列；裸序列候选只在 pre=0 保留 —— pre>0 时
+    //    裸 16 位序列若在库中另有「真正无前缀」的同号卡，会兑错卡
+    const len = normalizedInput.length;
+    const maxPre = len - 16;
+    const enumMaxPre = Math.min(maxPre, 32);
+    let card = null;
+    for (let pre = 0; pre <= enumMaxPre && !card; pre++) {
+      const serial = normalizedInput.slice(pre);
+      if (serial.length !== 16) continue; // 序列必须正好 16 位
+      const dasher = (s: string) => s.replace(/(\w{4})(?=\w)/g, '$1-');
+      const prefix = normalizedInput.slice(0, pre);
+      // preferred：带前缀完整还原（大写前缀 + 连字符序列）
+      if (prefix) {
+        card = await this.prisma.card.findUnique({ where: { code: `${prefix}-${dasher(serial)}` } });
+        if (card) break;
+      }
+      // pre=0 的裸序列（无前缀老卡）
+      if (pre === 0) {
+        card = await this.prisma.card.findUnique({ where: { code: dasher(serial) } });
+        if (card) break;
+      }
+    }
+    // 回退 1：早期可能落库未带连字符的紧凑格式
+    if (!card) card = await this.prisma.card.findUnique({ where: { code: normalizedInput } });
+    // 回退 2（对抗复核确认重写）：旧实现是 JS 大小写不敏感的「去格式后全码等值」匹配，
+    // 索引化枚举对它丢了兼容 —— 存储码带连字符（如 "vip-1234-5678-9012-3456"）时，
+    // 去连字符的输入永远不是它的子串，contains-insensitive 永不命中；而系统生成的
+    // 小写/混合大小写前缀卡（card.service generateCardCode 原样写前缀，无规范化）同样
+    // 兑不了。改成 SQL 侧归一化等值：去非字母数字 + 转大写后逐字符相等才算命中 ——
+    // 语义与旧实现完全一致，且仍是严格全码等值（裸码不会因为「包含在更长的码里」被误兑）。
+    if (!card) {
+      const rows = await this.prisma.$queryRaw<Array<{ id: number }>>`
+        SELECT "id" FROM "Card"
+        WHERE UPPER(REGEXP_REPLACE("code", '[^a-zA-Z0-9]', '', 'g')) = ${normalizedInput}
+        LIMIT 1`;
+      if (rows.length) card = await this.prisma.card.findUnique({ where: { id: rows[0].id } });
+    }
+    if (!card) throw new BadRequestException('卡密无效');
+    if (card.status === 'USED') throw new BadRequestException('卡密已被使用');
+    if (card.status === 'CANCELLED') throw new BadRequestException('卡密已作废');
 
     // 事务内原子占卡：用 updateMany(status=UNUSED) 抢占，count=0 说明已被并发请求兑走，
     // 杜绝「同一张卡并发双兑、余额充两次」的 TOCTOU 漏洞。
@@ -144,7 +189,8 @@ export class PaymentService {
         data: { status: 'USED', usedBy: userId, usedAt: new Date() },
       });
       if (claimed.count === 0) {
-        throw new BadRequestException('Card key already used');
+        // 并发抢兑/该卡已被使用（或被标记黑名单）：updateMany 的 CAS 保证只会有一笔成功
+        throw new BadRequestException('卡密已被使用或无效');
       }
 
       // 原子加余额（递增），绝不用「读→算→写绝对数」：并发与充值/另一张卡到账时
@@ -197,6 +243,36 @@ export class PaymentService {
   // WeChat Pay (Native QR Code) - 真实下单
   // ==========================================
 
+  /** 网关单 48h 超时护栏（配套 order 的 expireStaleGatewayOrders）：
+   *  订单 PENDING 超过 48h 由定时任务置 EXPIRED；任务还没跑到的窗口内，
+   *  这里直接拦截，避免前端轮询/重试给「僵尸订单」无限生成新支付二维码。
+   *  顺手把状态收敛成 EXPIRED（幂等），下一拍定时任务不会再找到它。 */
+  private async assertOrderWithinPaymentWindow(ref: { id: number; type: 'order' | 'recharge' }) {
+    if (ref.type !== 'order') return;
+    const order = await this.prisma.order.findUnique({
+      where: { id: ref.id },
+      select: { createdAt: true, status: true, couponId: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.status !== 'PENDING') throw new BadRequestException('订单已处理，请刷新页面后再试');
+    if (Date.now() - order.createdAt.getTime() > 48 * 60 * 60 * 1000) {
+      // 【复核⑧⑨】CAS 收敛：用 updateMany(status=PENDING→EXPIRED) 原子抢占，绝不用
+      // 读后的绝对 update —— 否则「读时 PENDING → 用户恰好此刻支付成功（PAID）→ 写回
+      // EXPIRED」会把已收款的单拍死，回调再来就被终态拒收（钱卡死等人工对账）。
+      // count=0 说明订单已被支付/取消，本次不动状态，付款回调查到 PAID 照常完结。
+      const claimed = await this.prisma.order.updateMany({
+        where: { id: ref.id, status: 'PENDING' },
+        data: { status: 'EXPIRED' },
+      });
+      // 仅当本次真的置 EXPIRED 才释放占用的优惠券名额（与 expireStaleGatewayOrders 一致；
+      // releaseCoupon 幂等：usedCount>0 才递减）
+      if (claimed.count > 0 && order.couponId) {
+        await this.couponService.releaseCoupon(order.couponId);
+      }
+      throw new BadRequestException('订单已超过 48 小时未支付，已自动取消，请重新下单');
+    }
+  }
+
   private async createWechatPayment(ref: {
     id: number;
     orderNo: string;
@@ -204,6 +280,7 @@ export class PaymentService {
     subject?: string;
     type: 'order' | 'recharge';
   }) {
+    await this.assertOrderWithinPaymentWindow(ref);
     const config = await this.getWechatConfig();
     if (!config.enabled || !config.appId || !config.mchId || !config.apiKey) {
       throw new BadRequestException('微信支付未配置完整（需 appId/商户号/apiKey），请到管理后台-系统设置-支付配置填写');
@@ -278,6 +355,7 @@ export class PaymentService {
     subject?: string;
     type: 'order' | 'recharge';
   }) {
+    await this.assertOrderWithinPaymentWindow(ref);
     const config = await this.getAlipayConfig();
     if (!config.enabled || !config.appId || !config.privateKey) {
       throw new BadRequestException('支付宝未配置完整（需 appId/应用私钥），请到管理后台-系统设置-支付配置填写');

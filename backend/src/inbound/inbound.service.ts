@@ -469,12 +469,48 @@ export class InboundService {
       // 8) 购买时勾选中转：在该源节点上挂 SOCKS 出站（指向用户填的 SOCKS 节点，出口 = 该 SOCKS IP）
       //    + 一条只命中该节点端口的路由规则（inboundTag = 面板真实 tag）。不新增节点；节点全程走 SOCKS。
       if (relay) {
-        await this.mountRelayOnNode(serverId, port, actualTag, {
-          host: relaySocksHost,
-          port: relaySocksPort,
-          user: relaySocksUser,
-          pass: relaySocksPass,
-        });
+        try {
+          await this.mountRelayOnNode(serverId, port, actualTag, {
+            host: relaySocksHost,
+            port: relaySocksPort,
+            user: relaySocksUser,
+            pass: relaySocksPass,
+          });
+        } catch (e) {
+          // 【zombie-create 对抗复核(2/2)】挂载失败必须全量回滚：
+          // 否则 DB 已有一行 remark=Order <n> 的节点但面板从未挂上 relay —— order.service 的
+          // 防重复建节点按 remark 查到此行会把订单直接置 COMPLETED，用户拿到「已中转」实为直连
+          // 的节点；且 cron 重试会在新端口再建一个重复节点。回滚 DB 行 + 面板入站/客户端 +
+          // 尽力清除模板上已写出的挂载，再抛错让 cron 下一轮干净重试。
+          try {
+            // 【复核488】单层兜底，不再双吞错（try{} 包 .catch(()=>{}) 会连日志都吞掉）：
+            // 失败要留下 warn 痕迹 —— 否则模板残留脏规则/孤儿出站没人知道，
+            // removeRelayMount 的「无规则引用才删出站」逻辑也会因规则没删掉永不清理。
+            await this.serverService.removeRelayMount(serverId, {
+              relayTag: actualTag,
+              outboundTag: `socks-${port}`,
+            });
+          } catch (e) {
+            this.logger.warn(
+              `Rollback: failed to unmount relay ${actualTag} on server ${serverId}: ${e?.message || e} (panel template may retain dirty routing rules)`,
+            );
+          }
+          try {
+            await this.prisma.inbound.delete({ where: { id: inbound.id } });
+          } catch {}
+          try {
+            await this.serverService.deleteClient(serverId, email);
+          } catch {}
+          try {
+            await this.serverService.deleteInbound(serverId, xuiInboundId);
+          } catch {}
+          try {
+            await this.serverService.restartXrayService(serverId);
+          } catch {}
+          throw new BadRequestException(
+            `中转挂载失败，已回滚新建节点：${(e as Error).message}`,
+          );
+        }
       }
 
       this.logger.log(
@@ -540,41 +576,35 @@ export class InboundService {
     const relayTag = actualTag;
     const outboundTag = `socks-${port}`;
 
-    const outbound = await this.serverService.ensureUserSocksOutbound(
-      serverId,
-      { host: socks.host, port: socks.port, user: socks.user, pass: socks.pass },
-      outboundTag,
-    );
-    const ruleChanged = await this.serverService.ensureRelayRouting(
-      serverId,
+    // 单次读-改-写（出站 + 路由合并一次写回）：分步实现会因面板 obj 形态解析失败
+    // 而读到空配置写回，把面板全部出站/路由清空（只剩 api 规则）。读不完整直接抛错。
+    await this.serverService.ensureRelayMount(serverId, {
       relayTag,
       outboundTag,
-    );
-    if (outbound.changed || ruleChanged) {
-      await this.serverService.restartXrayService(serverId);
-    }
+      target: { host: socks.host, port: socks.port, user: socks.user, pass: socks.pass },
+    });
+    // 【double-restart 对抗复核(2/2)】不再自行重启：3.6.0 的 /xray/update 保存成功后自己
+    // RestartXray(false)——仅 outbounds/routing 变化时走 gRPC tryHotApply 零停机热应用，否则
+    // 整进程重启。我们再强制 stop+start 会把面板已热应用的变更回滚成一次全机闪断（每次挂/
+    // 卸载都双重重启）。面板保存/应用失败时 updateXrayConfig 已因 success=false 抛错上抛，
+    // 挂载绝不会「静默成功实则未生效」（对应 restart-ignored 的上抛要求一并覆盖）。
     this.logger.log(
       `Relay mounted on source node ${relayTag} -> ${outboundTag} (${socks.host}:${socks.port}) on server ${serverId}`,
     );
   }
 
   /**
-   * 移除【源节点】上的 SOCKS 中转：删该节点的路由规则，再删该节点专属出站。
+   * 移除【源节点】上的 SOCKS 中转：单次读-改-写，删该节点的路由规则 + 专属出站。
    * 配置确有变更时重启 Xray。
    */
   private async unmountRelayFromNode(serverId: number, inbound: any) {
-    const relayTag = inbound.relayTag;
-    const outboundTag = inbound.relaySocksOutboundTag;
-    const ruleRemoved = relayTag
-      ? await this.serverService.removeRelayRouting(serverId, relayTag)
-      : false;
-    const outboundRemoved = outboundTag
-      ? await this.serverService.removeUserSocksOutbound(serverId, outboundTag)
-      : false;
-    if (ruleRemoved || outboundRemoved) {
-      await this.serverService.restartXrayService(serverId);
-    }
-    this.logger.log(`Relay unmounted from ${relayTag} (server ${serverId})`);
+    await this.serverService.removeRelayMount(serverId, {
+      relayTag: inbound.relayTag || undefined,
+      outboundTag: inbound.relaySocksOutboundTag || undefined,
+    });
+    // 同 mount：面板 /xray/update 保存成功后自建应用（热应用/整重启），不再自行二次重启。
+    // 失败已由 updateXrayConfig 抛错上抛（delete-swallow 修正在 delete() 拦截）。
+    this.logger.log(`Relay unmounted from ${inbound.relayTag} (server ${serverId})`);
   }
 
   private async getAvailablePort(serverId: number): Promise<number> {
@@ -1192,11 +1222,66 @@ export class InboundService {
           // 面板真实停用成功（或原本就已停用）才标记本地 EXPIRED；
           // 管理员暂停的节点保持 SUSPENDED（不被到期时间覆盖，避免丢暂停标记）
           if (panelDisabled) {
+            // 【major#1151 对抗复核】「激活续费与 cron 停用无互斥」竞态护栏：
+            // cron 用本快照判定过期/超限并已把面板侧停用；但并行的续费激活（本地先提交 →
+            // 面板加量/重置 → status=ACTIVE）可能恰在这两者之间把节点复活。直接按旧快照写
+            // status=EXPIRED 会把刚续费的节点打回停用（下一次过期判定要等新到期日才松开，
+            // 面板已恢复但商城显示已过期，用户白等一整轮）。
+            // 写本地状态前重读一次：若该行已被续费复活（ACTIVE 且新到期在未来 且 新额度未超）
+            // → 放弃覆盖，保留最新状态。
+            const freshRow = await this.prisma.inbound.findUnique({
+              where: { id: inbound.id },
+              select: { status: true, expiryTime: true, trafficLimit: true, totalTraffic: true },
+            });
+            if (!freshRow) continue;
+            const freshExpiresAt = freshRow.expiryTime ? new Date(freshRow.expiryTime).getTime() : null;
+            // 【复核1232】freshExceeded 不再用「上一轮写库的陈旧本地 totalTraffic」判定：
+            // 它在「续费激活 vs cron 停用」并行竞争的分钟窗口里是过期快照 —— 续费已把 quota
+            // 调高（EXPIRY 顺延 / TRAFFIC 重置），库里的 used 还是上一分钟读面板的旧值，
+            // 可能 ≥ 新 quota 造成假超限，把刚续费的节点误判为「未复活」。改判两件事：
+            //  a) 用本轮刚读到的面板 total（同一次遍历刚取，比 DB 里的 freshRow.totalTraffic 新）
+            //  b) 存在在途续费单（renewalOfInboundId + PAID/PROCESSING，已付款未完结）→
+            //     节点正在被续费线程复活，这一轮绝不打回 EXPIRED
+            const renewInFlight = await this.prisma.order.findFirst({
+              where: {
+                renewalOfInboundId: inbound.id,
+                status: { in: ['PAID', 'PROCESSING'] },
+              },
+              select: { id: true },
+            });
+            const freshExceeded =
+              !renewInFlight &&
+              Number(freshRow.trafficLimit) > 0 &&
+              Number(total) >= Number(freshRow.trafficLimit);
+            const revived =
+              freshRow.status === 'ACTIVE' &&
+              (freshExpiresAt === null || freshExpiresAt > now) &&
+              !freshExceeded;
+            if (revived) {
+              // 【复核1237】复活分支补回面板 enable：此刻面板侧刚被本 cron 停用
+              // （enable=false）。续费激活只做 bulkAdjust/本地状态，不重查面板 enable →
+              // 用户连接会断到下一分钟 cron 重新判定才恢复，白断一整轮。立即复位。
+              try {
+                await this.serverService.setClientEnabled(inbound.serverId, inbound.email, true);
+              } catch (e) {
+                // 复位失败不致命：cron 下一轮按新到期/quota 判「未超限 → 保持启用」。
+                this.logger.warn(
+                  `Failed to re-enable client ${inbound.email} after renewal, will retry next minute: ${e.message}`,
+                );
+              }
+              continue; // 已被续费复活 → 不覆盖
+            }
+            // 【复核1243】最终写回基于 freshRow.status：旧的 inbound.status 快照在
+            // findMany 之后可能已变化（管理员暂停 → SUSPENDED、用户删除 → DELETED）。
+            //  - DELETED：跳过写（写回 EXPIRED 等于把已删节点「复活」成已过期状态，
+            //    zombie-create 补偿的竞态干扰）
+            //  - SUSPENDED：保持暂停标记（不被到期时间覆盖，避免丢暂停标记）
+            if (freshRow.status === 'DELETED') continue;
             await this.prisma.inbound.update({
               where: { id: inbound.id },
               data: {
                 totalTraffic: BigInt(total),
-                status: inbound.status === 'SUSPENDED' ? 'SUSPENDED' : 'EXPIRED',
+                status: freshRow.status === 'SUSPENDED' ? 'SUSPENDED' : 'EXPIRED',
               },
             });
           }
@@ -1206,6 +1291,49 @@ export class InboundService {
             where: { id: inbound.id },
             data: { totalTraffic: BigInt(total) },
           });
+          // 【对抗复核确认】面板 enable 自愈位：复活分支（上方 revived）的
+          // setClientEnabled(true) 失败时只 warn、不重试（注释先前声称「下一分钟重试」，
+          // 但下一轮 cron 走本 else 分支，从不触碰面板 enable）→ 节点本地 ACTIVE、
+          // 面板永久停用（enable=false），用户连不上。这里每轮补一次幂等修复：本地
+          // ACTIVE 而面板仍停用 → 重开；失败下轮再试，直至面板恢复。
+          // SUSPENDED（管理员主动暂停，经 suspend 流程走面板停用）不该被复活，
+          // 用 status 门控；expired/超限节点走上方分支，不会落进这里被兜底重开。
+          //
+          // 【对抗复核 F8/F14：不能用旧快照查 self-heal 门】inbound.status 是 updateTraffic
+          // 顶部 findMany（L1163）抓的快照，跑一遍要经过多条面板往返，会过时。管理员暂停
+          // （suspend：先面板 setClientEnabled(false) 后写 SUSPENDED，或先写后停）若恰在这
+          // 快照之后、本节点迭代之前落地，这里旧快照仍读 ACTIVE + 面板 enable=false →
+          // 会误把这台「已被管理员暂停」的节点在面板侧重新启用，商城显示已暂停、用户却还能连。
+          // 复活/停用分支都已重读 freshRow 防并发，自愈位也必须重读当前 DB 状态：
+          // 只在「此刻仍是 ACTIVE」时才准许重开（SUSPENDED/DELETED/已过期一律不碰）。
+          if (traffic?.obj?.enable === false) {
+            const nowStatus = await this.prisma.inbound.findUnique({
+              where: { id: inbound.id },
+              select: { status: true },
+            });
+            if (nowStatus && nowStatus.status === 'ACTIVE') {
+              try {
+                const r = await this.serverService.setClientEnabled(inbound.serverId, inbound.email, true);
+                if (!r?.success) {
+                  this.logger.warn(
+                    `Failed to re-enable client ${inbound.email} (self-heal): ${r?.msg} (will retry next minute)`,
+                  );
+                } else {
+                  // 【对抗复核 F9】面板侧被停用（enable=false）而本地仍 ACTIVE —— 除了实现
+                  // 的「漂移修复」也可能是有人在 x-ui 面板手动停用了这台 ACTIVE 节点
+                  // （紧急掐流/封滥用）。重开后明确打一条警告，让覆盖操作可审计、可察觉，
+                  // 而非静默撤销运维意图。
+                  this.logger.warn(
+                    `Self-heal re-enabled client ${inbound.email} on panel (was disabled while local status ACTIVE); if this was a manual panel-side block, use 商城暂停(suspend) instead`,
+                  );
+                }
+              } catch (e) {
+                this.logger.warn(
+                  `Failed to re-enable client ${inbound.email} (self-heal): ${e.message} (will retry next minute)`,
+                );
+              }
+            }
+          }
         }
       } catch (e) {
         this.logger.debug(
@@ -1375,12 +1503,11 @@ export class InboundService {
     if (!inbound) throw new NotFoundException('Inbound not found');
 
     // 该节点是中转节点 → 先移除它的路由规则及其专属出站
+    // 【delete-swallow 对抗复核】卸载失败不能吞掉继续删：面板模板会残留 dead 规则与孤儿
+    // 出站，而 removeRelayMount 的「无规则引用才删出站」逻辑因规则没删掉永不清理，长期
+    // 累积脏配置。失败时中断删除，让用户稍后重试（或联系客服修复面板模板）。
     if (inbound.relayEnabled) {
-      try {
-        await this.unmountRelayFromNode(inbound.serverId, inbound);
-      } catch (e) {
-        this.logger.warn(`Failed to unmount relay: ${e.message}`);
-      }
+      await this.unmountRelayFromNode(inbound.serverId, inbound);
     }
 
     try {

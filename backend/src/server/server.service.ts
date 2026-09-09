@@ -629,6 +629,19 @@ export class ServerService {
   }
 
   /**
+   * 流量重置：清零客户端已用流量（up/down → 0）并重新启用（enable=true），
+   * 用于「流量重置 / 开新周期」续费（不叠加语义：额度不累加，仅回到满额）。
+   * POST /panel/api/clients/bulkResetTraffic  { emails }  （3.6.0 原生端点）
+   * 面板会重置所有关联入站的已用统计并传播到节点；total（配额）与到期时间不变。
+   * 对已被面板停用/耗尽的客户端自动复活 —— 这是节点续费后自动恢复的关键。
+   */
+  async resetClientTraffic(serverId: number, email: string) {
+    return this.xuiRequest(serverId, 'POST', '/clients/bulkResetTraffic', {
+      emails: [email],
+    });
+  }
+
+  /**
    * 获取客户端连接链接
    * GET /panel/api/clients/links/{email}
    * 返回所有关联入站的协议 URL（vless://, vmess://, trojan://, ss:// 等）
@@ -722,18 +735,54 @@ export class ServerService {
   /**
    * 读取当前 Xray 配置模板
    * POST /panel/api/xray/   （文档：POST，无 body）
-   * 返回: { success, obj: { xraySetting: "{...raw config...}", inboundTags, ... } }
+   * 返回: { success, obj: { xraySetting: "<Xray JSON 模板>", inboundTags, ... } }
+   * 注意面板的 obj 有两种形态，都要兼容：
+   *  - vaxilu/x-ui 等：obj 直接是对象 { xraySetting, inboundTags }
+   *  - 3.x fork（jsonObj 传 string）：obj 是 JSON 字符串，需先 JSON.parse 再取 xraySetting
    * 模板含 outbounds / routing / inbounds 等，可作为读-改-写的基础。
+   * 解析失败返回 {}（调用方必须拒绝写回，防止用残缺配置覆盖面板模板）。
    */
-  async getXrayConfig(serverId: number) {
+  async getXrayConfig(
+    serverId: number,
+  ): Promise<{ config: any; outboundTestUrl?: string }> {
     const res = await this.xuiRequest(serverId, 'POST', '/xray/');
-    const raw = res?.obj?.xraySetting;
-    if (!raw) return {};
-    try {
-      return typeof raw === 'string' ? JSON.parse(raw) : raw;
-    } catch {
-      return {};
+
+    // 形态一：obj 本身就是 xraySetting 对象（个别面板省一层包装）→ 直接用
+    if (res?.obj && typeof res.obj === 'object' && !Array.isArray(res.obj) && 'outbounds' in res.obj) {
+      return { config: res.obj as any };
     }
+
+    // 形态二：obj 是 { xraySetting, ... } 对象；形态三：obj 是 JSON 字符串（3.x fork）
+    let wrapper: any = res?.obj;
+    if (typeof wrapper === 'string') {
+      try {
+        wrapper = JSON.parse(wrapper);
+      } catch {
+        return { config: {} };
+      }
+    }
+    if (!wrapper || typeof wrapper !== 'object' || Array.isArray(wrapper)) return { config: {} };
+
+    // 面板 GET /xray/ 把管理员自定义的出站测速 URL 放在 obj 顶层（controller getXraySetting:
+    // map["outboundTestUrl"]）。而 updateSetting 在该字段缺失时置默认「google generate_204」并
+    // 无条件 SetXrayOutboundTestUrl —— 写回不带它，每次挂载/卸载都会把管理员的测速 URL 静默
+    // 重置成默认值（outboundTestUrl 对抗复核确认的缺陷）。必须原样带回并在 updateXrayConfig 回传。
+    let outboundTestUrl: string | undefined;
+    if (typeof wrapper.outboundTestUrl === 'string' && wrapper.outboundTestUrl) {
+      outboundTestUrl = wrapper.outboundTestUrl;
+    }
+
+    let raw: any = wrapper.xraySetting;
+    if (raw == null) return { config: {}, outboundTestUrl };
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        return { config: {}, outboundTestUrl };
+      }
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { config: {}, outboundTestUrl };
+    return { config: raw as any, outboundTestUrl };
   }
 
   /**
@@ -741,8 +790,29 @@ export class ServerService {
    * POST /panel/api/xray/update
    * 文档：config 作为 form field（application/x-www-form-urlencoded）提交，
    *      值为 Xray JSON config 模板字符串。
+   *
+   * 保护铁律：只有「读到了完整模板再改」的配置才允许写回。无 outbounds 或无 routing.rules
+   * 的配置是残缺的，写回去会把面板模板整体替换成残缺内容（曾导致默认/手动出站与路由被清空，
+   * 只剩一条自动补回的 api 规则）。任何调用方发现读不完整都必须抛错，而不是写回。
    */
-  async updateXrayConfig(serverId: number, config: any) {
+  async updateXrayConfig(serverId: number, config: any, echoOutboundTestUrl?: string) {
+    const validShape =
+      config &&
+      typeof config === 'object' &&
+      !Array.isArray(config) &&
+      Array.isArray(config.outbounds) &&
+      config.outbounds.length > 0 && // 非空强制：默认出站被历史 bug 清空的模板也拒绝写回
+      config.routing &&
+      typeof config.routing === 'object' &&
+      !Array.isArray(config.routing) &&
+      Array.isArray(config.routing.rules) &&
+      config.routing.rules.length > 0; // 非空强制：routing.rules 为空数组同样拒绝写回
+    if (!validShape) {
+      throw new BadRequestException(
+        '面板配置读取不完整，已拒绝写回（防止清空现有出站/路由）',
+      );
+    }
+
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
     if (!server) throw new NotFoundException('Server not found');
 
@@ -764,10 +834,14 @@ export class ServerService {
 
     const form = new URLSearchParams();
     const configStr = JSON.stringify(config);
-    form.set('config', configStr);
-    // 3.6.0 文档只说 update 是 form fields，没写明字段名；GET /xray/ 返回 obj.xraySetting，
-    // 历史实现则用 config。两个名字都发同值，面板只绑定它认识的那个（多字段无害）。
+    // 3.6.0 updateSetting 只绑定 xraySetting 这一个 form 字段（controller xray_setting.go:143）：
+    // config 同名同值一并发送，面板只读它认识的那个，多字段无害。
     form.set('xraySetting', configStr);
+    form.set('config', configStr);
+    // 【outboundTestUrl】updateSetting 对缺失字段置默认「google generate_204」并无条件
+    // SetXrayOutboundTestUrl —— 每次挂载/卸载若不带回管理员自定义的值，会把面板测速 URL
+    // 静默重置成默认值（对抗复核确认的缺陷，面板源码 xray_setting.go:148-155）。
+    if (echoOutboundTestUrl) form.set('outboundTestUrl', echoOutboundTestUrl);
 
     let response = await fetch(apiUrl, {
       method: 'POST',
@@ -806,107 +880,175 @@ export class ServerService {
       );
     }
     if (!data.success) {
-      this.logger.warn(`XUI xray/update error: ${data.msg}`);
+      // 【swallowed-failure 残项 + 一致性】面板 updateSetting 是「保存模板 → CheckXrayConfig
+      // 校验 → RestartXray 应用」一路下来的，success=false 说明至少一步失败（保存失败/校验
+      // 拒绝/应用失败）。原来只 logger.warn 会让挂载/卸载调用方把“没写成功”当“已成功”继续走完
+      // —— 用户拿到“已挂载中转”实则未生效，与 suspend/resume 等兄弟端点（检查 res?.success）
+      // 的约定不一致。必须抛错，由调用方决定回滚/终止（zombie-create 补偿、delete 中断）。
+      throw new BadRequestException(`XUI 拒绝保存 Xray 配置：${data.msg || '未知错误'}`);
     }
     return data;
   }
 
-  /**
-   * 幂等确保【该节点专属】的 SOCKS 出站存在，指向用户自己填写的 SOCKS 节点。
-   * 每个中转节点一个独立出站 tag（socks-<节点端口>），只服务这一个节点，
-   * 不会影响同服务器上的其它节点。
-   * 返回 { tag, changed }；changed=true 表示实际改动了模板（调用方据此决定是否重启 Xray）。
-   */
-  async ensureUserSocksOutbound(
-    serverId: number,
-    target: { host: string; port: number; user?: string; pass?: string },
-    tag: string,
-  ) {
-    const config: any = await this.getXrayConfig(serverId);
-    const outbounds: any[] = config?.outbounds || [];
+  /** 单服务器互斥：模板「读→改→写」是两次非原子网络往返，并发读写会互相覆盖丢更新
+   *  （race-lost-update 对抗复核确认的缺陷：先读同一旧快照、后写覆盖先写，先写方的
+   *   socks-<port> 出站与路由规则静默消失）。用 promise 链为每个 serverId 串行化挂载/卸载。 */
+  private readonly relayLocks = new Map<number, Promise<void>>();
 
-    // 已存在同名出站 → 无需改动
-    if (outbounds.some((o: any) => o.tag === tag)) {
-      return { tag, changed: false };
-    }
-
-    const servers = target.user
-      ? [{ address: target.host, port: target.port, users: [{ user: target.user, pass: target.pass }] }]
-      : [{ address: target.host, port: target.port }];
-
-    outbounds.push({
-      tag,
-      protocol: 'socks',
-      settings: { servers },
-      streamSettings: { network: 'tcp', security: 'none' },
+  private withRelayLock<T>(serverId: number, fn: () => Promise<T>): Promise<T> {
+    const prev = this.relayLocks.get(serverId) ?? Promise.resolve();
+    // prev 失败也继续执行本次操作（互斥只保证顺序，不传递上一次的错误）；run 的错误原样抛给调用方
+    const run: Promise<T> = prev.then(fn, fn);
+    // 链尾：下一个调用者会接在 run 之后
+    const tail = run.then(() => undefined, () => undefined);
+    this.relayLocks.set(serverId, tail);
+    tail.then(() => {
+      // 队列空（没有新的调用者再次接链）→ 清理，防 Map 无限增长
+      if (this.relayLocks.get(serverId) === tail) this.relayLocks.delete(serverId);
     });
-    config.outbounds = outbounds;
-    await this.updateXrayConfig(serverId, config);
-    this.logger.log(`SOCKS outbound '${tag}' ensured on server ${serverId} -> ${target.host}:${target.port}`);
-    return { tag, changed: true };
+    return run;
   }
 
-  /**
-   * 幂等确保一条路由规则：把指定入站的流量导向该节点的专属 SOCKS 出站
-   * 通过 inboundTag 精确匹配（inbound-<端口>），只影响该中转节点，不影响其他用户。
-   * 返回 changed=true 表示实际加了规则（调用方据此决定是否重启）。
-   */
-  async ensureRelayRouting(serverId: number, relayTag: string, outboundTag: string): Promise<boolean> {
-    const config: any = await this.getXrayConfig(serverId);
-    const rules: any[] = config?.routing?.rules || [];
-
-    if (rules.some((r: any) => Array.isArray(r.inboundTag) && r.inboundTag.includes(relayTag))) {
-      return false;
+  /** 读模板完整性断言 —— 形状护栏必须作用在【读取后、修改前】的原始配置上
+   *  （shape-guard-bypass 对抗复核确认的缺陷：旧校验在 ensure 补完/重建后才跑，永远拦不到
+   *   “读到的残缺配置”）。三个条件缺一即拒绝继续：
+   *  - 空对象：面板读取失败/异常响应
+   *  - outbounds 缺失/非数组/为空：模板被历史 bug 打残（或被 remove 清空）。此时补齐再写回
+   *    等于给 Xray 只留一个 socks 出站当默认出口，同服务器其它入站流量会全落到某个用户
+   *    的 SOCKS 上（跨用户流量经一个出口）或核心不可达
+   *  - routing.rules 缺失/非数组：面板默认模板必有（api / geoip:private / bittorrent 三条） */
+  private assertConfigComplete(config: any, action: '挂载' | '卸载') {
+    if (!config || typeof config !== 'object' || Array.isArray(config) || Object.keys(config).length === 0) {
+      throw new BadRequestException(
+        `读取面板 Xray 配置失败，已终止${action}以保护现有出站/路由`,
+      );
     }
-    if (!config.routing) config.routing = {};
-    config.routing.rules = [
-      ...rules,
-      { type: 'field', inboundTag: [relayTag], outboundTag },
-    ];
-    await this.updateXrayConfig(serverId, config);
-    this.logger.log(`Relay routing rule added for '${relayTag}' -> '${outboundTag}' on server ${serverId}`);
-    return true;
+    if (!Array.isArray(config.outbounds) || config.outbounds.length === 0) {
+      throw new BadRequestException(
+        `面板 Xray 配置没有默认出站（outbounds 为空），已拒绝${action}—— 模板可能被旧版 Bug 清空过，请先在面板恢复备份或手工重建出站后再试`,
+      );
+    }
+    if (
+      !config.routing ||
+      typeof config.routing !== 'object' ||
+      Array.isArray(config.routing) ||
+      !Array.isArray(config.routing.rules) ||
+      config.routing.rules.length === 0
+    ) {
+      throw new BadRequestException(
+        `面板 Xray 配置缺少路由规则（routing.rules 为空），已拒绝${action}写回`,
+      );
+    }
   }
 
   /**
-   * 移除指定入站的路由规则（删除/停用中转时调用）
-   * 返回 changed=true 表示实际移除了规则（调用方据此决定是否重启）。
+   * 幂等挂载一个节点的 SOCKS 中转（单次读-改-写）：
+   * 1) 读一次面板模板（此前的分步实现里，第二步会因读取失败而把第一步写入的出站又覆盖掉；
+   *    合并成单次读改写后，模板只会被整体改一次，现有出站/路由绝不会丢）
+   * 2) 内存中确保「该节点专属出站 socks-<端口>」存在（指向用户自己的 SOCKS 节点）+ 追加一条
+   *    只命中该入站的路由规则（inboundTag 精确匹配，不影响同服务器其它节点）
+   * 3) 确有变更才写回一次，并原样带回面板出站测速 URL。
+   * 读模板失败/不完整 → 抛错终止，绝不写回残缺配置（保护铁律，见 updateXrayConfig/assertConfigComplete）。
    */
-  async removeRelayRouting(serverId: number, relayTag: string): Promise<boolean> {
-    const config: any = await this.getXrayConfig(serverId);
-    const rules: any[] = config?.routing?.rules || [];
-    const filtered = rules.filter(
-      (r: any) => !(Array.isArray(r.inboundTag) && r.inboundTag.includes(relayTag)),
-    );
-    if (filtered.length === rules.length) return false;
-    if (!config.routing) config.routing = {};
-    config.routing.rules = filtered;
-    await this.updateXrayConfig(serverId, config);
-    this.logger.log(`Relay routing rule removed for '${relayTag}' on server ${serverId}`);
-    return true;
+  async ensureRelayMount(
+    serverId: number,
+    opts: {
+      relayTag: string; // 面板真实入站 tag（in-<port>-tcp）：路由规则 inboundTag 用它
+      outboundTag: string; // socks-<port>
+      target: { host: string; port: number; user?: string; pass?: string };
+    },
+  ): Promise<{ changed: boolean }> {
+    return this.withRelayLock(serverId, async () => {
+      const { config, outboundTestUrl } = await this.getXrayConfig(serverId);
+      this.assertConfigComplete(config, '挂载'); // 修改前断言（shape-guard-bypass）
+      const cfg: any = config;
+
+      let changed = false;
+      const outbounds: any[] = cfg.outbounds;
+      if (!outbounds.some((o: any) => o?.tag === opts.outboundTag)) {
+        const servers = opts.target.user
+          ? [{ address: opts.target.host, port: opts.target.port, users: [{ user: opts.target.user, pass: opts.target.pass }] }]
+          : [{ address: opts.target.host, port: opts.target.port }];
+        outbounds.push({
+          tag: opts.outboundTag,
+          protocol: 'socks',
+          settings: { servers },
+          streamSettings: { network: 'tcp', security: 'none' },
+        });
+        changed = true;
+      }
+
+      const rules: any[] = cfg.routing.rules;
+      // 去重谓词兼容 inboundTag 的单字符串形态（备份恢复/手工编辑/面板自身都认字符串形态，
+      // isApiRule 双态兼容 —— string-form-rule 复议 1-of-2 要求）
+      const hasRule = rules.some(
+        (r: any) =>
+          r?.inboundTag === opts.relayTag ||
+          (Array.isArray(r?.inboundTag) && r.inboundTag.includes(opts.relayTag)),
+      );
+      if (!hasRule) {
+        // 【catch-all-shadow 对抗复核确认】Xray 路由按顺序首条命中即执行：追加到尾部会被
+        // 管理员在此前配置的无 inboundTag 约束 catch-all/分流规则捕获，中转静默失效而 DB
+        // 显示已挂载。插到 rules 最前 —— 本条只精确命中本入站，不影响其它入站的判定顺序
+        // （面板 EnsureStatsRouting 后续把 api 规则钉到 [0] 时，我们自然退到 [1]，仍在
+        // 任何 catch-all 之前）。
+        rules.unshift({ type: 'field', inboundTag: [opts.relayTag], outboundTag: opts.outboundTag });
+        changed = true;
+      }
+
+      if (changed) {
+        await this.updateXrayConfig(serverId, cfg, outboundTestUrl);
+        this.logger.log(
+          `Relay mounted: outbound '${opts.outboundTag}' + rule '${opts.relayTag}' -> '${opts.outboundTag}' on server ${serverId}`,
+        );
+      }
+      return { changed };
+    });
   }
 
   /**
-   * 幂等移除该节点的专属 SOCKS 出站（仅当无任何 relay 规则仍引用时）
-   * 返回 changed=true 表示实际移除了出站（调用方据此决定是否重启）。
+   * 幂等卸载一个节点的 SOCKS 中转（单次读-改-写）：
+   * 移除该入站的路由规则；仅当无任何规则仍引用该出站时才移除出站。
+   * 确有变更才写回一次，并原样带回面板出站测速 URL。
    */
-  async removeUserSocksOutbound(serverId: number, outboundTag: string): Promise<boolean> {
-    const config: any = await this.getXrayConfig(serverId);
-    const rules: any[] = config?.routing?.rules || [];
+  async removeRelayMount(
+    serverId: number,
+    opts: { relayTag?: string; outboundTag?: string },
+  ): Promise<{ changed: boolean }> {
+    return this.withRelayLock(serverId, async () => {
+      const { config, outboundTestUrl } = await this.getXrayConfig(serverId);
+      this.assertConfigComplete(config, '卸载'); // 修改前断言（read-only）
+      const cfg: any = config;
 
-    // 仍有规则引用该出站 → 保留
-    const stillUsed = rules.some(
-      (r: any) => r.outboundTag === outboundTag,
-    );
-    if (stillUsed) return false;
+      let changed = false;
+      const rules: any[] = cfg.routing.rules;
+      // 命中该作者卸载的入站即删；inboundTag 兼容数组与单字符串两种形态
+      const matchesRelay = (r: any) =>
+        Boolean(opts.relayTag) &&
+        (r?.inboundTag === opts.relayTag ||
+          (Array.isArray(r?.inboundTag) && r.inboundTag.includes(opts.relayTag)));
+      const filtered = rules.filter((r: any) => !matchesRelay(r));
+      if (filtered.length !== rules.length) changed = true;
 
-    const outbounds: any[] = config?.outbounds || [];
-    const before = outbounds.length;
-    config.outbounds = outbounds.filter((o: any) => o.tag !== outboundTag);
-    if ((config?.outbounds || []).length === before) return false;
-    await this.updateXrayConfig(serverId, config);
-    this.logger.log(`SOCKS outbound '${outboundTag}' removed on server ${serverId}`);
-    return true;
+      // 该出站仍被任何规则引用 → 保留出站（否则 Xray 会用着指向不存在 tag 的规则）
+      const stillUsed = filtered.some((r: any) => opts.outboundTag && r?.outboundTag === opts.outboundTag);
+      const outbounds: any[] = cfg.outbounds;
+      const keptOuts =
+        opts.outboundTag && !stillUsed
+          ? outbounds.filter((o: any) => o?.tag !== opts.outboundTag)
+          : outbounds;
+      if (keptOuts.length !== outbounds.length) changed = true;
+
+      if (changed) {
+        cfg.outbounds = keptOuts;
+        cfg.routing.rules = filtered;
+        await this.updateXrayConfig(serverId, cfg, outboundTestUrl);
+        this.logger.log(
+          `Relay unmounted: rules/outbound for '${opts.relayTag}' / '${opts.outboundTag}' on server ${serverId}`,
+        );
+      }
+      return { changed };
+    });
   }
 
   /**

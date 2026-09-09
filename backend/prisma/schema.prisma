@@ -171,6 +171,13 @@ model Order {
   renewalOfInboundId Int?  // 目标节点（Inbound.id），必须属于下单用户
   renewalOfInbound   Inbound? @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
   renewalAppliedAt   DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
+  // 续费类型：EXPIRY=到期续费（到期日顺延 + 流量按套餐重置为满额，开新周期不叠加）、
+  // TRAFFIC=流量重置（仅流量重置为满额，到期时间不动）；NULL=旧版叠加续费（历史订单兼容）
+  renewType          RenewType?
+  // ⚠️ 防重部分唯一索引 "Order_renewal_dup_key"（userId, renewalOfInboundId, renewType）
+  // 只在手写迁移 20260910000001_add_renewal_dup_unique 中创建 —— WHERE 子句无法用
+  // Prisma schema 表达。若 prisma migrate dev 报告它为漂移对象并生成 DROP INDEX 迁移，
+  // 请勿应用（用 --create-only 检查后保留）；生产只跑 migrate deploy 不会自动生成。
   referralEarning Decimal? @db.Decimal(10, 2)
   refundRequests RefundRequest[]
   createdAt    DateTime    @default(now())
@@ -190,6 +197,13 @@ enum OrderStatus {
   REFUNDED
   EXPIRED
   CANCELLED
+}
+
+// 续费类型：EXPIRY=到期续费（到期日顺延，套餐含流量时流量重置为新周期额度）、
+// TRAFFIC=流量重置（仅重置流量额度，到期时间不动）。两种都不叠加、不累加。
+enum RenewType {
+  EXPIRY
+  TRAFFIC
 }
 
 enum PayMethod {
