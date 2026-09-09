@@ -126,3 +126,128 @@ jobs:
           INSERT INTO _probe(g, tn, status) VALUES (7, NULL, 'FAILED');
           SQL
           echo "[OK] 终态 FAILED 不拦截（合法重下单不受影响）"
+
+  heal:
+    name: 生产脏历史自愈回归（失败/被误标 → 归一化 → deploy 成功）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: nodeshop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d nodeshop"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 阶段一 先落 0001 之前的真实基线迁移（得到 Order 等表结构）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          set -e
+          # 仿真生产：先只跑 0001/0002 之前的迁移，与事故现场的表结构一致
+          rm -rf prisma/migrations/20260910000001_add_renewal_dup_unique \
+                 prisma/migrations/20260910000002_fix_renewal_dup_key
+          npx --yes prisma@5 migrate deploy
+          echo "[OK] 基线迁移完成"
+
+      - name: 阶段二 注入旧版故障 0001（enum→text 索引表达式）复现 42P17 失败记录
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          set -e
+          U="$DATABASE_URL"
+          mkdir -p prisma/migrations/20260910000001_add_renewal_dup_unique
+          cat > prisma/migrations/20260910000001_add_renewal_dup_unique/migration.sql <<'SQL'
+          -- 复刻旧版故障迁移：enum→text 索引表达式，PG 必报 42P17 IMMUTABLE
+          CREATE UNIQUE INDEX "Order_renewal_dup_key"
+          ON "Order" ("userId", "renewalOfInboundId", COALESCE("renewType"::text, '__NULL__'))
+          WHERE "status" IN ('PENDING','PAID','PROCESSING') AND "renewalOfInboundId" IS NOT NULL;
+          SQL
+          set +e
+          npx --yes prisma@5 migrate deploy 2>bad.txt
+          RC=$?
+          set -e
+          [ "$RC" -ne 0 ] || { echo "FAIL: 旧版故障 SQL 竟然部署成功"; exit 1; }
+          grep -qi IMMUTABLE bad.txt \
+            && echo "[OK] 复现失败：42P17 IMMUTABLE 与生产一致" \
+            || { echo "FAIL: 失败原因不符："; cat bad.txt; exit 1; }
+          # 失败记录必须存在（finished_at 与 rolled_back_at 皆空）
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM "_prisma_migrations"
+                      WHERE "migration_name"='20260910000001_add_renewal_dup_unique'
+                        AND "finished_at" IS NULL AND "rolled_back_at" IS NULL);
+          SQL
+          echo "[OK] 库内留有失败记录（与生产现场一致）"
+
+      - name: 阶段三 复现被误标的双时间戳记录，验证它会被 deploy 拒绝（观测性）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          set -e
+          U="$DATABASE_URL"
+          # 恢复真实修复版 0001 + 0002（与服务器新镜像一致）
+          git checkout -- prisma/migrations/20260910000001_add_renewal_dup_unique \
+                           prisma/migrations/20260910000002_fix_renewal_dup_key
+          # 仿真早期手工命令把 finished_at 一并写成 NOW() 的错误恢复
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          UPDATE "_prisma_migrations" SET "finished_at"=NOW(), "rolled_back_at"=NOW()
+          WHERE "migration_name"='20260910000001_add_renewal_dup_unique';
+          SQL
+          set +e
+          npx --yes prisma@5 migrate deploy >double.txt 2>&1
+          RC=$?
+          set -e
+          echo "DOUBLE_STAMP_DEPLOY_EXIT=$RC"
+          sed -n '1,15p' double.txt
+          [ "$RC" -eq 0 ] && echo "[INFO] 双时间戳记录被 deploy 接受（旧自愈写法实际上安全）" \
+                          || echo "[见闻] 双时间戳记录触发 deploy 拒绝——正是生产上的故障形态"
+          # 复位为真失败状态，供阶段四做干净的归一化测试
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          UPDATE "_prisma_migrations" SET "finished_at"=NULL, "rolled_back_at"=NULL
+          WHERE "migration_name"='20260910000001_add_renewal_dup_unique';
+          SQL
+
+      - name: 阶段四 归一化自愈（deploy.sh 新逻辑）后 deploy 必须成功且索引落库
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          set -e
+          U="$DATABASE_URL"
+          # 与 deploy.sh 完全相同的归一化：真失败补 rolled_back_at；双时间戳清 finished_at
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          UPDATE "_prisma_migrations" SET "finished_at"=NULL, "rolled_back_at"=COALESCE("rolled_back_at", NOW())
+          WHERE "migration_name"='20260910000001_add_renewal_dup_unique'
+            AND (( "finished_at" IS NULL AND "rolled_back_at" IS NULL )
+              OR ( "finished_at" IS NOT NULL AND "rolled_back_at" IS NOT NULL ));
+          SQL
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM "_prisma_migrations"
+                      WHERE "migration_name"='20260910000001_add_renewal_dup_unique'
+                        AND "finished_at" IS NULL AND "rolled_back_at" IS NOT NULL);
+          SQL
+          npx --yes prisma@5 migrate deploy
+          echo "[OK] 归一化后 deploy 成功（跳过 0001、执行 0002）"
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM "_prisma_migrations"
+                      WHERE "migration_name"='20260910000002_fix_renewal_dup_key'
+                        AND "finished_at" IS NOT NULL AND "rolled_back_at" IS NULL);
+          SQL
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'Order_renewal_dup_key' AND i.indnullsnotdistinct);
+          SQL
+          echo "[OK] 0002 已应用，防重索引为 NULLS NOT DISTINCT（生产自愈闭环验证通过）"
