@@ -1,0 +1,130 @@
+# 迁移回归检查：每次 push master 都对真实 PostgreSQL 16 跑一遍完整迁移链，
+# 并断言防重索引的定义与行为契约（旧写法「enum→text 索引表达式」必须被 PG 拒绝，
+# 新写法 NULLS NOT DISTINCT 必须生效）。轻量（约 2 分钟），用作迁移安全的持续防线。
+name: migrate-check
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    name: PostgreSQL 16 全量迁移验证
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: nodeshop
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d nodeshop"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 全量迁移（修复后的完整迁移链）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: npx --yes prisma@5 migrate deploy
+
+      - name: 校验防重索引定义存在且为 NULLS NOT DISTINCT + 部分谓词
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          npx --yes prisma@5 db execute --url "$DATABASE_URL" --stdin <<'SQL'
+          DO $$
+          DECLARE def text;
+          BEGIN
+            SELECT pg_get_indexdef(i.oid) INTO def
+            FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            WHERE c.relname = 'Order_renewal_dup_key';
+            IF def IS NULL THEN
+              RAISE EXCEPTION '防重索引 Order_renewal_dup_key 不存在';
+            END IF;
+            IF position('NULLS NOT DISTINCT' in def) = 0 THEN
+              RAISE EXCEPTION '索引未启用 NULLS NOT DISTINCT: %', def;
+            END IF;
+            IF position('WHERE ' in def) = 0 THEN
+              RAISE EXCEPTION '索引缺少部分谓词: %', def;
+            END IF;
+            RAISE NOTICE 'OK index def: %', def;
+          END $$;
+          SQL
+
+      - name: 行为契约验证（旧写法被拒 / 新写法生效 / 并发防重语义）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
+        run: |
+          set -e
+          U="$DATABASE_URL"
+          # 探针表：真实 enum 列 + 与 Order 防重索引同构的关键字
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          CREATE TABLE IF NOT EXISTS _probe (
+            id serial PRIMARY KEY,
+            g int NOT NULL,
+            tn "RenewType",
+            status text NOT NULL DEFAULT 'PENDING'
+          );
+          DROP INDEX IF EXISTS _probe_key;
+          DROP INDEX IF EXISTS _probe_bad;
+          SQL
+
+          # 1) 原始故障写法（enum→text 进索引表达式）必须被 PG 拒绝：42P17 IMMUTABLE
+          set +e
+          npx --yes prisma@5 db execute --url "$U" --stdin 2>bad.txt <<'SQL'
+          CREATE UNIQUE INDEX _probe_bad ON _probe (COALESCE(tn::text, '__NULL__')) WHERE status IN ('PENDING', 'PAID');
+          SQL
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
+            echo "FAIL: 旧写法建索引竟然成功（与生产故障不符）"; exit 1
+          fi
+          grep -qi "IMMUTABLE" bad.txt \
+            && echo "[OK] 旧写法被 PG 拒绝（42P17 IMMUTABLE），与生产故障一致" \
+            || { echo "FAIL: 旧写法失败但原因不符："; cat bad.txt; exit 1; }
+
+          # 2) 新写法：纯列 + NULLS NOT DISTINCT + 部分谓词 → 必须成功
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          CREATE UNIQUE INDEX _probe_key ON _probe (g, tn) NULLS NOT DISTINCT WHERE status IN ('PENDING', 'PAID');
+          SQL
+          echo "[OK] 新写法（NULLS NOT DISTINCT）建索引成功"
+
+          # 3) 互不冲突的基线插入（不同组 / 同组 NULL vs EXPIRY 可共存）
+          for SQL in \
+            "INSERT INTO _probe(g, tn, status) VALUES (7, NULL, 'PENDING')" \
+            "INSERT INTO _probe(g, tn, status) VALUES (8, 'EXPIRY', 'PENDING')" \
+            "INSERT INTO _probe(g, tn, status) VALUES (7, 'EXPIRY', 'PENDING')"; do
+            npx --yes prisma@5 db execute --url "$U" --stdin <<<"$SQL" && echo "[OK] $SQL"
+          done
+
+          # 4) 同组同 NULL 类型再插 → 必须撞唯一索引（NULL == NULL）
+          set +e
+          npx --yes prisma@5 db execute --url "$U" --stdin 2>dup.txt <<'SQL'
+          INSERT INTO _probe(g, tn, status) VALUES (7, NULL, 'PENDING');
+          SQL
+          RC=$?
+          set -e
+          if [ "$RC" -eq 0 ]; then
+            echo "FAIL: 重复插入（同组同 NULL）竟然成功"; exit 1
+          fi
+          grep -qiE "unique|duplicate key|23505" dup.txt \
+            && echo "[OK] 重复插入被唯一索引拦截（NULL == NULL）" \
+            || { echo "FAIL: 拦截原因不符："; cat dup.txt; exit 1; }
+
+          # 5) 终态不拦：同组已完成/失败后可合法重下单（status=FAILED 不在谓词内）
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          INSERT INTO _probe(g, tn, status) VALUES (7, NULL, 'FAILED');
+          SQL
+          echo "[OK] 终态 FAILED 不拦截（合法重下单不受影响）"

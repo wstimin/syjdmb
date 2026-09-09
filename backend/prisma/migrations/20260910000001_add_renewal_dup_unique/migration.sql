@@ -3,18 +3,23 @@
 -- 背景：createOrder 续费分支先 findFirst 查未完成单、后 INSERT。两个并发请求可同时
 -- 通过预检并各自插入一笔 PENDING —— 用户重复付款后同一节点/同一续费类型会被激活两次。
 -- 预检只能挡住串行重复下单，这里用部分唯一索引把「并发窗口」也关死：
---   同一 userId + 同一续费目标节点 + 同一续费类型（NULL=旧版叠加续费 用哨兵区分），
+--   同一 userId + 同一续费目标节点 + 同一续费类型（NULL=旧版叠加续费，与 EXPIRY/TRAFFIC 区分），
 --   在同一时刻最多只有一笔未完成单（PENDING/PAID/PROCESSING）。
--- 索引是兜底：代码层在 INSERT 触发 P2002 时转成与预检一致的友好报错。
+-- 索引是兜底：代码层在 INSERT 触发 P2002 时转成与预检一致的友好报错
+-- （order.service 按索引名 "Order_renewal_dup_key" 识别，改名会静默破坏该处理）。
 --
--- 【复核修正】
--- a) `COALESCE("renewType", '__NULL__')` 会触发 PostgreSQL enum 强制转换报错
---    （invalid input value for enum "RenewType"）—— 必须 `::text` cast 后才能与
---    字符串哨兵比较，否则本迁移在任意库上都解析失败。
--- b) 运行时语义里 FAILED 是终态、可重复下单（createOrder 防重集合是
---    PENDING/PAID/PROCESSING，见 index 谓词）—— Step 1 的「更早同组单」集合
---    不得包含 FAILED，否则会把 FAILED 之后的合法重下单（PENDING）误杀成 EXPIRED：
---    已付款用户收钱却不激活。
+-- 【PostgreSQL 抗性修正（线上部署失败后修复，2026-09-10）】
+-- 上一版 Step 2 用 COALESCE("renewType"::text, '__NULL__') 作索引表达式，在任意 PG 部署时
+-- 都被拒：42P17「functions in index expression must be marked IMMUTABLE」—— PostgreSQL
+-- 规定索引表达式内只能是不可变(immutable)操作，而 enum→text 属类型 I/O 转换，不被视为
+-- 不可变。修复：改用 PG15+ 的 NULLS NOT DISTINCT —— NULL 参与唯一性判定且多个 NULL 互为
+-- 重复（与「字符串哨兵把 NULL 归一」语义完全等价），索引退化为纯列，无任何 cast。
+-- 全新库走本文件；生产库（该文件已按旧版记录过）走 20260910000002 的修复迁移。
+--
+-- 运行时语义里 FAILED 是终态、可重复下单（createOrder 防重集合是
+-- PENDING/PAID/PROCESSING，见 index 谓词）—— Step 1 的「更早同组单」集合
+-- 不得包含 FAILED，否则会把 FAILED 之后的合法重下单（PENDING）误杀成 EXPIRED：
+-- 已付款用户收钱却不激活。
 
 -- Step 1 防御性清场。只动「未付款」的重复单：同组存在任意一笔未完成单（PENDING/PAID/
 -- PROCESSING，且不是自己）时，这笔 PENDING 单被置为终态 EXPIRED —— 绝不动已收钱的
@@ -43,7 +48,9 @@ WHERE o."status" = 'PENDING'
   );
 
 -- Step 2 部分唯一索引：仅约束未完成单；COMPLETED/EXPIRED/CANCELLED/FAILED 终态不拦
--- 重新下单。NULL renewType（旧版叠加续费）用 COALESCE 哨兵与 EXPIRY/TRAFFIC 区分。
+-- 重新下单。NULL renewType（旧版叠加续费）经 NULLS NOT DISTINCT 与自身互为重复、
+-- 与 EXPIRY/TRAFFIC 区分（等价于原字符串哨兵），表达式为纯列，满足 IMMUTABLE 要求。
 CREATE UNIQUE INDEX "Order_renewal_dup_key"
-ON "Order" ("userId", "renewalOfInboundId", COALESCE("renewType"::text, '__NULL__'))
+ON "Order" ("userId", "renewalOfInboundId", "renewType")
+NULLS NOT DISTINCT
 WHERE "status" IN ('PENDING', 'PAID', 'PROCESSING') AND "renewalOfInboundId" IS NOT NULL;

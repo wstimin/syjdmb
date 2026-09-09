@@ -174,8 +174,10 @@ model Order {
   // 续费类型：EXPIRY=到期续费（到期日顺延 + 流量按套餐重置为满额，开新周期不叠加）、
   // TRAFFIC=流量重置（仅流量重置为满额，到期时间不动）；NULL=旧版叠加续费（历史订单兼容）
   renewType          RenewType?
-  // ⚠️ 防重部分唯一索引 "Order_renewal_dup_key"（userId, renewalOfInboundId, renewType）
-  // 只在手写迁移 20260910000001_add_renewal_dup_unique 中创建 —— WHERE 子句无法用
+  // ⚠️ 防重部分唯一索引 "Order_renewal_dup_key"（userId, renewalOfInboundId, renewType，
+  // NULLS NOT DISTINCT：NULL renewType 与自身互为重复、与 EXPIRY/TRAFFIC 区分）
+  // 只在手写迁移 20260910000001_add_renewal_dup_unique（全新库）与
+  // 20260910000002_fix_renewal_dup_key（生产恢复/幂等）中创建 —— WHERE 子句无法用
   // Prisma schema 表达。若 prisma migrate dev 报告它为漂移对象并生成 DROP INDEX 迁移，
   // 请勿应用（用 --create-only 检查后保留）；生产只跑 migrate deploy 不会自动生成。
   referralEarning Decimal? @db.Decimal(10, 2)
