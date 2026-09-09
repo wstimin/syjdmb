@@ -37,30 +37,28 @@ jobs:
           DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
         run: npx --yes prisma@5 migrate deploy
 
-      - name: 校验防重索引定义存在且为 NULLS NOT DISTINCT + 部分谓词
+      - name: 校验防重索引（存在 / NULLS NOT DISTINCT / 部分谓词）
         working-directory: backend
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
         run: |
-          npx --yes prisma@5 db execute --url "$DATABASE_URL" --stdin <<'SQL'
-          DO $$
-          DECLARE def text;
-          BEGIN
-            SELECT pg_get_indexdef(i.oid) INTO def
-            FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-            WHERE c.relname = 'Order_renewal_dup_key';
-            IF def IS NULL THEN
-              RAISE EXCEPTION '防重索引 Order_renewal_dup_key 不存在';
-            END IF;
-            IF position('NULLS NOT DISTINCT' in def) = 0 THEN
-              RAISE EXCEPTION '索引未启用 NULLS NOT DISTINCT: %', def;
-            END IF;
-            IF position('WHERE ' in def) = 0 THEN
-              RAISE EXCEPTION '索引缺少部分谓词: %', def;
-            END IF;
-            RAISE NOTICE 'OK index def: %', def;
-          END $$;
+          set -e
+          U="$DATABASE_URL"
+          # 每条断言用「命中则除 1、未命中则除 0 报错」的普通 SELECT 表达：
+          # 不用 DO 块（Prisma CLI 对其有兼容分歧），也不依赖结果回显；断言不成立
+          # 时数据库直接报 division by zero，CLI 以非零退出码反映给步骤。
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM pg_class WHERE relname = 'Order_renewal_dup_key');
           SQL
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'Order_renewal_dup_key' AND i.indnullsnotdistinct);
+          SQL
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          SELECT 1 / (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                      WHERE c.relname = 'Order_renewal_dup_key' AND i.indpred IS NOT NULL);
+          SQL
+          echo "[OK] 防重索引存在且为 NULLS NOT DISTINCT + 部分谓词"
 
       - name: 行为契约验证（旧写法被拒 / 新写法生效 / 并发防重语义）
         working-directory: backend
