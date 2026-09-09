@@ -12,7 +12,8 @@
 #  - 域名反代只填一个主域名，自动生成 前端 + 管理后台 两个对外地址；
 #    API 为内置服务不对外（文档经 https://<域名>/docs 查看）。
 #  - 之后用 `shop` 调出管理菜单：查看信息 / 更新 / 回滚 / 重置登录 /
-#    域名管理（添加/更换/删除）/ 查看日志 / 退出。所有操作保留数据库与 .env。
+#    域名管理（添加/更换/删除）/ 查看日志 / 卸载 / 退出。除卸载外，其余操作
+#    均保留数据库与 .env；卸载会连同数据卷、镜像、安装目录一并清除（可先备份）。
 # =====================================================================
 set -euo pipefail
 
@@ -722,6 +723,82 @@ cmd_logs() {
   esac
 }
 
+# 7) 卸载（清除本项目在本机产生的全部内容与残留）
+cmd_uninstall() {
+  echo; echo -e "${CYAN}-------- 卸载 --------${NC}"
+  warn "将删除本项目在本机的全部内容：容器、Docker 数据卷（数据库 / Redis）、镜像、"
+  warn "配置文件（$INSTALL_DIR）、反代、shop 命令。"
+  err "⚠ 数据库一经删除：用户 / 订单 / 余额 / 退款记录将永久丢失，不可恢复！"
+  echo "  卸载前可先自动备份数据库（推荐）。之后重新安装也拿不回旧数据。"
+  read -rp "  卸载前是否先备份数据库？(Y/n) " bak
+  read -rp "  确认卸载？输入 yes 后回车（其他任意键取消）: " a
+  [ "$a" = "yes" ] || [ "$a" = "YES" ] || { info "已取消"; return; }
+  read -rp "  是否连同 Docker 一起卸载（本服务器只跑本站请选 y）？(y/N) " dk
+
+  # 0) 备份数据库（可选，默认做）
+  local bk=""
+  if [ "$bak" != "n" ] && [ "$bak" != "N" ]; then
+    bk="/opt/nodeshop-backup-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$bk"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nodeshop-db; then
+      info "备份数据库到 $bk/nodeshop.sql.gz ..."
+      if docker exec nodeshop-db pg_dump -U nodeadmin -d nodeshop -Fc 2>/dev/null | gzip > "$bk/nodeshop.sql.gz"; then
+        ok "数据库已备份：$bk/nodeshop.sql.gz"
+      else
+        warn "数据库备份失败，已中止卸载（避免数据无法找回）"; return
+      fi
+    else
+      warn "未发现运行中的数据库容器，跳过备份（也就没有新数据可备份）"
+    fi
+  fi
+
+  # 1) 停止并删除反向代理及其数据卷（caddy 证书缓存一并清除）
+  if [ -f "$INSTALL_DIR/proxy/docker-compose.proxy.yml" ]; then
+    info "停止并删除反向代理及其数据卷..."
+    ( cd "$INSTALL_DIR/proxy" && docker compose -f docker-compose.proxy.yml down -v ) || warn "反代卸载未完全成功（继续）"
+  fi
+  # 2) 停止并删除主服务及其数据卷（postgres 数据库 / redis）
+  info "停止并删除主服务及其数据卷..."
+  ( cd "$INSTALL_DIR" && docker compose down -v ) || warn "主服务卸载未完全成功（继续）"
+  # 3) 清理残留网络与数据卷
+  docker network rm nodeshop_nodeshop 2>/dev/null || true
+  local v; v=$(docker volume ls -q 2>/dev/null | grep -E 'nodeshop' || true)
+  if [ -n "$v" ]; then
+    info "删除残留数据卷: $(echo "$v" | tr '\n' ' ')"
+    echo "$v" | xargs -r docker volume rm -f 2>/dev/null || true
+  fi
+  # 4) 删除项目镜像（含其依赖的基础镜像）
+  info "删除项目镜像..."
+  docker image ls -q --filter "reference=nodeshop-*" 2>/dev/null | xargs -r docker rmi -f 2>/dev/null || true
+  docker rmi -f caddy:2-alpine postgres:16-alpine redis:7-alpine 2>/dev/null || true
+  docker image prune -f >/dev/null 2>&1 || true
+  # 5) 删除安装目录与 shop 命令
+  info "删除安装目录 $INSTALL_DIR 与 shop 命令..."
+  cd /
+  rm -rf "$INSTALL_DIR"
+  rm -f /usr/local/bin/shop
+  # 6) 可选：连 Docker 一起卸载（清空 /var/lib/docker）
+  if [ "$dk" = "y" ] || [ "$dk" = "Y" ]; then
+    info "卸载 Docker（并清空 /var/lib/docker）..."
+    systemctl stop docker docker.socket 2>/dev/null || true
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-compose-v2 2>/dev/null \
+        || apt-get purge -y docker.io 2>/dev/null || true
+    elif command -v yum >/dev/null 2>&1; then
+      yum remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin 2>/dev/null || true
+    fi
+    rm -rf /var/lib/docker
+  fi
+  echo
+  ok "卸载完成。本机已无本项目产生的容器 / 数据 / 配置 / 镜像 / shop 命令。"
+  if [ -n "$bk" ] && [ -d "$bk" ]; then
+    echo -e "${CYAN}  数据库备份保留在：$bk/nodeshop.sql.gz${NC}"
+    echo "  如需一并清除备份，请手动删除 $bk"
+  fi
+  echo "  如需重新安装，重新执行一键部署命令即可（全新环境）。"
+  exit 0
+}
+
 # =====================================================================
 # 主菜单
 # =====================================================================
@@ -737,7 +814,8 @@ main_menu() {
     echo "   4) 重置登录信息"
     echo "   5) 域名管理（添加 / 更换 / 删除）"
     echo "   6) 查看日志"
-    echo "   7) 退出"
+    echo "   7) 卸载（清除全部数据与残留）"
+    echo "   8) 退出"
     printf "   请输入数字后回车: "
     read -r choice
     case "$choice" in
@@ -747,8 +825,9 @@ main_menu() {
       4) cmd_reset_login ;;
       5) cmd_domain ;;
       6) cmd_logs ;;
-      7) echo "再见"; exit 0 ;;
-      *) warn "无效选择，请输入 1-7" ;;
+      7) cmd_uninstall ;;
+      8) echo "再见"; exit 0 ;;
+      *) warn "无效选择，请输入 1-8" ;;
     esac
   done
 }
