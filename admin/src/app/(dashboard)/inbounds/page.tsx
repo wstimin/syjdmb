@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Search, Play, Pause, Trash2, Download } from 'lucide-react';
+import { Search, Play, Pause, Trash2, Download, Link2 } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-table';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import Pagination from '@/components/shared/pagination';
 import { StatCard } from '@/components/shared/stat-card';
@@ -23,6 +24,9 @@ export default function InboundsPage() {
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [stats, setStats] = useState<any>(null);
+  const [relayTarget, setRelayTarget] = useState<any | null>(null);
+  const [socksList, setSocksList] = useState<any[]>([]);
+  const [relayBusy, setRelayBusy] = useState(false);
 
   const fetchData = (q = search, p = page, l = limit) => {
     setLoading(true);
@@ -58,13 +62,57 @@ export default function InboundsPage() {
   };
 
   const remove = async (id: number) => {
-    if (!confirm('确认删除该节点？')) return;
+    if (!confirm('确认彻底删除该节点？该操作不可恢复（节点及其面板配置会被物理清理）。')) return;
     try {
       await api.delete(`/inbounds/${id}`);
-      toast.success('已删除');
+      toast.success('已彻底删除');
       fetchData();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
+    }
+  };
+
+  const openRelay = async (i: any) => {
+    setRelayTarget(i);
+    setRelayBusy(true);
+    try {
+      const res = await api.get('/socks', { params: { page: 1, limit: 200 } });
+      setSocksList(res.data.data.proxies || []);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setRelayBusy(false);
+    }
+  };
+
+  const doBindRelay = async (s: any) => {
+    if (!relayTarget) return;
+    setRelayBusy(true);
+    try {
+      await api.post(`/inbounds/${relayTarget.id}/relay`, { socksId: s.id });
+      toast.success(`已把 SOCKS 中转绑定到节点 ${relayTarget.email}`);
+      setRelayTarget(null);
+      fetchData();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setRelayBusy(false);
+    }
+  };
+
+  const doUnbindRelay = async () => {
+    if (!relayTarget) return;
+    if (!confirm('确认卸载该节点上的 SOCKS 中转？卸载后节点恢复直连出站。')) return;
+    setRelayBusy(true);
+    try {
+      await api.delete(`/inbounds/${relayTarget.id}/relay`);
+      toast.success('已卸载 SOCKS 中转');
+      setRelayTarget(null);
+      fetchData();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setRelayBusy(false);
     }
   };
 
@@ -93,9 +141,20 @@ export default function InboundsPage() {
     },
     { key: 'status', header: '状态', render: (i: any) => <StatusBadge status={i.status} /> },
     {
+      key: 'relay', header: 'SOCKS 中转',
+      render: (i: any) => (i.relayEnabled || i.relayTag
+        ? <span className="text-xs font-medium text-amber-600">已挂载<Link2 className="ml-1 inline h-3 w-3" /></span>
+        : <span className="text-xs text-muted-foreground">未挂载</span>),
+    },
+    {
       key: 'actions', header: '操作',
       render: (i: any) => (
         <div className="flex gap-1">
+          <Button
+            size="sm" variant="outline"
+            title={i.relayEnabled || i.relayTag ? '查看 / 卸载中转' : '手动绑定 SOCKS 中转'}
+            onClick={() => openRelay(i)}
+          ><Link2 className="h-3 w-3" /></Button>
           {i.status === 'ACTIVE' ? (
             <Button size="sm" variant="outline" onClick={() => act(i.id, 'suspend')}><Pause className="h-3 w-3" /></Button>
           ) : (
@@ -157,6 +216,52 @@ export default function InboundsPage() {
           onLimitChange={(l) => { setLimit(l); setPage(1); fetchData(search, 1, l); }}
         />
       </Card>
+
+      {/* SOCKS 中转绑定 / 卸载 */}
+      <Dialog open={!!relayTarget} onOpenChange={(o) => !o && setRelayTarget(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>节点 SOCKS 中转：{relayTarget?.email}</DialogTitle>
+            <DialogDescription>把该节点流量全程经所选 SOCKS 出站（后台手动绑定）；已挂载时可一键卸载恢复直连。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {relayTarget?.relayEnabled || relayTarget?.relayTag ? (
+              <div className="space-y-3">
+                <div className="rounded-md border p-3 text-sm">
+                  <p className="font-medium text-amber-600">已挂载 SOCKS 中转</p>
+                  <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                    {relayTarget.relaySocksHost}:{relayTarget.relaySocksPort}
+                    {relayTarget.relayTag ? ` · tag ${relayTarget.relayTag}` : ''}
+                  </p>
+                </div>
+                <Button variant="destructive" className="w-full" onClick={doUnbindRelay} disabled={relayBusy}>
+                  {relayBusy ? '处理中…' : '卸载中转'}
+                </Button>
+              </div>
+            ) : (
+              <div className="max-h-60 space-y-1 overflow-auto rounded-md border p-2">
+                {relayBusy ? (
+                  <p className="px-2 py-4 text-center text-sm text-muted-foreground">加载 SOCKS 列表…</p>
+                ) : socksList.length === 0 ? (
+                  <p className="px-2 py-4 text-center text-sm text-muted-foreground">暂无 SOCKS，可先到「SOCKS 中转管理」新增。</p>
+                ) : socksList.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-muted">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-xs">{s.host}:{s.port}</p>
+                      <p className="truncate text-xs text-muted-foreground">{s.user?.email || '—'} · {s.status}</p>
+                    </div>
+                    {s.status === 'ACTIVE' ? (
+                      <Button size="sm" onClick={() => doBindRelay(s)} disabled={relayBusy}>绑定</Button>
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted-foreground">停用</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

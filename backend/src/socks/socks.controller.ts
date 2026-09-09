@@ -83,6 +83,85 @@ export class SocksController {
   }
 
   // ---- Admin ----
+  @Post('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Create SOCKS proxy and bind to users (归属+授权)' })
+  async createAdmin(
+    @Body() body: {
+      host: string;
+      port: number;
+      username?: string;
+      password?: string;
+      remark?: string;
+      ownerUserId: number;
+      grantUserIds?: number[];
+    },
+  ) {
+    const result = await this.socksService.createAdmin(body);
+    return { success: true, data: result };
+  }
+
+  @Put('admin/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Update SOCKS proxy (含换归属用户)' })
+  async updateAdmin(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { host?: string; port?: number; username?: string; password?: string; remark?: string; ownerUserId?: number },
+  ) {
+    const result = await this.socksService.updateAdmin(id, body);
+    return { success: true, data: result };
+  }
+
+  @Delete('admin/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Permanently delete SOCKS proxy' })
+  async deleteAdmin(@Param('id', ParseIntPipe) id: number) {
+    const result = await this.socksService.deleteAdmin(id);
+    return { success: true, data: result };
+  }
+
+  @Get(':id/grants')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] List granted users of a SOCKS proxy' })
+  async listGrants(@Param('id', ParseIntPipe) id: number) {
+    const result = await this.socksService.listGrants(id);
+    return { success: true, data: result };
+  }
+
+  @Post(':id/grants')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Grant a SOCKS proxy to a user' })
+  async addGrant(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { userId: number },
+  ) {
+    const result = await this.socksService.addGrant(id, body.userId);
+    return { success: true, data: result };
+  }
+
+  @Delete(':id/grants/:grantUserId')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Remove a grant from a SOCKS proxy' })
+  async removeGrant(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('grantUserId', ParseIntPipe) grantUserId: number,
+  ) {
+    const result = await this.socksService.removeGrant(id, grantUserId);
+    return { success: true, data: result };
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')

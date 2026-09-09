@@ -1,9 +1,12 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(private prisma: PrismaService) {}
 
   async findAll(page = 1, limit = 20, search?: string) {
@@ -133,6 +136,67 @@ export class UserService {
         balance: true,
       },
     });
+  }
+
+  /**
+   * 管理员手动创建用户（后台建号，绕过注册限流/邀请码）。
+   * 邮箱小写归一；bcrypt(12) 加密；referralCode 短码；初始余额复用 adjustBalance 记 ADMIN_ADJUST 流水。
+   */
+  async createUser(dto: {
+    email?: string;
+    password?: string;
+    username?: string;
+    role?: string;
+    status?: string;
+    initialBalance?: number;
+  }) {
+    const email = String(dto.email || '').trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException('请填写正确的邮箱');
+    }
+    const password = String(dto.password || '');
+    if (password.length < 6) {
+      throw new BadRequestException('密码至少 6 位');
+    }
+
+    const role = dto.role ? String(dto.role).toUpperCase() : 'USER';
+    if (!['USER', 'ADMIN', 'SUPER_ADMIN'].includes(role)) {
+      throw new BadRequestException('角色必须是 USER / ADMIN / SUPER_ADMIN');
+    }
+    const status = dto.status ? String(dto.status).toUpperCase() : 'ACTIVE';
+    if (!['ACTIVE', 'BANNED', 'SUSPENDED'].includes(status)) {
+      throw new BadRequestException('状态必须是 ACTIVE / BANNED / SUSPENDED');
+    }
+
+    const existing = await this.prisma.user.findUnique({ where: { email } });
+    if (existing) throw new BadRequestException('该邮箱已注册');
+
+    const referralCode = uuidv4().replace(/-/g, '').slice(0, 8).toUpperCase();
+    const username = dto.username && String(dto.username).trim() ? String(dto.username).trim() : email.split('@')[0];
+    const user = await this.prisma.user.create({
+      data: {
+        email,
+        password: await bcrypt.hash(password, 12),
+        username,
+        role: role as any,
+        status: status as any,
+        referralCode,
+      },
+    });
+
+    // 初始余额：复用调账逻辑（余额 + ADMIN_ADJUST 流水）
+    const initialBalance = Number(dto.initialBalance || 0);
+    let balance = Number(user.balance);
+    if (initialBalance > 0) {
+      try {
+        const adjusted = await this.adjustBalance(user.id, initialBalance, '管理员创建账号初始余额');
+        balance = adjusted.balance;
+      } catch (e) {
+        this.logger.warn(`初始余额入账失败 userId=${user.id}: ${(e as Error).message}`);
+      }
+    }
+
+    return { ...user, balance, password: undefined };
   }
 
   async adjustBalance(userId: number, amount: number, description: string) {

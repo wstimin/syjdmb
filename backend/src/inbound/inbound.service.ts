@@ -1081,7 +1081,12 @@ export class InboundService {
     }
 
     const proxy = await this.prisma.socksProxy.findFirst({
-      where: { id: socksId, userId, status: 'ACTIVE' },
+      // 归属或授权的 SOCKS 都可用作中转出口（后台「绑定给用户」授权）
+      where: {
+        id: socksId,
+        status: 'ACTIVE',
+        OR: [{ userId }, { grants: { some: { userId } } }],
+      },
     });
     if (!proxy) {
       throw new BadRequestException('所选 SOCKS 代理不存在或不可用');
@@ -1120,6 +1125,79 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findFirst({
       where: { id: inboundId, userId },
     });
+    if (!inbound) throw new NotFoundException('节点不存在');
+    if (!inbound.relayEnabled && !inbound.relayTag) {
+      throw new BadRequestException('该节点未挂载中转');
+    }
+
+    await this.unmountRelayFromNode(inbound.serverId, inbound);
+
+    return this.prisma.inbound.update({
+      where: { id: inboundId },
+      data: {
+        relayEnabled: false,
+        relayTag: null,
+        relaySocksOutboundTag: null,
+        relaySocksHost: null,
+        relaySocksPort: null,
+        relaySocksUser: null,
+        relaySocksPass: null,
+      },
+    });
+  }
+
+  // ==========================================
+  // 后台手动绑定 SOCKS 到节点 / 卸载（管理员）
+  // ==========================================
+
+  /** 后台把某个 SOCKS 手动绑到任意节点（不校验归属，管理员权限）。 */
+  async adminAttachRelay(inboundId: number, socksId: number) {
+    const inbound = await this.prisma.inbound.findUnique({ where: { id: inboundId } });
+    if (!inbound) throw new NotFoundException('节点不存在');
+    if (inbound.status === 'DELETED') {
+      throw new BadRequestException('节点已删除，无法绑定中转');
+    }
+    if (inbound.relayEnabled || inbound.relayTag) {
+      throw new BadRequestException('该节点已挂载中转，请先卸载');
+    }
+
+    const proxy = await this.prisma.socksProxy.findFirst({
+      where: { id: socksId, status: { not: 'DELETED' } },
+    });
+    if (!proxy) {
+      throw new BadRequestException('所选 SOCKS 中转不存在或已删除');
+    }
+
+    const serverId = inbound.serverId;
+    const port = inbound.port;
+    const relayTag = `in-${port}-tcp`; // 3.6.0 面板标准 tag
+    const outboundTag = `socks-${port}`;
+
+    // 复用创建/用户自助的挂载逻辑（面板 outbound + 路由规则，仅变更时重启 Xray）
+    await this.mountRelayOnNode(serverId, port, relayTag, {
+      host: proxy.host,
+      port: proxy.port,
+      user: proxy.username || undefined,
+      pass: proxy.password || undefined,
+    });
+
+    return this.prisma.inbound.update({
+      where: { id: inboundId },
+      data: {
+        relayEnabled: true,
+        relayTag,
+        relaySocksOutboundTag: outboundTag,
+        relaySocksHost: proxy.host,
+        relaySocksPort: proxy.port,
+        relaySocksUser: proxy.username || null,
+        relaySocksPass: proxy.password || null,
+      },
+    });
+  }
+
+  /** 后台卸载某节点上的 SOCKS 中转。 */
+  async adminDetachRelay(inboundId: number) {
+    const inbound = await this.prisma.inbound.findUnique({ where: { id: inboundId } });
     if (!inbound) throw new NotFoundException('节点不存在');
     if (!inbound.relayEnabled && !inbound.relayTag) {
       throw new BadRequestException('该节点未挂载中转');
@@ -1498,7 +1576,8 @@ export class InboundService {
   // ==========================================
 
   async findAll(page = 1, limit = 20, search?: string) {
-    const where: any = {};
+    // 过滤 DELETED：过期自动删除的墓碑、历史软删记录不再污染管理列表
+    const where: any = { status: { not: 'DELETED' } };
     if (search) {
       where.OR = [
         { email: { contains: search, mode: 'insensitive' } },
@@ -1673,15 +1752,24 @@ export class InboundService {
       this.logger.warn(`Failed to delete in XUI: ${e.message}`);
     }
 
-    return this.prisma.inbound.update({
-      where: { id },
-      data: { status: 'DELETED' },
-    });
+    // 彻底删除（后台不再留灰色的 DELETED 残留）：
+    // ① 解除续费订单对节点的外键引用（Order.renewalOfInboundId → Inbound，PG RESTRICT，
+    //    不先置空会删除失败）——节点已删除，续费本就无意义；
+    // ② 物理删行。历史流量随之清除，符合「删除就是彻底删除了」。
+    await this.prisma.$transaction([
+      this.prisma.order.updateMany({
+        where: { renewalOfInboundId: id },
+        data: { renewalOfInboundId: null },
+      }),
+      this.prisma.inbound.delete({ where: { id } }),
+    ]);
+
+    return { success: true, id };
   }
 
   async getStats() {
     const [total, active, totalTraffic] = await Promise.all([
-      this.prisma.inbound.count(),
+      this.prisma.inbound.count({ where: { status: { not: 'DELETED' } } }),
       this.prisma.inbound.count({ where: { status: 'ACTIVE' } }),
       this.prisma.inbound.aggregate({
         _sum: { totalTraffic: true },

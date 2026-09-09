@@ -231,7 +231,12 @@ export class OrderService {
     let relayPass = params.relaySocksPass;
     if (relay && params.relaySocksId) {
       const proxy = await this.prisma.socksProxy.findFirst({
-        where: { id: params.relaySocksId, userId, status: 'ACTIVE' },
+        // 归属或授权的 SOCKS 都可用作中转出口（后台「绑定给用户」授权）
+        where: {
+          id: params.relaySocksId,
+          status: 'ACTIVE',
+          OR: [{ userId }, { grants: { some: { userId } } }],
+        },
       });
       if (!proxy) {
         throw new BadRequestException('所选 SOCKS 代理不存在或不可用');

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Search, Download } from 'lucide-react';
+import { Search, Download, Plus } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { exportToCsv } from '@/lib/csv';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,6 +13,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import Pagination from '@/components/shared/pagination';
+
+const EMPTY_CREATE_FORM = {
+  email: '',
+  password: '',
+  username: '',
+  role: 'USER',
+  status: 'ACTIVE',
+  initialBalance: '',
+};
 
 interface AdminUser {
   id: number;
@@ -55,6 +64,9 @@ export default function UsersPage() {
   const [detailUser, setDetailUser] = useState<AdminUserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [balanceAmount, setBalanceAmount] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
 
   const fetchUsers = (pg = page, lim = limit, q = search) => {
     setLoading(true);
@@ -122,6 +134,32 @@ export default function UsersPage() {
       fetchUsers();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
+    }
+  };
+
+  const submitCreate = async () => {
+    if (!createForm.email.trim()) { toast.error('请填写邮箱'); return; }
+    if (createForm.password.length < 6) { toast.error('密码至少 6 位'); return; }
+    setCreating(true);
+    try {
+      await api.post('/users', {
+        email: createForm.email.trim(),
+        password: createForm.password,
+        username: createForm.username.trim() || undefined,
+        role: createForm.role,
+        status: createForm.status,
+        initialBalance: createForm.initialBalance ? Number(createForm.initialBalance) : undefined,
+      });
+      toast.success('用户创建成功');
+      setCreateOpen(false);
+      setCreateForm({ ...EMPTY_CREATE_FORM });
+      // 新建用户按注册时间倒序排在最前，回到第一页即可看到
+      setPage(1);
+      fetchUsers(1, limit, '');
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -211,6 +249,9 @@ export default function UsersPage() {
           <Button variant="outline" onClick={handleExport}>
             <Download className="mr-1 h-4 w-4" /> 导出
           </Button>
+          <Button variant="gradient" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-1 h-4 w-4" /> 新建用户
+          </Button>
         </div>
       </PageHeader>
 
@@ -220,6 +261,62 @@ export default function UsersPage() {
           <Pagination page={page} limit={limit} total={total} totalPages={totalPages} onPageChange={changePage} onLimitChange={changeLimit} />
         </CardContent>
       </Card>
+
+      {/* Create user dialog */}
+      <Dialog open={createOpen} onOpenChange={(o) => !o && setCreateOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新建用户</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>邮箱 *</Label>
+              <Input value={createForm.email} onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} placeholder="user@example.com" />
+            </div>
+            <div className="space-y-2">
+              <Label>密码 *（至少 6 位）</Label>
+              <Input type="password" value={createForm.password} onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} placeholder="••••••" />
+            </div>
+            <div className="space-y-2">
+              <Label>用户名（可选，默认取邮箱前缀）</Label>
+              <Input value={createForm.username} onChange={(e) => setCreateForm({ ...createForm, username: e.target.value })} placeholder="nickname" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>角色</Label>
+                <select
+                  value={createForm.role}
+                  onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                >
+                  <option value="USER">USER</option>
+                  <option value="ADMIN">ADMIN</option>
+                  <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label>状态</Label>
+                <select
+                  value={createForm.status}
+                  onChange={(e) => setCreateForm({ ...createForm, status: e.target.value })}
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                >
+                  <option value="ACTIVE">ACTIVE</option>
+                  <option value="BANNED">BANNED</option>
+                  <option value="SUSPENDED">SUSPENDED</option>
+                </select>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>初始余额（可选，正数将记入账流水）</Label>
+              <Input type="number" value={createForm.initialBalance} onChange={(e) => setCreateForm({ ...createForm, initialBalance: e.target.value })} placeholder="如 100" />
+            </div>
+            <Button className="w-full" variant="gradient" onClick={submitCreate} disabled={creating}>
+              {creating ? '创建中…' : '创建用户'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Balance adjust dialog */}
       <Dialog open={!!editUser} onOpenChange={(o) => !o && setEditUser(null)}>

@@ -155,6 +155,7 @@ export default function SocksPage() {
                     <Badge variant={p.status === 'ACTIVE' ? 'success' : 'warning'}>
                       {p.status === 'ACTIVE' ? t('nodes.active') : 'INACTIVE'}
                     </Badge>
+                    {!p.owned && <Badge variant="outline">共享授权</Badge>}
                   </div>
                   <div className="mt-3 break-all rounded-lg bg-muted/50 p-3 font-mono text-xs">
                     {p.connectionString}
@@ -163,9 +164,11 @@ export default function SocksPage() {
                     <Button size="sm" variant="outline" onClick={() => copyConn(p.connectionString, p.id)}>
                       {copied === String(p.id) ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     </Button>
-                    <Button size="sm" variant="ghost" className="text-destructive" onClick={() => deleteProxy(p.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+                    {p.owned && (
+                      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => deleteProxy(p.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>

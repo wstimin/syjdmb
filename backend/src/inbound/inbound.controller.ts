@@ -117,11 +117,34 @@ export class InboundController {
     return { success: true, data: result };
   }
 
+  @Post(':id/relay')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Manually bind a SOCKS proxy to an inbound (中转)' })
+  async adminAttachRelay(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { socksId: number },
+  ) {
+    const result = await this.inboundService.adminAttachRelay(id, body.socksId);
+    return { success: true, data: result };
+  }
+
+  @Delete(':id/relay')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Unmount SOCKS relay from an inbound' })
+  async adminDetachRelay(@Param('id', ParseIntPipe) id: number) {
+    const result = await this.inboundService.adminDetachRelay(id);
+    return { success: true, data: result };
+  }
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiBearerAuth()
-  @ApiOperation({ summary: '[Admin] Delete inbound' })
+  @ApiOperation({ summary: '[Admin] Delete inbound (彻底删除)' })
   async delete(@Param('id', ParseIntPipe) id: number) {
     const result = await this.inboundService.delete(id);
     return { success: true, data: result };

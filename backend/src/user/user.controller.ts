@@ -48,6 +48,25 @@ export class UserController {
   }
 
   // ---- Admin endpoints ----
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Create user manually' })
+  async createUser(
+    @Body() body: {
+      email?: string;
+      password?: string;
+      username?: string;
+      role?: string;
+      status?: string;
+      initialBalance?: number;
+    },
+  ) {
+    const result = await this.userService.createUser(body);
+    return { success: true, data: result };
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')

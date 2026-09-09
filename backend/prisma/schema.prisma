@@ -12,30 +12,31 @@ datasource db {
 // ==========================================
 
 model User {
-  id            Int       @id @default(autoincrement())
-  uuid          String    @unique @default(uuid())
-  email         String    @unique
-  password      String
-  username      String?
-  role          UserRole  @default(USER)
-  status        UserStatus @default(ACTIVE)
-  balance       Decimal   @default(0) @db.Decimal(10, 2)
-  balanceFrozen Decimal   @default(0) @db.Decimal(10, 2)
-  avatar        String?
-  language      String    @default("zh")
-  referralCode  String    @unique @default(uuid())
-  referredBy    Int?
-  referrer      User?     @relation("Referrals", fields: [referredBy], references: [id])
-  referrals     User[]    @relation("Referrals")
-  orders        Order[]
-  recharges     Recharge[]
-  inbounds      Inbound[]
-  socksProxies  SocksProxy[]
-  tickets       Ticket[]
-  cards         Card[]
+  id             Int             @id @default(autoincrement())
+  uuid           String          @unique @default(uuid())
+  email          String          @unique
+  password       String
+  username       String?
+  role           UserRole        @default(USER)
+  status         UserStatus      @default(ACTIVE)
+  balance        Decimal         @default(0) @db.Decimal(10, 2)
+  balanceFrozen  Decimal         @default(0) @db.Decimal(10, 2)
+  avatar         String?
+  language       String          @default("zh")
+  referralCode   String          @unique @default(uuid())
+  referredBy     Int?
+  referrer       User?           @relation("Referrals", fields: [referredBy], references: [id])
+  referrals      User[]          @relation("Referrals")
+  orders         Order[]
+  recharges      Recharge[]
+  inbounds       Inbound[]
+  socksProxies   SocksProxy[]
+  socksGrants    SocksGrant[]
+  tickets        Ticket[]
+  cards          Card[]
   refundRequests RefundRequest[]
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
 
   @@index([email])
   @@index([referralCode])
@@ -58,27 +59,27 @@ enum UserStatus {
 // ==========================================
 
 model Server {
-  id        Int        @id @default(autoincrement())
-  name      String
-  host      String
-  port      Int        @default(54321)
-  username  String
-  password  String
-  apiToken  String?    // 3-x-ui Bearer Token（Settings → Security → API Token）
-  remark    String?
-  status    ServerStatus @default(ACTIVE)
-  protocol  String     @default("http")
-  apiPath   String     @default("/panel/api")
-  sessionId String?    // cached XUI session
+  id            Int          @id @default(autoincrement())
+  name          String
+  host          String
+  port          Int          @default(54321)
+  username      String
+  password      String
+  apiToken      String? // 3-x-ui Bearer Token（Settings → Security → API Token）
+  remark        String?
+  status        ServerStatus @default(ACTIVE)
+  protocol      String       @default("http")
+  apiPath       String       @default("/panel/api")
+  sessionId     String? // cached XUI session
   sessionExpiry DateTime? // session expiry
-  weight    Int        @default(1) // load balancing weight
-  maxUsers  Int        @default(100)
-  country   String     @default("US")
-  flag      String?    // country flag emoji
-  inbounds  Inbound[]
-  socksProxies SocksProxy[]
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  weight        Int          @default(1) // load balancing weight
+  maxUsers      Int          @default(100)
+  country       String       @default("US")
+  flag          String? // country flag emoji
+  inbounds      Inbound[]
+  socksProxies  SocksProxy[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
   @@index([status])
 }
@@ -94,37 +95,37 @@ enum ServerStatus {
 // ==========================================
 
 model Plan {
-  id          Int        @id @default(autoincrement())
-  name        String
-  nameEn      String?
-  description String?
+  id            Int        @id @default(autoincrement())
+  name          String
+  nameEn        String?
+  description   String?
   descriptionEn String?
-  type        PlanType
-  price       Decimal    @db.Decimal(10, 2)
-  originalPrice Decimal? @db.Decimal(10, 2)
-  duration    Int        // days, 0 = unlimited
-  traffic     BigInt     // bytes, 0 = unlimited
-  speedLimit  Int?       // Mbps, null = unlimited
-  deviceLimit Int        @default(1)
-  protocols   String[]   // ["vmess", "vless", "trojan", "ss"]
-  serverIds   Int[]      // which servers this plan is available on
-  sort        Int        @default(0)
-  status      PlanStatus @default(ACTIVE)
-  isFeatured  Boolean    @default(false)
-  isTrial     Boolean    @default(false)
-  trialDays   Int?       // trial period in days
-  orders      Order[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  type          PlanType
+  price         Decimal    @db.Decimal(10, 2)
+  originalPrice Decimal?   @db.Decimal(10, 2)
+  duration      Int // days, 0 = unlimited
+  traffic       BigInt // bytes, 0 = unlimited
+  speedLimit    Int? // Mbps, null = unlimited
+  deviceLimit   Int        @default(1)
+  protocols     String[] // ["vmess", "vless", "trojan", "ss"]
+  serverIds     Int[] // which servers this plan is available on
+  sort          Int        @default(0)
+  status        PlanStatus @default(ACTIVE)
+  isFeatured    Boolean    @default(false)
+  isTrial       Boolean    @default(false)
+  trialDays     Int? // trial period in days
+  orders        Order[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 
   @@index([status, sort])
 }
 
 enum PlanType {
-  TIME_BASED    // time-limited subscription
+  TIME_BASED // time-limited subscription
   TRAFFIC_BASED // traffic-limited
-  COMBO         // both time and traffic
-  UNLIMITED     // no limits
+  COMBO // both time and traffic
+  UNLIMITED // no limits
 }
 
 enum PlanStatus {
@@ -143,22 +144,22 @@ enum PlanStatus {
 //  - MANUAL 人工发货：管理员在后台订单里填写交付内容，用户在「我的订单」查看
 // 已售数 sold 在每次成功交付（发码/发货）时 +1；无库存列，可用量以未售码为准。
 model VirtualProduct {
-  id             Int            @id @default(autoincrement())
-  name           String
-  nameEn         String?
-  description    String?
-  descriptionEn  String?
-  price          Decimal        @db.Decimal(10, 2)
-  originalPrice  Decimal?       @db.Decimal(10, 2)
-  coverUrl       String?        // 商品图 URL（可选，后台填外链）
-  deliveryType   DeliveryType   @default(AUTO) // AUTO=付款自动发码；MANUAL=人工发货
-  sort           Int            @default(0)
-  status         VirtualProductStatus @default(ACTIVE)
-  sold           Int            @default(0) // 已售（成功交付时 +1）
-  keys           ProductKey[]
-  orders         Order[]
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id            Int                  @id @default(autoincrement())
+  name          String
+  nameEn        String?
+  description   String?
+  descriptionEn String?
+  price         Decimal              @db.Decimal(10, 2)
+  originalPrice Decimal?             @db.Decimal(10, 2)
+  coverUrl      String? // 商品图 URL（可选，后台填外链）
+  deliveryType  DeliveryType         @default(AUTO) // AUTO=付款自动发码；MANUAL=人工发货
+  sort          Int                  @default(0)
+  status        VirtualProductStatus @default(ACTIVE)
+  sold          Int                  @default(0) // 已售（成功交付时 +1）
+  keys          ProductKey[]
+  orders        Order[]
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
 
   @@index([status, sort])
 }
@@ -177,13 +178,13 @@ enum VirtualProductStatus {
 
 // 交付码库（仅 AUTO 商品使用）：每行一个交付码/内容，付款后原子抢占一个
 model ProductKey {
-  id        Int               @id @default(autoincrement())
+  id        Int              @id @default(autoincrement())
   productId Int
-  product   VirtualProduct    @relation(fields: [productId], references: [id], onDelete: Cascade)
-  code      String            // 交付内容：可多行（账号/密码/链接等）
-  status    ProductKeyStatus  @default(UNUSED)
-  orderNo   String?           // 售出订单号（审计：哪个订单发放的）
-  createdAt DateTime          @default(now())
+  product   VirtualProduct   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  code      String // 交付内容：可多行（账号/密码/链接等）
+  status    ProductKeyStatus @default(UNUSED)
+  orderNo   String? // 售出订单号（审计：哪个订单发放的）
+  createdAt DateTime         @default(now())
 
   @@unique([productId, code])
   @@index([productId, status])
@@ -199,64 +200,64 @@ enum ProductKeyStatus {
 // ==========================================
 
 model Order {
-  id           Int         @id @default(autoincrement())
-  orderNo      String      @unique @default(uuid())
-  userId       Int
-  user         User        @relation(fields: [userId], references: [id])
+  id                  Int             @id @default(autoincrement())
+  orderNo             String          @unique @default(uuid())
+  userId              Int
+  user                User            @relation(fields: [userId], references: [id])
   // 商品判别：网络方案单 planId 非空且 virtualProductId 为 null；
   // 虚拟商品单 virtualProductId 非空且 planId 为 null（二选一）
-  planId       Int?        // 网络方案单=所选方案；虚拟商品单=null
-  plan         Plan?       @relation(fields: [planId], references: [id])
-  virtualProductId Int?    // 虚拟商品单=所选商品；网络方案单=null
-  virtualProduct   VirtualProduct? @relation(fields: [virtualProductId], references: [id], onDelete: SetNull)
+  planId              Int? // 网络方案单=所选方案；虚拟商品单=null
+  plan                Plan?           @relation(fields: [planId], references: [id])
+  virtualProductId    Int? // 虚拟商品单=所选商品；网络方案单=null
+  virtualProduct      VirtualProduct? @relation(fields: [virtualProductId], references: [id], onDelete: SetNull)
   // 交付信息：AUTO=自动发放的交付码；MANUAL=管理员发货时填写的交付内容；
   // 待发货（MANUAL 已支付未发货）时为 null。deliveredAt=实际交付时间。
-  deliveryInfo   String?
-  deliveredAt    DateTime?
-  amount       Decimal     @db.Decimal(10, 2)
-  payAmount    Decimal?    @db.Decimal(10, 2) // discounted amount
-  status       OrderStatus @default(PENDING)
-  payMethod    PayMethod?
-  tradeNo      String?     // payment gateway trade number
-  paidAt       DateTime?
-  expiresAt    DateTime?   // when the subscription expires
-  autoRenew    Boolean     @default(false)
+  deliveryInfo        String?
+  deliveredAt         DateTime?
+  amount              Decimal         @db.Decimal(10, 2)
+  payAmount           Decimal?        @db.Decimal(10, 2) // discounted amount
+  status              OrderStatus     @default(PENDING)
+  payMethod           PayMethod?
+  tradeNo             String? // payment gateway trade number
+  paidAt              DateTime?
+  expiresAt           DateTime? // when the subscription expires
+  autoRenew           Boolean         @default(false)
   // 优惠券：couponId 关联使用的券；couponAppliedAmount 记录本次优惠金额（实付 = 原价 - 优惠）。
   // 订单实付金额写 payAmount（优先于 amount 用于一切收款/流水），amount 恒为下单时原价。
-  couponId      Int?
-  coupon        Coupon?    @relation(fields: [couponId], references: [id], onDelete: SetNull)
-  couponAppliedAmount Decimal? @db.Decimal(10, 2)
+  couponId            Int?
+  coupon              Coupon?         @relation(fields: [couponId], references: [id], onDelete: SetNull)
+  couponAppliedAmount Decimal?        @db.Decimal(10, 2)
   // 购买时勾选中转：把源节点的出站改为用户提供的 SOCKS 节点（出口 = 该 SOCKS 的 IP）
-  relayEnabled Boolean     @default(false)
-  relaySocksHost String?   // 用户填的 SOCKS 节点 IP/域名
-  relaySocksPort Int?      // 用户填的 SOCKS 节点端口
-  relaySocksUser String?
-  relaySocksPass String?
+  relayEnabled        Boolean         @default(false)
+  relaySocksHost      String? // 用户填的 SOCKS 节点 IP/域名
+  relaySocksPort      Int? // 用户填的 SOCKS 节点端口
+  relaySocksUser      String?
+  relaySocksPass      String?
   // 下单时选择的服务器与系统默认协议（vless+reality），激活时使用
-  serverId    Int?         // 用户选购的服务器（plan.serverIds 之一）
-  protocol    String?      // 激活时的节点协议（默认 vless）
+  serverId            Int? // 用户选购的服务器（plan.serverIds 之一）
+  protocol            String? // 激活时的节点协议（默认 vless）
   // 续费单：对已有节点续期/续流量（非建新节点）。激活时走 bulkAdjust 加量 + 面板自动重启。
-  renewalOfInboundId Int?  // 目标节点（Inbound.id），必须属于下单用户
-  renewalOfInbound   Inbound? @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
-  renewalAppliedAt   DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
+  renewalOfInboundId  Int? // 目标节点（Inbound.id），必须属于下单用户
+  renewalOfInbound    Inbound?        @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
+  renewalAppliedAt    DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
   // 续费类型：EXPIRY=到期续费（到期日顺延；已到期节点=新周期锚在原到期日、切换点已过激活即恢复
   // 满额；过期超过一天的节点被 cron 自动删除）、TRAFFIC=流量续费（在当前流量额度上叠加，不清
   // 已用，叠加量随周期切换清零）；NULL=旧版叠加续费（历史订单兼容）
-  renewType          RenewType?
+  renewType           RenewType?
   // 续费在本地提交时是否伴随「周期重置」（已到期节点的 EXPIRY 续费：周期切换点已过 → 激活即按
   // 周期切换语义清零已用+复活+额度回归周期基础额度；激活时决定）。
   // 内存/崩溃后由 settle 对账读取：true 表示需要面板清零已用+复活+额度回归周期基础额度。
-  renewalResetTraffic Boolean  @default(false)
+  renewalResetTraffic Boolean         @default(false)
   // ⚠️ 防重部分唯一索引 "Order_renewal_dup_key"（userId, renewalOfInboundId, renewType，
   // NULLS NOT DISTINCT：NULL renewType 与自身互为重复、与 EXPIRY/TRAFFIC 区分）
   // 只在手写迁移 20260910000001_add_renewal_dup_unique（全新库）与
   // 20260910000002_fix_renewal_dup_key（生产恢复/幂等）中创建 —— WHERE 子句无法用
   // Prisma schema 表达。若 prisma migrate dev 报告它为漂移对象并生成 DROP INDEX 迁移，
   // 请勿应用（用 --create-only 检查后保留）；生产只跑 migrate deploy 不会自动生成。
-  referralEarning Decimal? @db.Decimal(10, 2)
-  refundRequests RefundRequest[]
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  referralEarning     Decimal?        @db.Decimal(10, 2)
+  refundRequests      RefundRequest[]
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
   @@index([userId, status])
   @@index([orderNo])
@@ -298,53 +299,53 @@ enum PayMethod {
 // ==========================================
 
 model Inbound {
-  id          Int            @id @default(autoincrement())
-  uuid        String         @unique @default(uuid())
-  userId      Int
-  user        User           @relation(fields: [userId], references: [id])
-  serverId    Int
-  server      Server         @relation(fields: [serverId], references: [id])
-  inboundId   Int            // XUI inbound ID
-  clientUuid  String?        // XUI 客户端 UUID（连接串 id 参数）
-  protocol    String         // vmess, vless, trojan, shadowsocks
-  port        Int
-  email       String         // unique identifier in XUI
-  settings    String         // JSON - connection settings
-  streamSettings String?     // JSON - transport settings
-  totalTraffic BigInt        @default(0) // bytes used
-  trafficLimit BigInt        @default(0) // 当前启用额度 = 周期基础额度(periodQuota) + 流量续费叠加量；0 = unlimited
+  id                    Int           @id @default(autoincrement())
+  uuid                  String        @unique @default(uuid())
+  userId                Int
+  user                  User          @relation(fields: [userId], references: [id])
+  serverId              Int
+  server                Server        @relation(fields: [serverId], references: [id])
+  inboundId             Int // XUI inbound ID
+  clientUuid            String? // XUI 客户端 UUID（连接串 id 参数）
+  protocol              String // vmess, vless, trojan, shadowsocks
+  port                  Int
+  email                 String // unique identifier in XUI
+  settings              String // JSON - connection settings
+  streamSettings        String? // JSON - transport settings
+  totalTraffic          BigInt        @default(0) // bytes used
+  trafficLimit          BigInt        @default(0) // 当前启用额度 = 周期基础额度(periodQuota) + 流量续费叠加量；0 = unlimited
   // 订阅周期制：periodQuota = 每个订阅周期的套餐额度（购买套餐 / 到期续费激活「开新周期」时写入；
   // 已到期节点的新周期锚在原到期日、切换点已过即按周期切换恢复）。
   // 「流量续费」在 trafficLimit 上叠加（不清已用）；到周期切换点 cron 自动清零已用、并把
   // trafficLimit 回归 periodQuota（叠加量随周期结束清零、不跨周期）。0 = 不限流量（无周期概念）
-  periodQuota    BigInt       @default(0)
+  periodQuota           BigInt        @default(0)
   // 周期切换点：下一个自动重置流量的时刻。创建时=到期日；未到期「到期续费」只顺延到期日、不动它，
   // 因此提前续费后到达原到期日时 cron 才自动重置流量；已到期节点激活「开新周期」时切换点已过、
   // 激活即按周期切换恢复，并推进为当前到期日。
   // 无流量/纯时长不限流量节点为 null（无自动重置）。
-  trafficResetAt DateTime?
-  expiryTime  DateTime?
-  speedLimit  Int?           // Mbps
-  relayEnabled Boolean       @default(false) // 该节点出站是否改为用户 SOCKS 中转
-  relayTag    String?        // 该节点入站 tag（路由规则 inboundTag 用 = inbound-<port>）
+  trafficResetAt        DateTime?
+  expiryTime            DateTime?
+  speedLimit            Int? // Mbps
+  relayEnabled          Boolean       @default(false) // 该节点出站是否改为用户 SOCKS 中转
+  relayTag              String? // 该节点入站 tag（路由规则 inboundTag 用 = inbound-<port>）
   relaySocksOutboundTag String? // 该节点专属 SOCKS 出站 tag（如 socks-<port>）
-  relaySocksHost String?     // 用户 SOCKS 节点地址
-  relaySocksPort Int?        // 用户 SOCKS 节点端口
-  relaySocksUser String?
-  relaySocksPass String?
+  relaySocksHost        String? // 用户 SOCKS 节点地址
+  relaySocksPort        Int? // 用户 SOCKS 节点端口
+  relaySocksUser        String?
+  relaySocksPass        String?
   // VLESS+Reality 配置快照（创建时写入，用于本地生成连接串/面板读写一致性）
-  realityServerNames String? // SNI 列表，如 www.microsoft.com
-  realityPrivateKey String?  // X25519 私钥（仅面板侧需要）
-  realityPublicKey String?   // X25519 公钥（客户端链接 pbk 参数）
-  realityShortId String?     // reality shortId
-  realityDest String?        // reality dest 目标
-  realityMinVersion String?  // 最小客户端版本，默认 1.0.0
-  status      InboundStatus  @default(ACTIVE)
-  remark      String?
-  renewalOrders Order[]      @relation("OrderRenewal") // 针对本节点的续费/续流量订单
-  expiryReminderStage Int    @default(0) // 到期提醒档位：0=未发 1=已发「3天内」 2=已发「1天内」 3=已发「已到期」（各档只发一次）
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
+  realityServerNames    String? // SNI 列表，如 www.microsoft.com
+  realityPrivateKey     String? // X25519 私钥（仅面板侧需要）
+  realityPublicKey      String? // X25519 公钥（客户端链接 pbk 参数）
+  realityShortId        String? // reality shortId
+  realityDest           String? // reality dest 目标
+  realityMinVersion     String? // 最小客户端版本，默认 1.0.0
+  status                InboundStatus @default(ACTIVE)
+  remark                String?
+  renewalOrders         Order[]       @relation("OrderRenewal") // 针对本节点的续费/续流量订单
+  expiryReminderStage   Int           @default(0) // 到期提醒档位：0=未发 1=已发「3天内」 2=已发「1天内」 3=已发「已到期」（各档只发一次）
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
   @@index([userId, status])
   @@index([serverId])
@@ -364,22 +365,23 @@ enum InboundStatus {
 // ==========================================
 
 model SocksProxy {
-  id          Int           @id @default(autoincrement())
-  uuid        String        @unique @default(uuid())
-  userId      Int
-  user        User          @relation(fields: [userId], references: [id])
-  serverId    Int?
-  server      Server?       @relation(fields: [serverId], references: [id])
-  inboundId   Int?          // XUI inbound ID if auto-created
-  host        String
-  port        Int
-  username    String?
-  password    String?
-  protocol    String        @default("socks")
-  remark      String?
-  status      SocksStatus   @default(ACTIVE)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  id        Int          @id @default(autoincrement())
+  uuid      String       @unique @default(uuid())
+  userId    Int
+  user      User         @relation(fields: [userId], references: [id])
+  serverId  Int?
+  server    Server?      @relation(fields: [serverId], references: [id])
+  inboundId Int? // XUI inbound ID if auto-created
+  host      String
+  port      Int
+  username  String?
+  password  String?
+  protocol  String       @default("socks")
+  remark    String?
+  status    SocksStatus  @default(ACTIVE)
+  grants    SocksGrant[] // 管理员可另授权给其他用户使用（购中转时可选）
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
   @@index([userId])
 }
@@ -391,19 +393,35 @@ enum SocksStatus {
 }
 
 // ==========================================
+// SOCKS5 Proxy Grants (管理员授权给其他用户使用)
+// ==========================================
+
+model SocksGrant {
+  id           Int        @id @default(autoincrement())
+  socksProxyId Int
+  socksProxy   SocksProxy @relation(fields: [socksProxyId], references: [id], onDelete: Cascade)
+  userId       Int
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([socksProxyId, userId])
+  @@index([userId])
+}
+
+// ==========================================
 // Card Keys (卡密)
 // ==========================================
 
 model Card {
-  id          Int          @id @default(autoincrement())
-  code        String       @unique
-  amount      Decimal      @db.Decimal(10, 2)
-  status      CardStatus   @default(UNUSED)
-  usedBy      Int?
-  user        User?        @relation(fields: [usedBy], references: [id])
-  usedAt      DateTime?
-  batchId     String?      // batch identifier
-  createdAt   DateTime     @default(now())
+  id        Int        @id @default(autoincrement())
+  code      String     @unique
+  amount    Decimal    @db.Decimal(10, 2)
+  status    CardStatus @default(UNUSED)
+  usedBy    Int?
+  user      User?      @relation(fields: [usedBy], references: [id])
+  usedAt    DateTime?
+  batchId   String? // batch identifier
+  createdAt DateTime   @default(now())
 
   @@index([code])
   @@index([status, batchId])
@@ -420,16 +438,16 @@ enum CardStatus {
 // ==========================================
 
 model Ticket {
-  id          Int          @id @default(autoincrement())
-  uuid        String       @unique @default(uuid())
-  userId      Int
-  user        User         @relation(fields: [userId], references: [id])
-  subject     String
-  status      TicketStatus @default(OPEN)
-  priority    TicketPriority @default(NORMAL)
-  messages    TicketMessage[]
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id        Int             @id @default(autoincrement())
+  uuid      String          @unique @default(uuid())
+  userId    Int
+  user      User            @relation(fields: [userId], references: [id])
+  subject   String
+  status    TicketStatus    @default(OPEN)
+  priority  TicketPriority  @default(NORMAL)
+  messages  TicketMessage[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
   @@index([userId, status])
   @@index([status])
@@ -439,7 +457,7 @@ model TicketMessage {
   id        Int      @id @default(autoincrement())
   ticketId  Int
   ticket    Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  sender    String   // "user" or "admin"
+  sender    String // "user" or "admin"
   content   String
   createdAt DateTime @default(now())
 
@@ -465,18 +483,18 @@ enum TicketPriority {
 // ==========================================
 
 model Announcement {
-  id          Int      @id @default(autoincrement())
-  title       String
-  titleEn     String?
-  content     String
-  contentEn   String?
-  type        AnnouncementType @default(INFO)
-  isPinned    Boolean  @default(false)
-  isActive    Boolean  @default(true)
-  startsAt    DateTime?
-  endsAt      DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        Int              @id @default(autoincrement())
+  title     String
+  titleEn   String?
+  content   String
+  contentEn String?
+  type      AnnouncementType @default(INFO)
+  isPinned  Boolean          @default(false)
+  isActive  Boolean          @default(true)
+  startsAt  DateTime?
+  endsAt    DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
 }
 
 enum AnnouncementType {
@@ -491,11 +509,11 @@ enum AnnouncementType {
 // ==========================================
 
 model SystemSetting {
-  id        Int    @id @default(autoincrement())
-  key       String @unique
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
   value     String
-  type      String @default("string") // string, number, boolean, json
-  group     String @default("general") // general, payment, email, xui
+  type      String   @default("string") // string, number, boolean, json
+  group     String   @default("general") // general, payment, email, xui
   remark    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -509,14 +527,14 @@ model SystemSetting {
 // ==========================================
 
 model Transaction {
-  id          Int              @id @default(autoincrement())
+  id          Int             @id @default(autoincrement())
   userId      Int
   type        TransactionType
-  amount      Decimal          @db.Decimal(10, 2)
-  balance     Decimal          @db.Decimal(10, 2) // balance after transaction
+  amount      Decimal         @db.Decimal(10, 2)
+  balance     Decimal         @db.Decimal(10, 2) // balance after transaction
   description String?
-  relatedId   String?          // order number, card code, etc.
-  createdAt   DateTime         @default(now())
+  relatedId   String? // order number, card code, etc.
+  createdAt   DateTime        @default(now())
 
   @@index([userId, createdAt])
   @@index([type])
@@ -541,11 +559,11 @@ model RefundRequest {
   order      Order        @relation(fields: [orderId], references: [id])
   userId     Int
   user       User         @relation(fields: [userId], references: [id])
-  reason     String                     // 用户申请理由
+  reason     String // 用户申请理由
   amount     Decimal      @db.Decimal(10, 2) // 退款金额 = 订单实付快照（payAmount ?? amount，申请时固定）
   status     RefundStatus @default(PENDING)
-  adminNote  String?                    // 审批意见（拒绝必填，展示给用户与邮件正文）
-  reviewedBy Int?                       // 审批管理员 userId（非 FK，与 adminNote 同为审计字段）
+  adminNote  String? // 审批意见（拒绝必填，展示给用户与邮件正文）
+  reviewedBy Int? // 审批管理员 userId（非 FK，与 adminNote 同为审计字段）
   reviewedAt DateTime?
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
@@ -567,19 +585,19 @@ enum RefundStatus {
 // ==========================================
 
 model Coupon {
-  id           Int         @id @default(autoincrement())
-  code         String      @unique       // 兑换码（创建时后端生成，用户下单时输入，自动大写）
-  name         String                    // 显示名称（如「新人 9 折券」）
-  type         CouponType                // PERCENT＝按百分比折扣；AMOUNT＝立减固定金额
-  value        Decimal     @db.Decimal(10, 2)
+  id           Int          @id @default(autoincrement())
+  code         String       @unique // 兑换码（创建时后端生成，用户下单时输入，自动大写）
+  name         String // 显示名称（如「新人 9 折券」）
+  type         CouponType // PERCENT＝按百分比折扣；AMOUNT＝立减固定金额
+  value        Decimal      @db.Decimal(10, 2)
   // PERCENT 语义：value 是「优惠百分比」（10 = 打 9 折，即优惠 10%）；AMOUNT 语义：value 是「立减金额」
-  minAmount    Decimal     @default(0) @db.Decimal(10, 2)   // 订单原价满多少可用；0 = 不限
-  maxDiscount  Decimal?    @db.Decimal(10, 2)               // 单笔优惠封顶；null = 不封顶
-  totalCount   Int         @default(0)    // 总发行量；0 = 不限量
-  usedCount    Int         @default(0)
-  perUserLimit Int         @default(1)    // 每用户可用次数（按非取消订单计数）
-  startAt      DateTime?                 // 生效起始；null = 创建即生效
-  endAt        DateTime?                 // 失效时间；null = 永久有效
+  minAmount    Decimal      @default(0) @db.Decimal(10, 2) // 订单原价满多少可用；0 = 不限
+  maxDiscount  Decimal?     @db.Decimal(10, 2) // 单笔优惠封顶；null = 不封顶
+  totalCount   Int          @default(0) // 总发行量；0 = 不限量
+  usedCount    Int          @default(0)
+  perUserLimit Int          @default(1) // 每用户可用次数（按非取消订单计数）
+  startAt      DateTime? // 生效起始；null = 创建即生效
+  endAt        DateTime? // 失效时间；null = 永久有效
   status       CouponStatus @default(ACTIVE)
   orders       Order[]
   createdAt    DateTime     @default(now())
@@ -605,13 +623,13 @@ enum CouponStatus {
 
 model Recharge {
   id        Int            @id @default(autoincrement())
-  orderNo   String         @unique        // RC + 日期 + 随机（与商品单 SO 前缀区分，回调按前缀分流）
+  orderNo   String         @unique // RC + 日期 + 随机（与商品单 SO 前缀区分，回调按前缀分流）
   userId    Int
   user      User           @relation(fields: [userId], references: [id])
   amount    Decimal        @db.Decimal(10, 2)
   status    RechargeStatus @default(PENDING)
-  payMethod String?        // WECHAT / ALIPAY（网关发起的支付方式）
-  tradeNo   String?        // 网关交易号
+  payMethod String? // WECHAT / ALIPAY（网关发起的支付方式）
+  tradeNo   String? // 网关交易号
   paidAt    DateTime?
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
