@@ -307,9 +307,19 @@ deploy_core() {
     # 沿用 compose 网络与 .env，与正式容器同源同网，但不依赖它存活）；网络缺失时
     # 退回 docker exec 维持原行为。
     BK_NET=$(docker network ls --format '{{.Name}}' | grep -m1 nodeshop || true)
+    # docker CLI 的 --env-file 不会像 compose 的 env_file 那样剥掉值外层引号：.env 里
+    # DATABASE_URL="postgresql://..." 会连双引号一起传给容器，Prisma 报 P1012
+    # （URL 必须以 postgresql:// 开头）。因此这里手动取出“去引号”的干净 URL，
+    # 用 -e 显式传入一次性容器，不再依赖 --env-file 的引号处理。
+    BK_DB_URL=$(sed -n 's/^DATABASE_URL=//p' .env 2>/dev/null | head -1 | tr -d '\r' || true)
+    BK_DB_URL="${BK_DB_URL%\"}"; BK_DB_URL="${BK_DB_URL#\"}"
+    case "$BK_DB_URL" in
+      postgres://*|postgresql://*) ;;
+      *) BK_DB_URL="" ;;
+    esac
     run_backend_migrate() {
-      if [ -n "$BK_NET" ]; then
-        docker run --rm --network "$BK_NET" --env-file .env -w /app nodeshop-backend:latest "$@"
+      if [ -n "$BK_NET" ] && [ -n "$BK_DB_URL" ]; then
+        docker run --rm --network "$BK_NET" -e "DATABASE_URL=$BK_DB_URL" -w /app nodeshop-backend:latest "$@"
       else
         docker exec nodeshop-backend "$@"
       fi
