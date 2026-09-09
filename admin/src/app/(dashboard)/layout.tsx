@@ -6,10 +6,11 @@ import { usePathname } from 'next/navigation';
 import { Toaster } from 'react-hot-toast';
 import {
   LayoutDashboard, Users, Package, ShoppingCart, Server, Wifi,
-  Network, Ticket as TicketIcon, Megaphone, Settings, LogOut, Zap, CreditCard, DollarSign, Tag, Undo2,
+  Network, Ticket as TicketIcon, Megaphone, Settings, LogOut, CreditCard, DollarSign, Tag, Undo2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
+import { BrandLogo } from '@/components/layout/brand-logo';
 
 const navItems = [
   { href: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -37,9 +38,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       {/* Sidebar */}
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r bg-card lg:block">
         <div className="flex items-center gap-2 border-b px-6 py-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-primary">
-            <Zap className="h-5 w-5 text-white" />
-          </div>
+          <BrandLogo size={36} />
           <div>
             <div className="font-bold leading-tight">NodeShop</div>
             <div className="text-xs text-muted-foreground">管理后台</div>
@@ -80,9 +79,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         {/* Mobile header */}
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b bg-background/80 px-4 backdrop-blur lg:hidden">
           <Link href="/dashboard" className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-primary">
-              <Zap className="h-4 w-4 text-white" />
-            </div>
+            <BrandLogo size={32} />
             <span className="font-bold">NodeShop</span>
           </Link>
           <button onClick={logout} className="rounded-md p-2 text-muted-foreground hover:bg-accent">

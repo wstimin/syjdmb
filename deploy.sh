@@ -34,6 +34,8 @@ info(){ echo -e "${CYAN}[INFO]${NC} $*"; }
 ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; }
+# 步骤提示：醒目分隔线 + 当前进度，让安装/更新过程能看到“到哪一步了”，而不是长时间静默
+step(){ echo; echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; echo -e "${GREEN}  ▶  ${*}${NC}"; echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 
 # 是否为私网/保留地址（对外不可达，严禁写入对外地址）：回环、链路本地、CGNAT、
 # 10/8、172.16-31/12、192.168/16 —— 这类地址写进 FRONTEND_URL 会让支付回调/邮件链接全部失效
@@ -199,15 +201,17 @@ load_prebuilt_images() {
     warn "已跳过预编译镜像（回滚/本地编译模式）"
     return 1
   fi
-  info "拉取预编译镜像包（GitHub Releases: nightly）..."
+  info "拉取预编译镜像包（GitHub Releases: nightly，约几十 MB，进度条见下方）..."
   local tmp
   tmp="$INSTALL_DIR/.prebuilt-$$.tgz"   # 下载到磁盘而非 /tmp(tmpfs)：小内存 VPS 的 /tmp 可能放不下镜像包
-  if ! curl -fsSL --connect-timeout 20 --max-time 1200 -o "$tmp" "$PREBUILT_URL"; then
+  # --progress-bar：下载期间显示实时进度，避免“看起来卡住”；-f 让非 200 直接走本机编译回退
+  if ! curl -fSL --connect-timeout 20 --max-time 1200 --progress-bar -o "$tmp" "$PREBUILT_URL"; then
     warn "预编译包下载失败（${PREBUILT_URL}）→ 将使用服务器本机编译"
     rm -f "$tmp"
     return 1
   fi
-  info "开始载入镜像（docker load）..."
+  local _sz; _sz=$(du -h "$tmp" 2>/dev/null | cut -f1)
+  info "镜像包已就位（${_sz:-?}），开始载入（docker load，约 1-3 分钟）..."
   if docker load -i "$tmp"; then
     rm -f "$tmp"
     ok "预编译镜像已载入，本次更新不再本机编译"
@@ -229,36 +233,38 @@ deploy_core() {
   # 停止旧容器但保留数据卷（更新不丢数据库/Redis）
   docker compose down 2>/dev/null || true
 
-  info "构建并启动服务（优先预编译镜像，失败才本机编译）..."
+  step "第 1/6 步：构建并启动服务（优先云端预编译镜像，失败才服务器本机编译）"
   if ! load_prebuilt_images; then
-    warn "回退：本机编译并启动（约 5-10 分钟）..."
+    step "第 1/6 步（续）：本机编译镜像并启动（约 5-10 分钟，请耐心等待，编译输出实时可见）"
     if ! docker compose up -d --build 2>&1; then
       err "构建/启动失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
       return 1
     fi
   elif ! docker compose up -d 2>/dev/null; then
-    warn "compose 启动失败，回退本机编译..."
+    step "第 1/6 步（续）：compose 启动失败，回退本机编译（约 5-10 分钟）"
     if ! docker compose up -d --build 2>&1; then
       err "构建/启动失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
       return 1
     fi
   fi
 
-  info "等待数据库就绪..."
+  step "第 2/6 步：等待数据库就绪（最长 2 分钟）"
   local i okdb=0
   for i in $(seq 1 60); do
     if docker exec nodeshop-db pg_isready -U nodeadmin -d nodeshop &>/dev/null; then okdb=1; break; fi
+    [ $((i % 5)) -eq 0 ] && echo "    ...已等待 $((i*2)) 秒"
     [ "$i" -eq 60 ] && { err "数据库启动超时"; return 1; }
     sleep 2
   done
   [ "$okdb" = "1" ] && ok "数据库就绪"
 
-  info "等待后端容器就绪..."
+  step "第 3/6 步：等待后端容器就绪（最长 5 分钟）"
   local okbe=0
   for i in $(seq 1 90); do
     local STATE
     STATE=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
     if [ "$STATE" = "running" ]; then okbe=1; break; fi
+    [ $((i % 5)) -eq 0 ] && echo "    ...已等待 $((i*3)) 秒"
     [ "$i" -eq 90 ] && {
       warn "后端容器未就绪，最近日志："; docker logs nodeshop-backend 2>&1 | tail -20; return 1; }
     sleep 3
@@ -279,7 +285,7 @@ deploy_core() {
     if [ -n "$EXPECT_HASH" ] && [ "$IMG_HASH" = "$EXPECT_HASH" ]; then
       ok "镜像与代码一致（提交 ${EXPECT_HASH}）"
     else
-      warn "镜像与代码不一致（期望提交 ${EXPECT_HASH}，镜像标注 ${IMG_HASH:-无}）→ 本机编译修正..."
+      step "第 4/6 步：镜像与代码不一致（期望提交 ${EXPECT_HASH}，镜像标注 ${IMG_HASH:-无}）→ 本机重编译修正（约 5-10 分钟）"
       if ! docker compose up -d --build 2>&1; then
         # fail-open：编译失败不中断部署 —— 当前已载入的镜像继续运行，服务不中断
         # （代码与镜像暂不一致，但旧版本仍可用；等资源/网络恢复后再次「更新」即可）。
@@ -293,6 +299,7 @@ deploy_core() {
           local STATE2
           STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
           if [ "$STATE2" = "running" ]; then break; fi
+          [ $((i % 5)) -eq 0 ] && echo "    ...已等待 $((i*3)) 秒"
           sleep 3
         done
         ok "本机编译完成，后端容器重启"
@@ -301,7 +308,7 @@ deploy_core() {
   fi
 
   if [ "$build_ok" = "1" ]; then
-    info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
+    step "第 5/6 步：执行数据库迁移（保留数据，仅应用缺失的迁移）"
     # 后端容器 migrate 失败时会进入 crash-loop（restarting）状态，此时 docker exec 报
     # "is restarting"、无法执行。迁移/修复命令统一走「一次性容器」（镜像本机已加载、
     # 沿用 compose 网络与 .env，与正式容器同源同网，但不依赖它存活）；网络缺失时
@@ -353,7 +360,7 @@ deploy_core() {
   # 【复核】默认管理员/系统设置 seed 移出 build_ok 门、【始终执行】：迁移在 build_ok=0
   # 时保持跳过（新迁移不应作用到旧镜像对应库），但 seed 是 upsert 幂等仅同步/补齐 ——
   # 全新库若被跳过就永远没有默认管理员，管理端无法登录；失败也仅 warn，不影响部署。
-  info "同步系统设置与默认管理员（${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}，用户表非空则不创建/不改口令；重置请用菜单 4）..."
+  step "第 6/6 步：同步系统设置与默认管理员（${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}，用户表非空则不创建/不改口令；重置请用菜单 4）"
   docker exec -e SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}" \
     -e SEED_ADMIN_PASSWORD="${SEED_ADMIN_PASSWORD:-$DEFAULT_ADMIN_PASS}" \
     nodeshop-backend node prisma/seed.cjs 2>/dev/null || warn "seed 提示（仅同步系统设置，不影响已有数据）"
@@ -822,6 +829,11 @@ cmd_uninstall() {
 # 主菜单
 # =====================================================================
 main_menu() {
+  # 非交互终端（cron / 管道 / 无人值守）没有可读的 stdin，菜单 read 会无限空转 → 直接提示退出
+  if [ ! -t 0 ]; then
+    err "非交互终端无法显示菜单；请直接交互运行 shop，或使用 shop __deploy 执行无人值守部署"
+    exit 0
+  fi
   while true; do
     echo
     echo -e "${CYAN}════════════════════════════════════════════${NC}"
@@ -868,10 +880,16 @@ ENV_EXISTED=0
 [ -f "$INSTALL_DIR/.env" ] && ENV_EXISTED=1
 ensure_env               # 首次生成 .env；已有则保留
 
-# `shop __deploy`：由 cmd_update 在 git pull 后 exec 进来，用新脚本逻辑直接部署
+# `shop __deploy`：由 cmd_update 在 git pull 后 exec 进来，用新脚本逻辑直接部署。
+# 结束不 exit，回交互菜单 —— 否则更新完成后直接退回 shell，还要再敲一次 shop。
 if [ "${1:-}" = "__deploy" ]; then
-  deploy_core || { err "部署失败，请检查上方日志"; exit 1; }
-  ok "更新完成，数据库与配置已保留"
+  if deploy_core; then
+    ok "更新完成，数据库与配置已保留"
+  else
+    err "部署失败，请检查上方日志"
+  fi
+  read -rp "  按回车返回管理菜单..." _ || true
+  main_menu
   exit 0
 fi
 
