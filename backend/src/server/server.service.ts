@@ -629,11 +629,13 @@ export class ServerService {
   }
 
   /**
-   * 流量重置：清零客户端已用流量（up/down → 0）并重新启用（enable=true），
-   * 用于「流量重置 / 开新周期」续费（不叠加语义：额度不累加，仅回到满额）。
+   * 流量重置：清零客户端已用流量（up/down → 0）并重新启用（enable=true）。
+   * 用于订阅周期制的「周期切换」场景：cron 到周期切换点自动重置回满额，以及「到期续费」
+   * 遇到已到期节点（切换点已过）时激活即按周期切换恢复；TRAFFIC 流量续费【绝不调用】——
+   * 叠加不清已用，重置会把用户本周期已用流量抄没。
    * POST /panel/api/clients/bulkResetTraffic  { emails }  （3.6.0 原生端点）
    * 面板会重置所有关联入站的已用统计并传播到节点；total（配额）与到期时间不变。
-   * 对已被面板停用/耗尽的客户端自动复活 —— 这是节点续费后自动恢复的关键。
+   * 对已被面板停用/耗尽的客户端自动复活 —— 这是节点到点回满/续费后自动恢复的关键。
    */
   async resetClientTraffic(serverId: number, email: string) {
     return this.xuiRequest(serverId, 'POST', '/clients/bulkResetTraffic', {

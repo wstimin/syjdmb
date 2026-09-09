@@ -24,9 +24,13 @@ const DAY_MS = 24 * 3600 * 1000;
 
 type RenewKind = 'EXPIRY' | 'TRAFFIC';
 
-/** 节点续费弹窗：续费拆成两类（到期续费 / 流量重置），均为「开新周期、不叠加」：
- *  - 到期续费（EXPIRY）：到期日顺延套餐时长；套餐含流量且节点限流量时，流量重置为套餐额度满额（不叠加）。
- *  - 流量重置（TRAFFIC）：仅流量重置为套餐额度满额（不叠加），到期时间不变。
+/** 节点续费弹窗：续费拆成两类（到期续费 / 流量续费），订阅周期制语义：
+ *  - 到期续费（EXPIRY）：到期日顺延套餐时长。节点未到期 → 当前流量不变，到周期切换点（原到期日）
+ *    由后端 cron 自动清零已用、额度回归套餐满额；节点已到期（一天续费宽限期内）→ 新周期锚在
+ *    原到期日（新到期日 = 原到期日 + 时长），切换点已过 → 激活即按周期切换恢复满额流量；过期
+ *    超过一天的节点已被自动删除，只能重新购买套餐。
+ *  - 流量续费（TRAFFIC）：在当前流量额度上【叠加】套餐流量（不清除已用），到期时间不变；
+ *    叠加量随本周期结束自动清零、不跨周期。
  */
 export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) {
   const { user, refreshUser } = useAuth();
@@ -52,12 +56,16 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
   const stoppedRef = useRef(false);
 
   // 本节点能力：
-  //  - 到期续费：节点必须限期（有到期时间）
-  //  - 流量重置：节点必须限流量，且「没有到期时间」或「尚未到期」（已到期节点重置流量无意义）
+  //  - 到期续费：节点必须限期（有到期时间）。已到期节点在「一天续费宽限期」内也可续费（周期锚
+  //    在原到期日、切换点已过即恢复满额，后端支持）；越过宽限期节点被自动删除，只能重新购买套餐
+  //  - 流量续费：节点必须限流量，且「没有到期时间」或「尚未到期」（已到期节点叠加流量
+  //    无意义 —— 时间维度仍停用，后端拒绝并指引先「到期续费」）
   const canExpiry = !!node?.expiryTime;
   const isTimeExpired = !!node?.expiryTime && new Date(node.expiryTime).getTime() <= Date.now();
   const canTraffic = Number(node?.trafficLimit) > 0 && !isTimeExpired;
 
+  // 续费后的新到期日（预览/可选性判断）：严格周期锚 —— 到期日恒为「原到期日 + 套餐时长」，
+  // 已到期节点也在原到期日起算（不在续费时刻重置周期），与后端 activateRenewalNewCycle 一致。
   const nextExpiryOf = useCallback(
     (p: any) => {
       if (!node?.expiryTime) return null;
@@ -67,8 +75,9 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
   );
 
   // 每种续费类型的可选套餐：
-  //  - 到期续费：套餐必须含时长；且「顺延后的新到期日」仍在未来（否则续了仍过期，后端也会拒绝）
-  //  - 流量重置：套餐必须含流量
+  //  - 到期续费：套餐必须含时长；且「续费后的新到期日」仍在未来（node.expiryTime 缺失时
+  //    nextExpiryOf 返回 null，天然排除）
+  //  - 流量续费：套餐必须含流量
   const plansFor = useCallback(
     (k: RenewKind) => {
       if (!plans.length) return plans;
@@ -77,7 +86,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
           const hasDays = Number(p.duration) > 0;
           const next = nextExpiryOf(p);
           // 70：含流量的套餐，在节点不限流量时不可用于「到期续费」—— 后端对不限流量节点
-          // 不会做流量重置，卡片上却标着“流量重置为满额”会误导
+          // 没有周期概念（periodQuota=0），卡片上却标着“到期自动回满”会误导
           if (Number(p.traffic) > 0 && Number(node?.trafficLimit) <= 0) return false;
           return hasDays && !p.isTrial && next !== null && next.getTime() > Date.now();
         });
@@ -98,7 +107,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
     setCardCode('');
     setPaid(false);
     paidRef.current = false;
-    // 默认选中可用的续费类型：优先「到期续费」，不可用则「流量重置」
+    // 默认选中可用的续费类型：优先「到期续费」，不可用则「流量续费」
     const def: RenewKind | null = canExpiry ? 'EXPIRY' : canTraffic ? 'TRAFFIC' : null;
     setKind(def);
     api
@@ -143,7 +152,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
           o?.renewalOfInbound?.id === node?.id &&
           // 【对抗复核确认】后端防重按 (userId, 节点, renewType) 分组 —— EXPIRY 的在途单
           // 不会拦 TRAFFIC 下单，反之亦然。捞回的订单必须与用户当前选的续费类型一致，
-          // 否则可能付到另一种类型的单（付了流量重置的钱却去付到期续费的单，语义错乱）。
+          // 否则可能付到另一种类型的单（付了流量续费的钱却去付到期续费的单，语义错乱）。
           // legacy（renewType=null）在途单同理不匹配新类型，不捞。
           o?.renewType === kind &&
           ['PENDING', 'PAID', 'PROCESSING'].includes(o?.status),
@@ -213,7 +222,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
     pollRef.current = setTimeout(tick, 3000);
   };
 
-  // 下单 + 支付（renewType 区分 到期续费/流量重置，后端按类型激活，不叠加）
+  // 下单 + 支付（renewType 区分 到期续费/流量续费，后端按『订阅周期制』激活：EXPIRY 顺延/周期锚在原到期日、TRAFFIC 叠加）
   const confirmRenew = async (m: string) => {
     if (!selected || !kind) return;
     setMethod(m);
@@ -388,8 +397,22 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
   };
 
   const kindTabs: { id: RenewKind; label: string; icon: any; desc: string; enabled: boolean }[] = [
-    { id: 'EXPIRY', label: '到期续费', icon: <CalendarClock className="h-4 w-4" />, desc: '到期日顺延 + 流量回到满额（不叠加）', enabled: canExpiry },
-    { id: 'TRAFFIC', label: '流量重置', icon: <Gauge className="h-4 w-4" />, desc: '仅重置流量为满额，到期时间不变', enabled: canTraffic },
+    {
+      id: 'EXPIRY',
+      label: '到期续费',
+      icon: <CalendarClock className="h-4 w-4" />,
+      desc: isTimeExpired
+        ? '已到期（宽限期内）：周期从原到期日起算，流量恢复为套餐满额'
+        : '顺延到期日；到期时流量自动恢复为套餐满额',
+      enabled: canExpiry,
+    },
+    {
+      id: 'TRAFFIC',
+      label: '流量续费',
+      icon: <Gauge className="h-4 w-4" />,
+      desc: '在当前额度上叠加套餐流量（不清已用，随周期结束清零）',
+      enabled: canTraffic,
+    },
   ];
   const showTabs = kindTabs.filter((k) => k.enabled).length > 1;
   const curPlans = kind ? plansFor(kind) : [];
@@ -399,7 +422,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>节点续费（到期续费 / 流量重置）</DialogTitle>
+          <DialogTitle>节点续费（到期续费 / 流量续费）</DialogTitle>
         </DialogHeader>
 
         {/* 节点现状 */}
@@ -421,6 +444,12 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
             )}
           </div>
         </div>
+
+        {isTimeExpired && (
+          <p className="mt-1 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
+            该节点已到期，仅保留一天续费宽限期；超过一天未续费将被自动删除，只能重新购买套餐。
+          </p>
+        )}
 
         {payQr ? (
           // 二维码支付中
@@ -471,14 +500,16 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">
                 {kind === 'EXPIRY'
-                  ? '选择到期续费套餐（时长在现有到期日上顺延，流量按套餐重置为满额，不叠加）'
+                  ? isTimeExpired
+                    ? '选择到期续费套餐（已到期节点：周期从原到期日起算，流量恢复为套餐满额）'
+                    : '选择到期续费套餐（顺延时长；当前流量不变，到期时自动恢复为套餐满额）'
                   : kind === 'TRAFFIC'
-                    ? '选择流量重置套餐（仅重置流量为套餐满额，到期时间不变，不叠加）'
+                    ? '选择流量续费套餐（在当前额度上叠加套餐流量，不清除已用流量；到期时间不变）'
                     : '选择续费套餐'}
               </p>
               {curPlans.length === 0 && (
                 <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-                  <p>当前没有可{kind === 'EXPIRY' ? '到期续费' : '流量重置'}的套餐</p>
+                  <p>当前没有可{kind === 'EXPIRY' ? '到期续费' : '流量续费'}的套餐</p>
                   <p className="mt-1 text-xs">
                     {kind === 'TRAFFIC' ? '（需要含流量额度的套餐）' : '（需要含时长、且能使节点回到有效期的套餐）'}
                   </p>
@@ -488,12 +519,20 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
                 const active = selected?.id === p.id;
                 const parts: string[] = [];
                 if (kind === 'EXPIRY') {
-                  if (Number(p.duration) > 0) parts.push(`顺延 +${Number(p.duration)} 天`);
+                  if (Number(p.duration) > 0) {
+                    parts.push(isTimeExpired ? `从原到期日起算，续期 +${Number(p.duration)} 天` : `顺延 +${Number(p.duration)} 天`);
+                  }
                   if (Number(p.traffic) > 0 && Number(node.trafficLimit) > 0) {
-                    parts.push(`流量重置为 ${(Number(p.traffic) / GB).toFixed(0)}GB（满额）`);
+                    // 订阅周期制：未到期节点当前流量不变、到期时自动回满新套餐额度；
+                    // 已到期节点：周期切换点（原到期日）已过 → 按周期切换语义恢复满额
+                    parts.push(
+                      isTimeExpired
+                        ? `流量按周期切换恢复 ${(Number(p.traffic) / GB).toFixed(0)}GB（满额）`
+                        : `当前流量不变，到期自动回满 ${(Number(p.traffic) / GB).toFixed(0)}GB`,
+                    );
                   }
                 } else if (Number(p.traffic) > 0) {
-                  parts.push(`流量重置为 ${(Number(p.traffic) / GB).toFixed(0)}GB（满额）`);
+                  parts.push(`叠加 ${(Number(p.traffic) / GB).toFixed(0)}GB（不清已用）`);
                 }
                 const nextExpiry = kind === 'EXPIRY' ? nextExpiryOf(p) : null;
                 return (
@@ -576,9 +615,11 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
 
             <div className="pt-2 text-xs text-muted-foreground">
               {kind === 'EXPIRY'
-                ? '续费后节点将自动恢复并重启（到期日顺延，流量回到所选套餐的满额，不会叠加）'
+                ? isTimeExpired
+                  ? '续费周期从原到期日起算（已过切换点的周期立即恢复满额流量）；过期超过一天的节点将被自动删除，请在宽限期内续费'
+                  : '续费后到期日顺延，当前流量保持不变；到期时系统自动将流量恢复为套餐满额'
                 : kind === 'TRAFFIC'
-                  ? '续费后节点将自动恢复并重启（仅流量回到所选套餐的满额，到期时间不变，不会叠加）'
+                  ? '流量续费将在当前额度上叠加所选套餐流量（不清除已用流量），到期时间不变；叠加流量随本周期结束自动清零'
                   : '续费后节点将自动恢复并重启（面板侧自动生效）'}
             </div>
             <div className="pt-1 text-xs text-muted-foreground">续费订单不支持申请退款（退款仅限购买订单），费用问题请联系客服。</div>

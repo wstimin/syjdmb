@@ -434,6 +434,10 @@ export class InboundService {
             streamSettings: JSON.stringify(streamSettings),
             trafficLimit: plan.traffic,
             expiryTime: plan.duration > 0 ? new Date(expiryTime) : null,
+            // 订阅周期制：周期基础额度=套餐流量；周期切换点=到期日（含流量且有时长才有切换语义）。
+            // 到期续费只顺延到期日不动切换点；周期切换时 cron 清零已用、额度回归 periodQuota。
+            periodQuota: plan.traffic,
+            trafficResetAt: plan.traffic > 0 && plan.duration > 0 ? new Date(expiryTime) : null,
             speedLimit: plan.speedLimit,
             relayEnabled: relay,
             relayTag: relay ? actualTag : null,
@@ -1154,6 +1158,7 @@ export class InboundService {
    * 定时任务：每分钟扫描所有活跃节点
    *  - 到期判定：expiryTime 已过 → 停用（面板端 + 本地）
    *  - 流量判定：累计流量 >= 套餐限额 → 停用
+   *  - 过期自动删除：时间到期后越过「一天续费宽限期」仍未续费 → 节点自动删除（只能重新购买套餐）
    * 判定通过后调用面板接口真正关闭客户端（bulkDisable），否则用户仍可连接。
    * 只有面板确认停用后才标记本地 EXPIRED；面板调用失败时保持 ACTIVE，下轮重试，
    * 避免「商城显示已停用、面板实际仍启用、用户继续使用」的状态错位。
@@ -1173,6 +1178,53 @@ export class InboundService {
         const expiresAt = inbound.expiryTime ? new Date(inbound.expiryTime).getTime() : null;
         const expired = expiresAt !== null && expiresAt <= now;
 
+        // —— 过期自动删除（订阅周期制·一天续费宽限期）——
+        // 时间到期后保留一天续费宽限期（期间可在商城「到期续费」，周期锚在原到期日）；越过宽限期
+        // 仍未续费 → 节点自动删除，只能重新购买套餐。门控：
+        //  - 仅 ACTIVE/EXPIRED（遍历快照含 SUSPENDED，但管理员暂停的节点不自动删除——不静默
+        //    抹掉管理动作；DELETED 不在本扫描范围）
+        //  - 仅时间维度：不限时节点（expiryTime=null）永不删除；超限耗尽但未到期的节点不删
+        //  - 有在途续费单（PAID/PROCESSING）绝不删：宽限期内付款、激活线程/autoActivate cron
+        //    可能正复活该节点（与下方 1311 的 renewInFlight 防护同理，删掉会截断已付的续费交付）
+        //  - 回写前重读最新状态：并发续费若把到期推进到未来 / 管理员暂停 / 已删除 → 放弃删
+        const RENEWAL_GRACE_MS = 24 * 3600 * 1000;
+        if (
+          expiresAt !== null &&
+          now - expiresAt > RENEWAL_GRACE_MS &&
+          (inbound.status === 'ACTIVE' || inbound.status === 'EXPIRED')
+        ) {
+          const graceRenew = await this.prisma.order.findFirst({
+            where: {
+              renewalOfInboundId: inbound.id,
+              status: { in: ['PAID', 'PROCESSING'] },
+            },
+            select: { id: true },
+          });
+          if (graceRenew) continue; // 有在途续费 → 不删，等它完结
+          const freshSt = await this.prisma.inbound.findUnique({
+            where: { id: inbound.id },
+            select: { status: true, expiryTime: true },
+          });
+          // 并发条件下重新核验：已被删除/管理员暂停 → 放弃；到期被续费推进到宽限期内或未来 → 放弃
+          if (
+            !freshSt ||
+            freshSt.status === 'DELETED' ||
+            freshSt.status === 'SUSPENDED' ||
+            (freshSt.expiryTime &&
+              now - new Date(freshSt.expiryTime).getTime() <= RENEWAL_GRACE_MS)
+          ) {
+            continue;
+          }
+          try {
+            await this.autoDeleteExpiredInbound(inbound);
+          } catch (e) {
+            this.logger.warn(
+              `Auto-delete failed for expired node ${inbound.email}: ${(e as Error).message}`,
+            );
+          }
+          continue;
+        }
+
         // —— 流量判定 ——
         const traffic = await this.serverService.getClientTraffic(
           inbound.serverId,
@@ -1183,6 +1235,68 @@ export class InboundService {
         const total = up + down;
         const limit = Number(inbound.trafficLimit);
         const limitExceeded = limit > 0 && total >= limit;
+
+        // —— 周期切换判定（订阅周期制：到周期切换点自动重置流量）——
+        // 提前续费只顺延到期日、不动切换点，因此「切换点已到 && 到期日已被推进到切换点之后」
+        // 说明用户为下个周期付了费：此刻自动清零已用、额度回归周期基础额度(periodQuota)、
+        // 保持启用，并把切换点推进到新的到期日。叠加的流量续费(TRAFFIC)也随本次切换清零、不跨周期。
+        // 到期未续费的节点走正常的「过期停用」分支（expiresAt <= switchAt，不满足切换条件）。
+        const switchAt = inbound.trafficResetAt ? new Date(inbound.trafficResetAt).getTime() : null;
+        if (
+          switchAt !== null &&
+          switchAt <= now &&
+          expiresAt !== null &&
+          expiresAt > switchAt && // 到期日被续费推进到了切换点之后 → 进入新周期
+          // 门控：仅 SUSPENDED（管理员暂停）/ DELETED 不允许被周期切换复活。
+          // ACTIVE 恒可切换；EXPIRED 也可能本周期已超限耗尽、由本 cron 标记过 ——
+          // 若用户已「到期续费」顺延了时间，切换点一到必须把耗尽节点清零并复活，
+          // 否则该节点在面板侧永远停用、本地永久 EXPIRED（用户付了时长却连不上）。
+          (inbound.status === 'ACTIVE' || inbound.status === 'EXPIRED')
+        ) {
+          const r = await this.serverService.resetClientTraffic(inbound.serverId, inbound.email);
+          if (!r?.success) {
+            // 面板清零失败：不推进切换点、不标记任何状态 —— 节点保持 ACTIVE 继续用，
+            // 下一分钟本分支重试，直到清零生效；绝不因此停用一个已付费在保的节点。
+            this.logger.warn(
+              `Period rollover reset failed for ${inbound.email}: ${r?.msg} (will retry next minute)`,
+            );
+            // 流量计数仍以面板为准同步一次，避免本地过度滞后
+            await this.prisma.inbound.update({
+              where: { id: inbound.id },
+              data: { totalTraffic: BigInt(total) },
+            });
+            continue;
+          }
+          // 【对抗复核原则同 1232】cron 用的 inbound 是 findMany 顶部的快照：遍历到本节点
+          // 前管理员可能已暂停（SUSPENDED）/ 用户已删除（DELETED）。暂停/删除的节点不允许被
+          // 周期切换「复活」——回写前重读最新 status，SUSPENDED/DELETED 则放弃（下一轮不再切
+          // 入，它们已无意义）。EXPIRED（超限耗尽标记）允许切换：这正是「到期续费后耗尽节点
+          // 到点自动复活」的路径。续费并发的微秒级时序不回读也能自愈：
+          // 若恰被 EXPIRY 拉开到期日，下一分钟 switchAt<=now 仍成立且 expiresAt>switchAt，
+          // 按新的到期日再回归一次，无副作用（清零幂等）。
+          const freshStatus = await this.prisma.inbound.findUnique({
+            where: { id: inbound.id },
+            select: { status: true },
+          });
+          if (
+            !freshStatus ||
+            freshStatus.status === 'SUSPENDED' ||
+            freshStatus.status === 'DELETED'
+          )
+            continue;
+          await this.prisma.inbound.update({
+            where: { id: inbound.id },
+            data: {
+              totalTraffic: BigInt(0),
+              trafficLimit: BigInt(inbound.periodQuota || 0), // 回归周期基础额度（叠加量作废）
+              trafficResetAt: expiresAt ? new Date(expiresAt) : null, // 推进到当前到期日
+            },
+          });
+          this.logger.log(
+            `Node ${inbound.email} period rolled over: traffic reset to ${inbound.periodQuota || 0} bytes, next switch at ${new Date(expiresAt)}`,
+          );
+          continue;
+        }
 
         // —— 判定：到期或超流量 → 停用 ——
         if (expired || (limitExceeded && inbound.status !== 'EXPIRED')) {
@@ -1341,6 +1455,42 @@ export class InboundService {
         );
       }
     }
+  }
+
+  /**
+   * 过期自动删除（updateTraffic cron 调用）：时间到期并越过「一天续费宽限期」仍未续费的节点
+   * 从商城移除（本地置 DELETED，用户节点列表即刻消失；面板客户端/入站一并清除）。
+   * 与用户主动删除（delete）同款清理流程，但面板卸载失败不阻断本地删除 —— 节点在面板侧早已
+   * 停用（cron 到期停用），本地置 DELETED 即完成「商城消失、只能重新购买套餐」的交付；
+   * 残留面板行由既有自愈机制兜底，不因面板抖动让已过期的节点无限残留。
+   */
+  private async autoDeleteExpiredInbound(inbound: any) {
+    if (inbound.relayEnabled) {
+      try {
+        await this.unmountRelayFromNode(inbound.serverId, inbound);
+      } catch (e) {
+        this.logger.warn(
+          `Auto-delete relay unmount failed for ${inbound.email}: ${(e as Error).message}`,
+        );
+      }
+    }
+    try {
+      await this.serverService.deleteClient(inbound.serverId, inbound.email);
+    } catch (e) {
+      this.logger.warn(`Auto-delete XUI client failed for ${inbound.email}: ${(e as Error).message}`);
+    }
+    try {
+      await this.serverService.deleteInbound(inbound.serverId, inbound.inboundId);
+    } catch (e) {
+      this.logger.warn(`Auto-delete XUI inbound failed for ${inbound.email}: ${(e as Error).message}`);
+    }
+    await this.prisma.inbound.update({
+      where: { id: inbound.id },
+      data: { status: 'DELETED' },
+    });
+    this.logger.log(
+      `Node ${inbound.email} auto-deleted (expired > 1 day without renewal, repurchase required)`,
+    );
   }
 
   // ==========================================

@@ -39,7 +39,7 @@ export class OrderController {
       relaySocksUser?: string;
       relaySocksPass?: string;
       renewalOfInboundId?: number; // 续费单：对已有节点续期/续流量
-      renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：到期续费 / 流量重置（不传=旧版叠加行为）
+      renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：EXPIRY=到期续费（未到期顺延/已到期宽限期内按原到期日开新周期）；TRAFFIC=流量续费（额度叠加）；不传=旧版叠加行为
       couponCode?: string;         // 优惠券码（实付按券后金额，amount 恒为原价）
     },
   ) {

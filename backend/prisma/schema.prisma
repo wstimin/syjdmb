@@ -171,9 +171,14 @@ model Order {
   renewalOfInboundId Int?  // 目标节点（Inbound.id），必须属于下单用户
   renewalOfInbound   Inbound? @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
   renewalAppliedAt   DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
-  // 续费类型：EXPIRY=到期续费（到期日顺延 + 流量按套餐重置为满额，开新周期不叠加）、
-  // TRAFFIC=流量重置（仅流量重置为满额，到期时间不动）；NULL=旧版叠加续费（历史订单兼容）
+  // 续费类型：EXPIRY=到期续费（到期日顺延；已到期节点=新周期锚在原到期日、切换点已过激活即恢复
+  // 满额；过期超过一天的节点被 cron 自动删除）、TRAFFIC=流量续费（在当前流量额度上叠加，不清
+  // 已用，叠加量随周期切换清零）；NULL=旧版叠加续费（历史订单兼容）
   renewType          RenewType?
+  // 续费在本地提交时是否伴随「周期重置」（已到期节点的 EXPIRY 续费：周期切换点已过 → 激活即按
+  // 周期切换语义清零已用+复活+额度回归周期基础额度；激活时决定）。
+  // 内存/崩溃后由 settle 对账读取：true 表示需要面板清零已用+复活+额度回归周期基础额度。
+  renewalResetTraffic Boolean  @default(false)
   // ⚠️ 防重部分唯一索引 "Order_renewal_dup_key"（userId, renewalOfInboundId, renewType，
   // NULLS NOT DISTINCT：NULL renewType 与自身互为重复、与 EXPIRY/TRAFFIC 区分）
   // 只在手写迁移 20260910000001_add_renewal_dup_unique（全新库）与
@@ -201,8 +206,12 @@ enum OrderStatus {
   CANCELLED
 }
 
-// 续费类型：EXPIRY=到期续费（到期日顺延，套餐含流量时流量重置为新周期额度）、
-// TRAFFIC=流量重置（仅重置流量额度，到期时间不动）。两种都不叠加、不累加。
+// 订阅周期制：
+// - EXPIRY=到期续费：到期日顺延。未到期节点=当前周期流量不动（到周期切换点由 cron 自动重置回
+//   套餐满额）；已到期节点=新周期锚在原到期日（新到期日=原到期日+时长），切换点已过 → 激活即按
+//   周期切换恢复满额。过期超过一天的节点被 cron 自动删除，只能重新购买套餐（一天续费宽限期）。
+// - TRAFFIC=流量续费：在当前流量额度上叠加套餐流量，不清已用；叠加量随本周期结束（周期切换）清零。
+// 周期切换点 = Inbound.trafficResetAt（创建时为到期日；周期切换后推进到新到期日）。
 enum RenewType {
   EXPIRY
   TRAFFIC
@@ -234,7 +243,17 @@ model Inbound {
   settings    String         // JSON - connection settings
   streamSettings String?     // JSON - transport settings
   totalTraffic BigInt        @default(0) // bytes used
-  trafficLimit BigInt        @default(0) // 0 = unlimited
+  trafficLimit BigInt        @default(0) // 当前启用额度 = 周期基础额度(periodQuota) + 流量续费叠加量；0 = unlimited
+  // 订阅周期制：periodQuota = 每个订阅周期的套餐额度（购买套餐 / 到期续费激活「开新周期」时写入；
+  // 已到期节点的新周期锚在原到期日、切换点已过即按周期切换恢复）。
+  // 「流量续费」在 trafficLimit 上叠加（不清已用）；到周期切换点 cron 自动清零已用、并把
+  // trafficLimit 回归 periodQuota（叠加量随周期结束清零、不跨周期）。0 = 不限流量（无周期概念）
+  periodQuota    BigInt       @default(0)
+  // 周期切换点：下一个自动重置流量的时刻。创建时=到期日；未到期「到期续费」只顺延到期日、不动它，
+  // 因此提前续费后到达原到期日时 cron 才自动重置流量；已到期节点激活「开新周期」时切换点已过、
+  // 激活即按周期切换恢复，并推进为当前到期日。
+  // 无流量/纯时长不限流量节点为 null（无自动重置）。
+  trafficResetAt DateTime?
   expiryTime  DateTime?
   speedLimit  Int?           // Mbps
   relayEnabled Boolean       @default(false) // 该节点出站是否改为用户 SOCKS 中转

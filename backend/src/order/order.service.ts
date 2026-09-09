@@ -43,7 +43,7 @@ export class OrderService {
     relaySocksUser?: string;
     relaySocksPass?: string;
     renewalOfInboundId?: number; // 续费单：对已有节点续期/续流量（激活时走 bulkAdjust，不建新节点）
-    renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：到期续费(EXPIRY) / 流量重置(TRAFFIC)；不传=旧版叠加行为
+    renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：EXPIRY=到期续费（顺延/开新周期）；TRAFFIC=流量续费（额度叠加）；不传=旧版叠加行为
     couponCode?: string;      // 优惠券码（下单即占名额，取消时释放）
   }) {
     const { userId, planId } = params;
@@ -61,7 +61,9 @@ export class OrderService {
     // ---- 续费模式：对已有节点续期/续流量（激活时 panel bulkAdjust/重置，不建新节点）----
     const renewalOfInboundId = params.renewalOfInboundId;
     if (renewalOfInboundId) {
-      // 续费类型校验：只允许 EXPIRY（到期续费）或 TRAFFIC（流量重置）
+      // 订阅周期制常量：到期后保留一天续费宽限期，越过宽限期节点被 cron 自动删除（只能重新购买套餐）
+      const DAY_MS = 24 * 3600 * 1000;
+      // 续费类型校验：只允许 EXPIRY（到期续费）或 TRAFFIC（流量续费=额度叠加）
       const renewType = params.renewType;
       if (renewType && renewType !== 'EXPIRY' && renewType !== 'TRAFFIC') {
         throw new BadRequestException('无效的续费类型');
@@ -74,14 +76,19 @@ export class OrderService {
       if (inbound.status === 'SUSPENDED') {
         throw new BadRequestException('该节点已被管理员暂停，暂无法续费，请联系客服');
       }
+      // 【订阅周期制·过期宽限期】时间到期后保留一天续费宽限期；越过宽限期的节点由 cron 自动删除，
+      // 只能重新购买套餐。所有续费类型统一拦截（旧版叠加续费同此门：过期超一天补续没有可交付内容）。
+      if (inbound.expiryTime && new Date(inbound.expiryTime).getTime() + DAY_MS < Date.now()) {
+        throw new BadRequestException('该节点已过期超过一天，过期节点仅保留一天续费宽限期，之后将被自动删除；请重新购买套餐');
+      }
 
-      // —— 按续费类型校验（用户确认的「开新周期、不叠加」语义）——
+      // —— 按续费类型校验（订阅周期制）——
       const wantsExpiry = renewType === 'EXPIRY';
       const wantsTraffic = renewType === 'TRAFFIC';
       if (wantsExpiry) {
         // 到期续费：套餐必须含时长，节点必须限期（不限时节点无可顺延）
         if (!(plan.duration > 0)) {
-          throw new BadRequestException('该套餐不含时长，请选择「流量重置」续费');
+          throw new BadRequestException('该套餐不含时长，请选择「流量续费」续费');
         }
         if (!inbound.expiryTime) {
           throw new BadRequestException('该节点为不限时套餐，无需续期');
@@ -90,22 +97,23 @@ export class OrderService {
         if (Number(plan.traffic) > 0 && (!inbound.trafficLimit || Number(inbound.trafficLimit) <= 0)) {
           throw new BadRequestException('该节点为不限流量套餐，无法兑换套餐内的流量部分');
         }
-        // 已过期较久：到期日顺延后的新到期日仍可能在过去 → 等于白付钱，拦截并引导购买新节点
-        const nextExpiry = new Date(
-          new Date(inbound.expiryTime).getTime() + Number(plan.duration) * 24 * 3600 * 1000,
-        );
-        if (nextExpiry.getTime() <= Date.now()) {
-          throw new BadRequestException('该节点已过期较久，续费后仍处于已过期状态，请选择「购买新节点」');
+        // 【订阅周期制·严格周期锚】已到期节点仅保留「一天续费宽限期」（上方已统一拦截超期）。
+        // 宽限期内续费的周期锚在「原到期日」：新到期日 = 原到期日 + 套餐时长（不因续费时刻顺延）；
+        // 周期切换点（原到期日）已过 → 激活时直接按周期切换语义恢复满额流量。
+        const expMs = new Date(inbound.expiryTime).getTime();
+        // 极端兜底：原到期日落后超过一个完整周期 → 顺延后仍在过去，无可交付，拒绝补续
+        if (new Date(expMs + Number(plan.duration) * DAY_MS).getTime() <= Date.now()) {
+          throw new BadRequestException('该节点已过期超过一个完整周期，无法通过续费恢复，请重新购买套餐');
         }
       } else if (wantsTraffic) {
-        // 流量重置：套餐必须含流量，节点必须限流量（不限流量节点无可重置）
+        // 流量续费：套餐必须含流量，节点必须限流量（不限流量节点无可叠加）
         if (!(Number(plan.traffic) > 0)) {
           throw new BadRequestException('该套餐不含流量，请选择「到期续费」');
         }
         if (!inbound.trafficLimit || Number(inbound.trafficLimit) <= 0) {
           throw new BadRequestException('该节点为不限流量套餐，无需充值流量');
         }
-        // 已到期节点重置流量没有意义（时间维度仍停用）→ 引导走到期续费
+        // 已到期节点叠加流量没有意义（时间维度仍停用）→ 引导走到期续费
         if (inbound.expiryTime && new Date(inbound.expiryTime).getTime() <= Date.now()) {
           throw new BadRequestException('该节点已到期，请选择「到期续费」');
         }
@@ -533,8 +541,11 @@ export class OrderService {
       return this.settleRenewalIfApplied(order, inbound);
     }
 
-    // 新周期续费（EXPIRY/TRAFFIC）：到期日顺延 / 流量重置为套餐额度（绝对覆盖、不叠加）。
-    // 与旧版叠加逻辑分离，避免新语义污染旧的加法公式（回滚/对账按各自语义实现）。
+    // 订阅周期制续费（EXPIRY/TRAFFIC，用户确认的「周期制」语义，实现见 activateRenewalNewCycle）：
+    // - EXPIRY：到期日顺延。未到期=当前周期流量不变、到周期切换点（原到期日）cron 自动清零并
+    //   回归套餐满额；已到期（宽限期内）=新周期锚在原到期日、切换点已过 → 激活即按周期切换恢复满额。
+    // - TRAFFIC：在当前额度上叠加套餐流量（不清已用、叠加量随周期切换清零）。
+    // 过期超过一天的到期节点已被 cron 自动删除，只能重新购买套餐（见 inbound.updateTraffic）。
     if (order.renewType === 'EXPIRY' || order.renewType === 'TRAFFIC') {
       return this.activateRenewalNewCycle(order, inbound);
     }
@@ -618,112 +629,145 @@ export class OrderService {
   }
 
   /**
-   * 新周期续费激活（renewType=EXPIRY/TRAFFIC，用户确认的「开新周期、不叠加」语义）：
-   * - EXPIRY：到期日顺延 plan.duration 天（以原到期日为基准，与面板 bulkAdjust 公式完全一致，
-   *   保证对账互通）；套餐含流量且节点限流量 → 流量额度【绝对覆盖】为 plan.traffic（不叠加），
-   *   已用清零。
-   * - TRAFFIC：到期时间不动；流量额度【绝对覆盖】为 plan.traffic，已用清零。
+   * 订阅周期制续费激活（renewType=EXPIRY/TRAFFIC，用户确认的「周期制」语义）：
+   * - EXPIRY（到期续费）：
+   *     · 节点未到期：到期日顺延 plan.duration 天，流量/额度/周期切换点一概不动 —— 当前
+   *      周期内流量不变；到「周期切换点」（原到期日）由 updateTraffic cron 自动清零已用、
+   *      额度回归周期基础（periodQuota）、保持启用。提前续费不提前重置。
+   *     · 节点已到期（宽限期内）：新周期锚在「原到期日」→ 到期日 = 原到期日 + duration。
+   *      周期切换点（原到期日）已过 → 激活即按周期切换语义恢复流量（已用清零、额度 = 周期
+   *      基础 periodQuota）、节点复活，切换点推进为新的到期日。过期超过一天的节点已被 cron
+   *      自动删除，只能重新购买套餐。
+   * - TRAFFIC（流量续费）：到期时间不动；在当前流量额度上【叠加】plan.traffic（不清已用），
+   *   叠加量随本周期结束（周期切换）清零、不跨周期。
    *
-   * 面板侧分两步：
-   * 1) bulkAdjust(addDays, addBytes)：一次性完成到期顺延 + 配额补足。面板 quota（total）只能增
-   *    不能减，且本地 trafficLimit 才是额度权威（超限停用由本地 cron 判定并 bulkDisable），因此
-   *    仅当 面板 quota < plan.traffic 时按差量补足（防止面板早于本地 cron 切断）；差量 ≤ 0 不调。
-   *    注意 addDays/addBytes 都为 0 时 bulkAdjust 会返回「no adjustment specified」错误 → 跳过不调。
-   * 2) bulkResetTraffic：清零 up/down 并重新启用（enable=true）——对已被面板停用/耗尽的客户端
-   *    自动复活并传播到节点。
+   * 面板侧：
+   * 1) bulkAdjust(addDays, addBytes)：顺延到期日 + 配额叠加/补足。面板 quota（total）只能增
+   *    不能减，且本地 trafficLimit 才是额度权威，因此：
+   *     - EXPIRY：只加天数（已到期开新周期按「面板当前到期 → 原到期日+duration」差值补天数）；
+   *     - TRAFFIC：只加字节（addBytes = plan.traffic，面板天然叠加）
+   *    注意 addDays/addBytes 都为 0 时 bulkAdjust 会报「no adjustment specified」→ 跳过不调。
+   * 2) 仅已到期开新周期：bulkResetTraffic 清零已用 + enable=true 复活。
    *
-   * 崩溃安全与旧版一致：本地先提交（+renewalAppliedAt）→ 面板调用 → 失败回滚快照。
+   * 崩溃安全与旧版一致：本地先提交（+renewalAppliedAt & renewalResetTraffic）→ 面板调用 →
+   * 失败交 settle 按「面板当前值 vs 本地目标」差值对账（diff 幂等），绝不回滚本地、
+   * 绝不对同一订单重复整量加量。
    */
   private async activateRenewalNewCycle(order: any, inbound: any) {
     const plan = order.plan;
     const renewType: 'EXPIRY' | 'TRAFFIC' = order.renewType;
-    // 节点是否限流量（本地 trafficLimit 是额度权威）
-    const isLimited = !!inbound.trafficLimit && Number(inbound.trafficLimit) > 0;
-    // 套餐含流量 → 额度【绝对覆盖】为套餐额度；纯时长套餐 → 额度保持原值
-    const trafficTarget: bigint | null = Number(plan.traffic) > 0 ? BigInt(plan.traffic) : null;
+    // 周期基础额度（本地权威）：已到期开新周期 / 周期切换回退到它；0 = 不限流量（无周期概念）
+    const periodQuota = Number(inbound.periodQuota || 0);
     const wantsExpiry = renewType === 'EXPIRY' && Number(plan.duration) > 0 && inbound.expiryTime;
-    // 【major#554】流量维度处理（重置已用 + 复活）：
-    //  - TRAFFIC（流量重置）：套餐必须含流量且节点限流量（createOrder 已拦）
-    //  - EXPIRY（到期续费）：套餐含流量 → 覆盖额度；或节点限流量但套餐不含流量（纯时长套餐）
-    //    → 额度保持、仅清零已用并复活 —— 否则限流量节点纯时长续费后「已用仍 ≥ 额度」、
-    //    Node 继续停用，用户买了时长却连不上（确认语义「EXPIRY = 顺延 + 流量回满」）
-    const wantsTraffic =
-      renewType === 'TRAFFIC' ? trafficTarget !== null && isLimited : trafficTarget !== null || isLimited;
+    // TRAFFIC 必须套餐含流量且节点限流量（createOrder 已拦，这里防御）
+    const wantsTraffic = renewType === 'TRAFFIC' && Number(plan.traffic) > 0 && periodQuota > 0;
     if (!wantsExpiry && !wantsTraffic) {
       await this.prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });
       throw new BadRequestException('该套餐无可加量内容，续费失败');
     }
-
-    const addDays = wantsExpiry ? Number(plan.duration) : 0;
-    const newExpiry: Date | null = wantsExpiry
-      ? new Date(new Date(inbound.expiryTime).getTime() + addDays * 24 * 3600 * 1000)
-      : inbound.expiryTime;
-    // 【minor#550】激活时刻复核：下单之后节点可能已过期很久（或状态变化），顺延后仍过期 = 白付 → 拒绝
-    // 注：newExpiry 声明为 Date|null（三元 false 分支是 inbound.expiryTime 可为 null）；
-    // wantsExpiry 为真时 true 分支恒为非空 Date，这里用 `newExpiry &&` 做严格空值收窄。
-    if (wantsExpiry && newExpiry && newExpiry.getTime() <= Date.now()) {
-      await this.prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });
-      throw new BadRequestException('该节点已过期较久，续费后仍处于已过期状态，请联系客服或购买新节点');
-    }
-    // 【对抗复核确认】TRAFFIC 激活时刻的到期复核：下单时节点有效，但支付窗口（微信约
-    // 2h / 支付宝约 30m）内可能已到期。到期后重置流量毫无意义 —— 下一分钟 updateTraffic
-    // cron 会按本地到期日判定超期并打回 EXPIRED（用户白付），面板侧复活也被再次停用。
-    // 与 EXPIRY 分支同标准：到期即拒绝（置 FAILED、人工退款处理），不碰面板。
+    // 【对抗复核确认】TRAFFIC 激活时刻到期复核：下单后支付窗口内可能已到期。到期后叠加流量
+    // 毫无意义 —— 下一分钟 cron 会按本地到期日打回 EXPIRED（用户白付）。与旧版同标准。
     if (
       wantsTraffic &&
       !wantsExpiry &&
       inbound.expiryTime &&
       new Date(inbound.expiryTime).getTime() <= Date.now()
     ) {
-      // 【对抗复核 F7】纠正提示文案：此处节点只是「支付窗口内刚到期」，到期续费（EXPIRY）
-      // 仍能把它顺延救活（新到期在未来）—— 不该指引「购买新节点」。改为指向更省钱正确的
-      // 「到期续费」；仅当 EXPIRY 分支判定「过期太久、顺延后仍过期」时（上方 664 行）才需
-      // 求助客服/买新节点。
       await this.prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });
-      throw new BadRequestException('该节点已到期，流量重置无法恢复到期状态，请选择「到期续费」顺延节点');
+      throw new BadRequestException('该节点已到期，流量续费无法恢复到期状态，请选择「到期续费」顺延节点');
     }
-    // 流量额度绝对覆盖为套餐额度（开新周期，不叠加、不累加）；纯时长续费不写额度
-    const newLimit: bigint | null = trafficTarget;
 
-    // 1) 本地先提交（崩溃安全：提交后即使面板调用前进程死掉，cron 也能靠 renewalAppliedAt
-    //    对账，settle 按面板差值补齐后完结 —— 无需本地回滚快照）。
+    const DAY_MS = 24 * 3600 * 1000;
+    const now = Date.now();
+
+    // —— 本地目标（权威）——
+    let newExpiry: Date | null = inbound.expiryTime; // 未到期=原到期日顺延；已到期=原到期日+duration（严格周期锚）
+    let newLimit: bigint | null = null;              // 需要变才写；null=额度不变
+    let periodQuotaUpdate: bigint | null = null;     // 下一周期基础额度（套餐含流量时更新）
+    let resetLocalUsed = false;                      // 本地已用清零（仅已到期：切换点已过→按周期切换恢复）
+    let needsPanelReset = false;                     // 需面板清零已用 + 复活（同左）
+    let addDays = 0;
+    let addBytes = 0;
+
+    if (wantsExpiry) {
+      const oldExpiryMs = new Date(inbound.expiryTime).getTime();
+      const expiredNow = oldExpiryMs <= now;
+      if (expiredNow) {
+        // 【已到期·宽限期内】严格周期锚：新周期从「原到期日」起算（到期日不顺延续费时刻到了续费
+        // 当天），新到期日 = 原到期日 + duration。周期切换点（原到期日）已过 → 本轮激活即按周期
+        // 切换语义恢复——清零已用、额度 = 周期基础、面板复活。不是「续费生效即开新周期」。
+        // （过期超过一天的节点已被 cron 自动删除，只有宽限期内的已到期节点能走到这里）
+        newExpiry = new Date(oldExpiryMs + Number(plan.duration) * DAY_MS);
+        resetLocalUsed = true;
+        needsPanelReset = true; // 面板清零已用 + enable=true 复活
+        if (periodQuota > 0) newLimit = BigInt(periodQuota);
+      } else {
+        // 未到期 → 原到期日顺延；当前周期流量不变（到切换点由 cron 自动重置）
+        newExpiry = new Date(oldExpiryMs + Number(plan.duration) * DAY_MS);
+      }
+      // 套餐含流量 → 更新下一周期基础额度为套餐额度（未到期续费也更新：新周期按新套餐回满）
+      if (Number(plan.traffic) > 0 && periodQuota > 0) {
+        periodQuotaUpdate = BigInt(plan.traffic);
+        // 已到期开新周期时 newLimit 直接用新套餐额度（上一 if 已在已到期分支写入 periodQuota）
+        if (expiredNow) newLimit = BigInt(plan.traffic);
+      }
+      // addDays：未到期 = duration；已到期 = 面板当前到期 → 新到期日（原到期日+duration）的差值，
+      // 修正面板侧漂移。读面板失败保守按 duration（settle 会对账修正）。
+      if (expiredNow) {
+        try {
+          const t = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
+          const panelExpiryMs = Number(t?.obj?.expiryTime || 0);
+          if (panelExpiryMs > 0) {
+            const diffMs = newExpiry.getTime() - panelExpiryMs;
+            addDays = Math.max(0, Math.ceil(diffMs / DAY_MS));
+          } else addDays = Number(plan.duration);
+          // 面板配额补足到周期基础：面板 total < periodQuota 时面板会过早切断（本地是权威，
+          // 但面板只在 total 用完后才停用，补足避免面板早于本地 cron 切断）
+          if (periodQuota > 0) {
+            const panelTotal = Number(t?.obj?.total || 0);
+            if (panelTotal < periodQuota) addBytes = periodQuota - panelTotal;
+          }
+        } catch {
+          addDays = Number(plan.duration);
+          if (periodQuota > 0) addBytes = periodQuota;
+        }
+      } else {
+        addDays = Number(plan.duration);
+      }
+    } else {
+      // TRAFFIC：额度叠加 plan.traffic（不清已用；叠加量随周期切换清零）
+      newLimit = BigInt(Number(inbound.trafficLimit || 0) + Number(plan.traffic));
+      addBytes = Number(plan.traffic);
+    }
+
+    // 1) 本地先提交（崩溃安全：提交后即使面板调用前进程死掉，cron 也能靠 renewalAppliedAt 对账）
     await this.prisma.$transaction([
       this.prisma.inbound.update({
         where: { id: inbound.id },
         data: {
-          ...(newExpiry ? { expiryTime: newExpiry } : {}),
+          ...(wantsExpiry && newExpiry ? { expiryTime: newExpiry } : {}),
           ...(newLimit !== null ? { trafficLimit: newLimit } : {}),
-          // 【minor#575】仅当确实要重置流量维度时才清零已用：
-          // 纯时长且节点不限流量时，local totalTraffic 由 cron 以面板 up+down 为准，
-          // 人为清零也会被下轮 cron 覆盖回来，不写更干净
-          ...(wantsTraffic ? { totalTraffic: BigInt(0) } : {}),
-          status: 'ACTIVE',        // EXPIRED→ACTIVE（复活）；ACTIVE 保持不变
-          // 【minor#578】到期提醒档位仅当到期时间实际变化才重置（纯流量重置不动提醒节奏）
+          ...(periodQuotaUpdate !== null ? { periodQuota: periodQuotaUpdate } : {}),
+          // 仅已到期开新周期清零已用；未到期续费 / TRAFFIC 叠加都不动已用
+          ...(resetLocalUsed ? { totalTraffic: BigInt(0) } : {}),
+          // 已到期开新周期：周期切换点 = 新到期日（下个周期到点再自动重置）
+          ...(needsPanelReset && newExpiry ? { trafficResetAt: newExpiry } : {}),
+          status: 'ACTIVE', // EXPIRED→ACTIVE（复活）；ACTIVE 保持不变
+          // 【minor#578】到期提醒档位仅当到期时间实际变化才重置（纯流量续费不动提醒节奏）
           ...(wantsExpiry ? { expiryReminderStage: 0 } : {}),
         },
       }),
       this.prisma.order.update({
         where: { id: order.id },
-        data: { renewalAppliedAt: new Date() },
+        data: {
+          renewalAppliedAt: new Date(),
+          // settle 对账区分「已到期开新周期需清零+复活」/「未到期只顺延」/「TRAFFIC 叠加」
+          renewalResetTraffic: needsPanelReset,
+        },
       }),
     ]);
 
-    // 面板配额补足：bulkAdjust 只能加不能减 → 读面板当前 quota（obj.total），只按需补差量。
-    // 读失败时保守按整额补足（保证面板必应 ≥ 本地额度；bulkAdjust 加法可安全重入/幂等）。
-    // 仅「套餐含流量 = 要覆盖额度」才补配额；纯时长续费只重置已用，不动面板配额。
-    let addBytes = 0;
-    if (trafficTarget !== null && wantsTraffic) {
-      try {
-        const t = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
-        const panelTotal = Number(t?.obj?.total || 0);
-        const delta = Number(plan.traffic) - panelTotal;
-        if (delta > 0) addBytes = delta;
-      } catch {
-        addBytes = Number(plan.traffic);
-      }
-    }
-
-    // 2) 面板加量（到期顺延 + 配额补足；两者都无操作时跳过 —— bulkAdjust 对 0/0 会报错）
+    // 2) 面板加量（到期顺延 + 配额叠加/补足；两者都无操作时跳过 —— bulkAdjust 对 0/0 会报错）
     if (addDays > 0 || addBytes > 0) {
       const panelRes = await this.serverService.adjustClientQuota(
         inbound.serverId,
@@ -747,8 +791,8 @@ export class OrderService {
       }
     }
 
-    // 3) 清零已用流量并重新启用（EXPIRY 含流量 / TRAFFIC / 限流量纯时长都走这里；面板自动复活耗尽客户端）
-    if (wantsTraffic) {
+    // 3) 仅已到期开新周期：清零已用流量并重新启用（面板自动复活耗尽客户端）
+    if (needsPanelReset) {
       const resetRes = await this.serverService.resetClientTraffic(inbound.serverId, inbound.email);
       if (!resetRes?.success) {
         // 清零失败：本地已提交、面板配额（如需）已加 —— 不要回滚（避免重复加量）。
@@ -768,8 +812,10 @@ export class OrderService {
     const freshInbound = await this.prisma.inbound.findUnique({ where: { id: inbound.id } });
     this.logger.log(
       `Renewal applied order ${order.orderNo}: type=${renewType} +${addDays}d / quota→${
-        newLimit !== null ? Number(plan.traffic) : '不变'
-      } / ${wantsTraffic ? 'used→0' : 'used 不变'} on ${inbound.email}`,
+        newLimit !== null ? Number(newLimit) : '不变'
+      } / ${resetLocalUsed ? 'used→0（开新周期）' : 'used 不变'} / periodQuota→${
+        periodQuotaUpdate !== null ? Number(periodQuotaUpdate) : '不变'
+      } on ${inbound.email}`,
     );
     return { inbound: freshInbound, order: done };
   }
@@ -786,52 +832,71 @@ export class OrderService {
     let obj = traffic?.obj || {}; // 对账中可能重读面板刷新（repair 后），用 let
     const plan = order.plan;
 
-    // ---- 新周期续费（renewType 已落库）：维度核对 + 对缺失的幂等面板操作自愈 ----
+    // ---- 订阅周期制续费（renewType=EXPIRY/TRAFFIC）：维度核对 + 对缺失的幂等面板操作自愈 ----
+    // 对账语义必须与 activateRenewalNewCycle 完全同构，否则同一订单两个路径的判定会打架。
+    // 覆盖三类：
+    //  · EXPIRY 未到期（renewalResetTraffic=false）：只核对到期维度 —— 面板到期 ≥ 本地顺延后
+    //    到期。流量维度由周期切换 cron 负责（提前续费不提前重置），settle 绝不碰流量/配额。
+    //  · EXPIRY 已到期开新周期（renewalResetTraffic=true）：到期需追到本地新到期（原到期日+duration）、
+    //    配额应 ≥ 本地周期基础额度（防面板早切）、已用必须清零 + enable=true（复活）。
+    //  · TRAFFIC 叠加：配额应 ≥ 本地额度-容差（面板天然累加，叠加后必满足）；【绝不 reset】——
+    //    叠加不清已用，若在此清零会把用户本周期已用流量抄没（与 activate 同构）。
     if (order.renewType === 'EXPIRY' || order.renewType === 'TRAFFIC') {
-      // 与 activateRenewalNewCycle 完全同构（major#554：限流量节点上的纯时长 EXPIRY 也要
-      // 清零已用+复活；TRAFFIC 必须套餐含流量且节点限流量）。对账语义必须和激活一致，
-      // 否则同一订单两个路径对「是否该处理流量维度」的判定会打架。
-      const isLimited = !!inbound.trafficLimit && Number(inbound.trafficLimit) > 0;
-      const trafficTarget = Number(plan.traffic) > 0;
-      const wantsExpiry =
-        order.renewType === 'EXPIRY' && Number(plan.duration) > 0 && inbound.expiryTime;
-      const wantsTraffic =
-        order.renewType === 'TRAFFIC' ? trafficTarget && isLimited : trafficTarget || isLimited;
-      // 是否需要把面板配额补足到本地额度（仅套餐含流量；纯时长续费只重置已用、不动配额）
-      const wantsTop = wantsTraffic && trafficTarget;
-
       const DAY_MS = 24 * 3600 * 1000;
       const slack = 10 * 1024 * 1024; // 10MB 容差吸收对账瞬间的并发用量
       const usedOf = () => Number(obj.up || 0) + Number(obj.down || 0);
-      // 到期维度：面板到期时间（ms，驼峰键，见 xray/client_traffic.go）应 ≥ 本地续后到期
-      // 流量维度：面板配额 + 已用 应 ≥ 本地额度 - 容差。本地额度是权威；面板配额只会
-      // 因补足而 ≥ 本地额度（不叠加），故配额足够即视为「已生效」。
+      const isTraffic = order.renewType === 'TRAFFIC';
+      const wantsExpiry =
+        order.renewType === 'EXPIRY' && Number(plan.duration) > 0 && inbound.expiryTime;
+      // 已到期开新周期：激活时为 EXPIRED 节点重生 —— 需面板清零已用+复活+额度回归周期基础
+      const resetCycle = wantsExpiry && order.renewalResetTraffic === true;
+      // 到期维度：面板到期时间（ms，驼峰键，见 xray/client_traffic.go）应 ≥ 本地续后到期。
+      // 【同 legacy #F4 守卫】面板该维度为无限（0）时 3xui 的 BulkAdjust 直接跳过且返 success，
+      // 面板永不按到期停用 → 该维度视为已满足（本地 cron 仍是到期/流量停用的唯一权威）。
       const expOk = () =>
-        !wantsExpiry || Number(obj.expiryTime || 0) >= new Date(inbound.expiryTime).getTime();
-      // 流量维度达标：只有「需要覆盖额度」才要求 面板配额 ≥ 本地额度-容差；
-      // 纯时长/不限套餐（wantsTop=false）无配额预期，视为达标（只由 wantsTraffic 决定清零复活）。
-      // 【对抗复核 #726 确认】绝不能 + usedOf()：升级续费崩溃于「adjust 落地前」时，
-      // 重置尚未执行、面板配额仍是旧额度；把旧周期的 up+down 计入达标会把缺口填平，
-      // 令 trfOk 恒真 → 只走首轮分支的幂等 reset 就 COMPLETED，配额差量被永久跳过，
-      // 用户付升级钱却在旧额度处被面板切断、本地还按新额度保持 ACTIVE（差额白丢）。
+        !wantsExpiry ||
+        Number(obj.expiryTime || 0) === 0 ||
+        Number(obj.expiryTime || 0) >= new Date(inbound.expiryTime).getTime();
+      // 流量维度：TRAFFIC 叠加 / 开新周期都要求面板配额 ≥ 本地额度-容差。本地额度是权威。
+      // 【对抗复核 #726 确认】绝不能 + usedOf()：开新周期崩溃于「adjust 落地前」时重置尚未
+      // 执行、面板配额仍是旧额度；把旧周期 up+down 计入达标会填平缺口使 trfOk 恒真 → 只走
+      // 幂等 reset 就 COMPLETED，配额差量被永久跳过（用户付钱却在旧额度处被面板切断）。
+      // 【同 legacy #F4 守卫】面板配额无限（total=0）同理视为已满足。
       // 已生效判定必须与 #763 修复公式同构：仅以面板配额 obj.total 对比本地权威额度。
-      const trfOk = () =>
-        !wantsTop || Number(obj.total || 0) >= Number(inbound.trafficLimit) - slack;
+      const trfOk = () => {
+        if (!isTraffic && !resetCycle) return true;
+        const pt = Number(obj.total || 0);
+        if (pt === 0) return true;
+        return pt >= Number(inbound.trafficLimit) - slack;
+      };
+      // 重置维度（仅开新周期）：已用清零 + enable=true；expOk/trfOk 达标但 reset 缺失 =
+      // 崩溃恰在 adjust 之后、reset 之前 → 需补一次幂等 reset 才能交付「已到期复活」的承诺
+      const resetOk = () => !resetCycle || (usedOf() <= slack && obj.enable !== false);
+      // 流量续费叠加：面板配额可能未加到本地额度 → 差量修复（加法幂等）。注意本地额度已在
+      // 激活时 +plan.traffic；面板 quota 由 addBytes=plan.traffic 同步累加，差量天然收敛。
+      const trfNeed = () => (isTraffic || resetCycle ? Number(inbound.trafficLimit) - slack : null);
 
-      if (expOk() && trfOk()) {
-        // 已生效即完结；但若重置还没落地，必须先补一次幂等 reset，否则用户付了费白付：
-        //   - enable=false（流量耗尽被面板停用，崩溃恰在 reset 之前 —— 纯 TRAFFIC 续费
-        //     可能根本不用调 bulkAdjust）：清零已用 + enable=true 复活，否则连不上
+      if (expOk() && trfOk() && resetOk()) {
+        // 已生效即完结（开新周期的 quota 够、到期够，但 reset 未落地 → 先补一次幂等 reset）：
+        //   - enable=false（流量耗尽/过期被面板停用，崩溃恰在 reset 之前）：清零已用 + 复活
         //   - usedOf() > slack（崩溃在 adjust 之后、reset 之前，客户端仍为启用态）：
         //     up/down 还挂着旧用量，说明 reset 未执行 → 补一次清零
         // 注意 reset 幂等且崩溃窗口内用量极小，重复执行最多损失 <1 分钟的并发流量
-        if (wantsTraffic && (obj.enable === false || usedOf() > slack)) {
+        if (resetCycle && !resetOk()) {
           const r = await this.serverService.resetClientTraffic(inbound.serverId, inbound.email);
           if (!r?.success) {
             this.logger.warn(
-              `Renewal order ${order.orderNo} enable repair failed: ${r?.msg} (will retry next minute)`,
+              `Renewal order ${order.orderNo} cycle reset repair failed: ${r?.msg} (will retry next minute)`,
             );
             throw new BadRequestException('节点尚未恢复，系统将自动重试');
+          }
+          const t2 = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
+          obj = t2?.obj || {};
+          if (!resetOk()) {
+            this.logger.warn(
+              `Renewal order ${order.orderNo}: cycle reset repair not reflected on panel, keeping PROCESSING`,
+            );
+            throw new BadRequestException('续费尚未在面板生效，系统将自动重试');
           }
         }
         const done = await this.prisma.order.update({
@@ -843,28 +908,37 @@ export class OrderService {
       }
 
       // 尚未生效（崩溃发生在 bulkAdjust/reset 之前）→ 补齐缺失的幂等操作后再复核：
-      // - 补天数：差值 = 本地续后到期 - 面板当前到期（崩溃前面板必为续前状态 ≈ duration；
-      //   按差值计算天然幂等，重复对账不会重复加量）
-      // - 补配额：仅当 面板配额 + 已用 < 本地额度 - 容差 时按差量补（加法幂等）
-      // - 已用清零 + 复活（wantsTraffic 时）
+      // - 补天数：差值 = 本地续后到期 - 面板当前到期（崩溃前面板必为续前状态；按差值计算
+      //   天然幂等，重复对账不会重复加量。面板到期维度为无限(0)时跳过：adjust 会被面板
+      //   静默跳过，补差永不收敛 —— 但面板永不按到期停用，权益已被满足，见同 legacy #F4）
+      // - 补配额：仅 TRAFFIC / 开新周期时要求；need = limit − slack（不加已用 —— reset 紧随
+      //   其后清空已用，见 #763；TRAFFIC 无 reset，但面板 total 是「累计上限」而非「剩余」，
+      //   叠加语义下已用必然 ≤ 面板累计上限，不参与 target。面板配额为无限(0)时同理跳过）
+      // - 开新周期：adjust 后补一次 reset（清零已用 + 复活）
       let repairDays = 0;
       if (wantsExpiry) {
-        const diff = new Date(inbound.expiryTime).getTime() - Number(obj.expiryTime || 0);
-        if (diff > 0) repairDays = Math.ceil(diff / DAY_MS);
+        const panelExpiry = Number(obj.expiryTime || 0);
+        if (panelExpiry === 0) {
+          this.logger.warn(
+            `Renewal order ${order.orderNo}: panel client expiry is unlimited (0); treating expiry dimension as satisfied (panel never cuts off on expiry)`,
+          );
+        } else {
+          const diff = new Date(inbound.expiryTime).getTime() - panelExpiry;
+          if (diff > 0) repairDays = Math.ceil(diff / DAY_MS);
+        }
       }
       let repairBytes = 0;
-      if (wantsTop) {
-        // 【BLOCKER #763 复核确认】补足公式与复核时机的错位：
-        // 修复路径在下方 reset 清零已用后才复核（obj 被 t3 覆盖成清零后值，usedOf=0），
-        // 旧公式却先从额度里扣掉已用：need = limit − used − slack → 补足后 total =
-        // limit − used − slack，reset 后复核 total + 0 ≥ limit − slack 恒失败 → rollback →
-        // 下一轮 cron 整量重跑对面板再 +duration → 面板到期 = 原 + 2×duration（重复加量，
-        // 彻底违背「绝不重复加量」，3 个对抗复核 agent 独立确认的 BLOCKER）。
-        // 修正：reset 紧随其后（已用清零），补足无需给已用留余量 ——
-        // need = limit − slack；reset 后 total = limit − slack、used = 0 → 复核恰等成立。
-        const need = Number(inbound.trafficLimit) - slack;
-        const delta = need - Number(obj.total || 0);
-        if (delta > 0) repairBytes = Math.ceil(delta);
+      const need = trfNeed();
+      if (need !== null) {
+        const panelTotal = Number(obj.total || 0);
+        if (panelTotal === 0) {
+          this.logger.warn(
+            `Renewal order ${order.orderNo}: panel client traffic is unlimited (0); treating traffic dimension as satisfied (panel never cuts off on quota)`,
+          );
+        } else {
+          const delta = need - panelTotal;
+          if (delta > 0) repairBytes = Math.ceil(delta);
+        }
       }
       // 【对抗复核确认：修复失败绝不回滚本地】
       // 旧实现这里调用 rollbackRenewalLocal（恢复到期/额度 + 清 renewalAppliedAt），
@@ -889,12 +963,12 @@ export class OrderService {
           );
           throw new BadRequestException('续费尚未在面板生效，系统将自动重试');
         }
-        const t2 = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
-        obj = t2?.obj || {};
+        const t3 = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
+        obj = t3?.obj || {};
       }
-      if (wantsTraffic) {
-        // reset 幂等：清零已用 + enable=true（含复活耗尽客户端）；纯 TRAFFIC 且配额已足时
-        // 无 bulkAdjust 调用，这里是唯一恢复路径
+      if (resetCycle) {
+        // reset 幂等：清零已用 + enable=true（开新周期复活）；配额已足时可能无 bulkAdjust，
+        // 这里是「已到期复活」承诺的唯一恢复路径
         const r = await this.serverService.resetClientTraffic(inbound.serverId, inbound.email);
         if (!r?.success) {
           this.logger.warn(
@@ -902,11 +976,11 @@ export class OrderService {
           );
           throw new BadRequestException('续费尚未在面板生效，系统将自动重试');
         }
-        const t3 = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
-        obj = t3?.obj || {};
+        const t4 = await this.serverService.getClientTraffic(inbound.serverId, inbound.email);
+        obj = t4?.obj || {};
       }
 
-      if (expOk() && trfOk()) {
+      if (expOk() && trfOk() && resetOk()) {
         const done = await this.prisma.order.update({
           where: { id: order.id },
           data: { status: 'COMPLETED', paidAt: order.paidAt || new Date() },
