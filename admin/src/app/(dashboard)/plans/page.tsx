@@ -37,7 +37,7 @@ export default function PlansPage() {
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
     traffic: '0', deviceLimit: '1', description: '', protocols: 'vless',
-    sort: '0', serverIds: [] as number[],
+    sort: '0', stock: '', serverIds: [] as number[],
   });
 
   const fetchPlans = () => {
@@ -64,7 +64,7 @@ export default function PlansPage() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', sort: '0', serverIds: [] });
+    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', sort: '0', stock: '', serverIds: [] });
     setDialogOpen(true);
   };
 
@@ -77,6 +77,7 @@ export default function PlansPage() {
       deviceLimit: String(plan.deviceLimit), description: plan.description || '',
       protocols: plan.protocols.join(','),
       sort: String(plan.sort ?? 0),
+      stock: plan.stock != null ? String(plan.stock) : '',
       serverIds: plan.serverIds || [],
     });
     setDialogOpen(true);
@@ -114,7 +115,10 @@ export default function PlansPage() {
       serverIds: form.serverIds,
       sort: Number(form.sort) || 0,
       type: 'TIME_BASED',
-      status: 'ACTIVE',
+      // 库存：留空 = 不限量（null）；售完自动变已售罄
+      stock: form.stock.trim() === '' ? null : Number(form.stock),
+      // 新建时默认在售；编辑时不再携带 status —— 否则会把自动售罄/手动隐藏重置为在售
+      ...(editing ? {} : { status: 'ACTIVE' }),
     };
     try {
       if (editing) {
@@ -182,6 +186,16 @@ export default function PlansPage() {
     },
     { key: 'protocols', header: '协议', render: (p: any) => p.protocols.join('/') },
     {
+      key: 'stock', header: '库存',
+      render: (p: any) => p.stock == null
+        ? <span className="text-xs text-muted-foreground">不限量</span>
+        : (
+          <span className={`text-xs font-medium ${p.sold >= p.stock ? 'text-rose-500' : ''}`}>
+            {p.sold} / {p.stock}{p.sold >= p.stock && ' 售罄'}
+          </span>
+        ),
+    },
+    {
       key: 'servers', header: '绑定服务器',
       render: (p: any) => {
         const ids = p.serverIds || [];
@@ -230,9 +244,10 @@ export default function PlansPage() {
         </div>
       </PageHeader>
 
-      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard title="产品总数" value={stats?.totalPlans ?? 0} />
         <StatCard title="活跃产品" value={stats?.activePlans ?? 0} sub="状态为在售" color="#10b981" />
+        <StatCard title="已售罄" value={stats?.soldOutPlans ?? 0} sub="库存已售完" color="#f43f5e" />
         <StatCard title="累计成交额" value={stats ? `¥${Number(stats.totalRevenue || 0).toFixed(2)}` : '¥0.00'} />
       </div>
 
@@ -292,6 +307,16 @@ export default function PlansPage() {
             <div className="space-y-2">
               <Label>排序权重（越小越靠前）</Label>
               <Input type="number" value={form.sort} onChange={(e) => setForm({ ...form, sort: e.target.value })} />
+            </div>
+            <div className="space-y-2">
+              <Label>库存（可选）</Label>
+              <Input
+                type="number"
+                min={0}
+                value={form.stock}
+                onChange={(e) => setForm({ ...form, stock: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">留空 = 不限量；售完自动变「已售罄」，调高库存自动恢复在售</p>
             </div>
             <div className="space-y-2 col-span-2">
               <Label>绑定服务器（可选多台）</Label>

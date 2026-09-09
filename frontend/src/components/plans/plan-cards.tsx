@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Check, Star, Zap } from 'lucide-react';
+import { Check, Star, Zap, Timer, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,9 @@ export interface Plan {
   traffic: string | number | bigint;
   deviceLimit: number;
   protocols: string[];
+  status?: 'ACTIVE' | 'HIDDEN' | 'SOLD_OUT' | 'ARCHIVED';
+  stock?: number | null; // null / 缺省 = 不限量
+  sold?: number;
   isFeatured?: boolean;
 }
 
@@ -51,7 +54,10 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
 
   return (
     <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-      {plans.map((plan, idx) => (
+      {plans.map((plan, idx) => {
+        const soldOut = plan.status === 'SOLD_OUT' || (plan.stock != null && (plan.sold ?? 0) >= plan.stock);
+        const remaining = plan.stock != null ? Math.max(0, plan.stock - (plan.sold ?? 0)) : null;
+        return (
         <motion.div
           key={plan.id}
           initial={{ opacity: 0, y: 20 }}
@@ -64,6 +70,14 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
                 <Badge className="border-primary bg-primary text-white shadow-lg shadow-primary/30">
                   <Star className="mr-1 h-3 w-3 fill-current" />
                   {t('home.popular')}
+                </Badge>
+              </div>
+            )}
+            {/* 售罄遮罩（与 NP 店铺卡片一致） */}
+            {soldOut && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/60 backdrop-blur-[2px]">
+                <Badge variant="danger" className="px-4 py-1.5 text-sm shadow-lg">
+                  {t('products.soldOut')}
                 </Badge>
               </div>
             )}
@@ -98,9 +112,26 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
                   {t('products.protocols')}: {plan.protocols.join(' / ')}
                 </li>
               </ul>
+              <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
+                <span className="inline-flex items-center gap-1">
+                  {soldOut ? (
+                    <Timer className="h-3.5 w-3.5" />
+                  ) : (
+                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                  )}
+                  {soldOut ? t('products.soldOut') : `${t('products.sold')} ${plan.sold ?? 0}`}
+                </span>
+                {/* 限量方案显示剩余份数；不限量不显示 */}
+                {remaining != null && !soldOut && (
+                  <span className="text-muted-foreground/80">
+                    {t('products.leftCount').replace('{n}', String(remaining))}
+                  </span>
+                )}
+              </div>
               <Button
                 className="mt-6 w-full"
                 variant={plan.isFeatured ? 'gradient' : 'default'}
+                disabled={soldOut}
                 onClick={() => handleBuy(plan.id)}
               >
                 {t('products.buyNow')}
@@ -108,7 +139,7 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
             </CardContent>
           </Card>
         </motion.div>
-      ))}
+      );})}
     </div>
   );
 }

@@ -42,6 +42,9 @@ function PurchaseContent() {
   const [processing, setProcessing] = useState(false);
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
+  // 网络方案售罄判定（后端在售罄时自动把 status 置 SOLD_OUT；同时用 stock/sold 兜底计算）
+  const soldOut = !isVirtual && !!plan && (plan.status === 'SOLD_OUT' || (plan.stock != null && plan.sold >= plan.stock));
+
   useEffect(() => {
     // 虚拟商品单：不拉服务器列表（无节点/中转概念），只拉商品详情
     if (productId) {
@@ -480,6 +483,11 @@ function PurchaseContent() {
       {!order && !payQr && (
         <div className="mt-6">
           <h2 className="mb-4 text-lg font-semibold">{t('purchase.paymentMethod')}</h2>
+          {!isVirtual && plan && (plan.status === 'SOLD_OUT' || (plan.stock != null && plan.sold >= plan.stock)) && (
+            <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              该方案已售罄，暂不可购买，请联系客服
+            </div>
+          )}
           {!isVirtual && serversLoaded && servers.length === 0 && (
             <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
               该方案暂无可用服务器，暂不可购买，请联系客服
@@ -490,7 +498,7 @@ function PurchaseContent() {
               <button
                 key={m.id}
                 onClick={() => createOrder(m.id)}
-                disabled={processing || (!isVirtual && serversLoaded && servers.length === 0)}
+                disabled={processing || soldOut || (!isVirtual && serversLoaded && servers.length === 0)}
                 className="flex items-center gap-3 rounded-xl border p-4 text-left transition-all hover:border-primary hover:shadow-md disabled:opacity-50"
               >
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-xl">

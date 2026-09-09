@@ -88,7 +88,11 @@ export class OrderService {
     if (!planId) throw new BadRequestException('缺少商品参数（网络方案或虚拟商品）');
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
     if (!plan) throw new NotFoundException('Plan not found');
-    if (plan.status !== 'ACTIVE') throw new BadRequestException('Plan is not available');
+    // 已售罄不影响老用户续费（续费不消耗库存，下方续费分支处理）；其余非在售状态一律拦截
+    const isRenewal = !!params.renewalOfInboundId;
+    if (plan.status !== 'ACTIVE' && !(plan.status === 'SOLD_OUT' && isRenewal)) {
+      throw new BadRequestException('Plan is not available');
+    }
 
     const orderNo = this.generateOrderNo();
 
@@ -215,6 +219,11 @@ export class OrderService {
         throw e;
       });
       return order;
+    }
+
+    // 库存校验：限量方案售罄后不再接受新购（续费单已在续费分支处理，不消耗库存）
+    if (plan.stock != null && plan.sold >= plan.stock) {
+      throw new BadRequestException('该方案已售罄');
     }
 
     const relay = !!params.relay;
@@ -551,6 +560,32 @@ export class OrderService {
       relaySocksPass: order.relaySocksPass || undefined,
       orderNo: order.orderNo,
     });
+
+    // 【限量库存·CAS 扣减】只有设置了库存的方案才扣。顺序敏感：入站已建好 → 扣库存 → 标完成；
+    // 若中途崩溃，activateOrderInner 顶部的「查存量入站」早退分支会幂等返回，不会重复扣库存。
+    if (order.plan.stock != null) {
+      const claimed = await this.prisma.plan.updateMany({
+        where: { id: order.plan.id, sold: { lt: order.plan.stock } },
+        data: { sold: { increment: 1 } },
+      });
+      if (claimed.count === 0) {
+        // 并发激活把最后一份抢走了 → 删掉刚建的节点、订单置 FAILED 引导退款（不假装开通）
+        await this.inboundService.delete(inbound.id).catch(() => undefined);
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { status: 'FAILED' },
+        });
+        throw new BadRequestException('该方案已售罄，无法开通，请联系客服退款');
+      }
+      // 扣完即满 → 同步置 SOLD_OUT，商城展示售罄遮罩、新购被入口拦截（并发多条都命中，幂等）
+      const latest = await this.prisma.plan.findUnique({
+        where: { id: order.plan.id },
+        select: { sold: true, stock: true },
+      });
+      if (latest && latest.stock != null && latest.sold >= latest.stock) {
+        await this.prisma.plan.updateMany({ where: { id: order.plan.id }, data: { status: 'SOLD_OUT' } });
+      }
+    }
 
     // Update order status
     await this.prisma.order.update({

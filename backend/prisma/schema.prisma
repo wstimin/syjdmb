@@ -111,6 +111,8 @@ model Plan {
   serverIds     Int[] // which servers this plan is available on
   sort          Int        @default(0)
   status        PlanStatus @default(ACTIVE)
+  stock         Int?       // total sellable quantity, null = unlimited
+  sold          Int        @default(0) // sold count, incremented on new order activation
   isFeatured    Boolean    @default(false)
   isTrial       Boolean    @default(false)
   trialDays     Int? // trial period in days
