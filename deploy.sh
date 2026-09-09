@@ -301,20 +301,33 @@ deploy_core() {
 
   if [ "$build_ok" = "1" ]; then
     info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
-    # 历史故障自动恢复（仅针对已知迁移）：20260910000001 曾以 enum→text 索引表达式部署
-    # 失败（42P17），迁移整体回滚、数据无残留；防重索引已由 20260910000002 以 NULLS NOT
-    # DISTINCT 写法重建。若 _prisma_migrations 里残留该迁移的「失败」记录（finished_at
-    # 为空），deploy 会被 P3009 永久卡住 —— 先标记为已回滚再继续。
-    # 双保险：仅当（本镜像确认带 0002 修复迁移）且（库中 0001 确实处于失败态）才 resolve，
-    # 健康库/已回滚/已应用的场景一律跳过，不影响正常历史。
-    if docker exec nodeshop-db psql -U nodeadmin -d nodeshop -tAc \
-      "SELECT 1 FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND \"finished_at\" IS NULL" 2>/dev/null | grep -q 1 \
-      && docker exec nodeshop-backend sh -c 'test -f prisma/migrations/20260910000002_fix_renewal_dup_key/migration.sql' 2>/dev/null; then
+    # 后端容器 migrate 失败时会进入 crash-loop（restarting）状态，此时 docker exec 报
+    # "is restarting"、无法执行。迁移/修复命令统一走「一次性容器」（镜像本机已加载、
+    # 沿用 compose 网络与 .env，与正式容器同源同网，但不依赖它存活）；网络缺失时
+    # 退回 docker exec 维持原行为。
+    BK_NET=$(docker network ls --format '{{.Name}}' | grep -m1 nodeshop || true)
+    run_backend_migrate() {
+      if [ -n "$BK_NET" ]; then
+        docker run --rm --network "$BK_NET" --env-file .env -w /app nodeshop-backend:latest "$@"
+      else
+        docker exec nodeshop-backend "$@"
+      fi
+    }
+    # 历史故障自动恢复（仅针对已知迁移 20260910000001）：该迁移曾以 enum→text 索引表达式
+    # 部署失败（42P17），整体回滚、数据无残留；防重索引已由 0002 以 NULLS NOT DISTINCT
+    # 重建。若 _prisma_migrations 残留其「失败」记录（finished_at 为空），deploy 会被
+    # P3009 永久卡住 —— 先把它标记为已回滚。此 UPDATE 等价于 prisma migrate resolve
+    # --rolled-back，且不依赖后端容器存活（直接作用于数据库容器）。
+    # 双保险：仅当（本镜像确认带 0002 修复迁移）且（库中 0001 确实处于失败态）才动手；
+    # 健康库/已回滚/已应用一律跳过，不影响正常历史。
+    if run_backend_migrate sh -c 'test -f prisma/migrations/20260910000002_fix_renewal_dup_key/migration.sql' 2>/dev/null \
+      && docker exec nodeshop-db psql -U nodeadmin -d nodeshop -tAc \
+         "SELECT 1 FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND \"finished_at\" IS NULL" 2>/dev/null | grep -q 1; then
       info "检测到失败迁移 20260910000001（0001 已由 0002 修复），标记为已回滚..."
-      docker exec nodeshop-backend npx prisma migrate resolve --rolled-back 20260910000001_add_renewal_dup_unique \
-        && ok "失败迁移已标记回滚" || warn "resolve 失败，继续尝试 deploy"
+      docker exec nodeshop-db psql -U nodeadmin -d nodeshop -c "UPDATE public.\"_prisma_migrations\" SET \"finished_at\"=NOW(), \"rolled_back_at\"=NOW() WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND \"finished_at\" IS NULL;" \
+        && ok "失败迁移已标记回滚" || warn "标记失败，继续尝试 deploy"
     fi
-    docker exec nodeshop-backend npx prisma migrate deploy || {
+    run_backend_migrate npx prisma migrate deploy || {
       warn "迁移异常，日志："; docker logs nodeshop-backend 2>&1 | tail -20; return 1; }
     ok "数据库迁移完成"
   fi
