@@ -12,7 +12,7 @@
 #  - 域名反代只填一个主域名，自动生成 前端 + 管理后台 两个对外地址；
 #    API 为内置服务不对外（文档经 https://<域名>/docs 查看）。
 #  - 之后用 `shop` 调出管理菜单：查看信息 / 更新 / 回滚 / 重置登录 /
-#    添加域名反代 / 查看日志 / 退出。所有操作保留数据库与 .env。
+#    域名管理（添加/更换/删除）/ 查看日志 / 退出。所有操作保留数据库与 .env。
 # =====================================================================
 set -euo pipefail
 
@@ -531,15 +531,48 @@ JS
   then ok "登录信息已更新"; else err "更新失败"; fi
 }
 
-# 5) 添加域名 / 反向代理
+# 5) 域名管理（添加 / 更换 / 删除）
 cmd_domain() {
-  echo; echo -e "${CYAN}-------- 添加域名 / 反向代理 --------${NC}"
+  echo; echo -e "${CYAN}-------- 域名管理 --------${NC}"
+  local d=""
+  [ -f "$INSTALL_DIR/domain.txt" ] && d=$(cat "$INSTALL_DIR/domain.txt")
+  if [ -n "$d" ]; then
+    echo "  当前域名 : https://$d （前端） / https://admin.$d （管理后台）"
+  else
+    echo "  当前域名 : 未配置（直接用 http://服务器IP:3000 访问）"
+  fi
+  echo
+  echo "  1) 添加 / 更换域名（覆盖当前配置，自动核验 DNS 并申请新证书）"
+  echo "  2) 删除域名（停止反代，恢复 IP 直连）"
+  echo "  0) 返回"
+  read -rp "  请选择: " c
+  case "$c" in
+    1) cmd_domain_set ;;
+    2) cmd_domain_remove ;;
+    *) info "已取消" ;;
+  esac
+}
+
+# DNS 预检：域名能解析才可能申请到证书；解析不到只提示、不阻断（Caddy 会持续重试）
+domain_dns_check() {
+  local name="$1" label="$2" ips=""
+  ips=$(getent ahostsv4 "$name" 2>/dev/null | awk '{print $1}' | sort -u | head -3 | tr '\n' ' ' || true)
+  if [ -z "$ips" ]; then
+    warn "$label $name 无法解析 —— 证书将无法签发。请先到域名商/解析平台把 $name 的 A 记录指向本机公网 IP"
+  else
+    info "$label $name 已解析: ${ips% }"
+  fi
+}
+
+# 5.1) 添加 / 更换域名
+cmd_domain_set() {
+  echo; echo -e "${CYAN}-------- 添加 / 更换域名 --------${NC}"
   echo "  只需填写一个主域名，自动创建两个对外地址（互不冲突，各自独立证书）："
   echo "    https://<域名>          → 前端 (3000)"
   echo "    https://admin.<域名>    → 管理后台 (3002)"
   echo "  后端 API 为内置服务，不配置独立域名：公网请求统一经前端/管理后台的 /api 代理转发，"
   echo "  接口文档可在 https://<域名>/docs 查看。"
-  echo "  请先把上面两个域名解析（DNS A 记录）到本机公网 IP。"
+  echo "  请先把 <域名> 与 admin.<域名> 的 DNS A 记录解析到本机公网 IP（本脚本会帮你核验）。"
   read -rp "  请输入主域名（如 shop.example.com，回车取消）: " domain
   [ -z "$domain" ] && { info "已取消"; return; }
   # 严格校验域名：只允许字母/数字/连字符/点、必须含至少一个点；禁止协议头(https://)、通配符、
@@ -555,6 +588,20 @@ cmd_domain() {
     admin.*) warn "请输入主域名本身（示例 admin.example.com 请填 example.com）"; return ;;
   esac
   info "已确认主域名：$domain（将自动创建 https://$domain 与 https://admin.$domain）..."
+
+  # DNS 预检
+  domain_dns_check "$domain" "主域名"
+  domain_dns_check "admin.$domain" "管理后台子域名"
+
+  # 覆盖前提示：若 Caddyfile 曾被手工改过（非脚本生成），先确认再覆盖
+  if [ -f "$INSTALL_DIR/proxy/Caddyfile" ]; then
+    if ! grep -q "reverse_proxy frontend:3000" "$INSTALL_DIR/proxy/Caddyfile" \
+       || ! grep -q "reverse_proxy admin:3002" "$INSTALL_DIR/proxy/Caddyfile"; then
+      warn "检测到当前 Caddyfile 含手工改动（非本脚本生成），将被本次配置整体覆盖。"
+      read -rp "  确认覆盖？(y/N) " a2
+      [ "$a2" = "y" ] || [ "$a2" = "Y" ] || { info "已取消"; return; }
+    fi
+  fi
 
   mkdir -p "$INSTALL_DIR/proxy"
   cat > "$INSTALL_DIR/proxy/Caddyfile" <<EOF
@@ -604,9 +651,11 @@ EOF
     { warn "主网络未就绪，请先完成首次部署（菜单 2 更新）后再配置反代"; return; }
 
   echo "$domain" > "$INSTALL_DIR/domain.txt"
-  info "启动反向代理 (Caddy) 并自动申请证书..."
-  ( cd "$INSTALL_DIR/proxy" && docker compose -f docker-compose.proxy.yml up -d ) || { warn "反代启动失败"; return; }
-  ok "反向代理已启动"
+  # 显式强制重建 caddy：保证新域名与证书逻辑立即生效（仅靠 Caddy 文件监听在已运行容器上不保证重载）
+  info "重启反向代理 (Caddy) 使新域名生效..."
+  ( cd "$INSTALL_DIR/proxy" && docker compose -f docker-compose.proxy.yml up -d --force-recreate caddy ) \
+    || { warn "反代启动失败，请用菜单 6 → 4 查看 Caddy 日志"; return; }
+  ok "反向代理已重启并加载新域名"
   # 同步 .env 对外地址（密码重置邮件链接、CORS 白名单、支付回调地址），并重建 backend 使配置生效。
   # 支付回调经前端 https://域名/api/... 转发到后端，因此 APP_URL 指向前端域名。
   info "同步 .env 对外地址为 https://${domain} ..."
@@ -619,6 +668,43 @@ EOF
   ok "对外地址已更新"
   warn "请确认两个域名都已解析到本机，等待证书签发后访问 https://$domain 与 https://admin.$domain"
   warn "如域名未解析，Caddy 会自动用自签证书，正式可用前请先完成 DNS。"
+}
+
+# 5.2) 删除域名
+cmd_domain_remove() {
+  echo; echo -e "${CYAN}-------- 删除域名 --------${NC}"
+  if [ ! -f "$INSTALL_DIR/domain.txt" ]; then
+    info "当前未配置域名（本来就使用 IP 直连），无需删除"
+    return
+  fi
+  local d; d=$(cat "$INSTALL_DIR/domain.txt")
+  echo "  当前域名 : https://$d"
+  warn "将停止并删除反向代理（Caddy），对外访问还原为 http://<服务器IP>:3000 / http://<服务器IP>:3002。"
+  warn "数据、证书缓存与 .env 均保留，之后可随时用菜单 5 重新添加域名。"
+  read -rp "  确认删除？(y/N) " a
+  [ "$a" = "y" ] || [ "$a" = "Y" ] || { info "已取消"; return; }
+
+  if [ -f "$INSTALL_DIR/proxy/docker-compose.proxy.yml" ]; then
+    info "停止反向代理..."
+    ( cd "$INSTALL_DIR/proxy" && docker compose -f docker-compose.proxy.yml down ) || warn "反向代理停止失败（可忽略）"
+  fi
+  rm -f "$INSTALL_DIR/domain.txt"
+  ok "已删除域名配置"
+
+  # .env 对外地址还原为 IP 形式（能探测到公网 IP 时）
+  local ip=""; ip=$(detect_public_ip)
+  if [ -n "$ip" ]; then
+    info "同步 .env 对外地址为 http://${ip}:3000 ..."
+    sed -i -E \
+      -e "s|^FRONTEND_URL=.*|FRONTEND_URL=\"http://${ip}:3000\"|" \
+      -e "s|^ADMIN_URL=.*|ADMIN_URL=\"http://${ip}:3002\"|" \
+      -e "s|^APP_URL=.*|APP_URL=\"http://${ip}:3000\"|" \
+      "$INSTALL_DIR/.env" 2>/dev/null || warn ".env 更新失败（可手动修改 FRONTEND_URL/ADMIN_URL/APP_URL）"
+    docker compose up -d --force-recreate --no-deps backend >/dev/null 2>&1 || warn "backend 重建失败，可稍后手动重启使其生效"
+  else
+    warn "无法探测公网 IP，.env 仍指向原域名；可稍后用本机 IP 手动修改 FRONTEND_URL/ADMIN_URL/APP_URL"
+  fi
+  ok "域名已删除。前端：http://${ip:-<服务器IP>}:3000，管理后台：http://${ip:-<服务器IP>}:3002"
 }
 
 # 6) 查看日志
@@ -649,7 +735,7 @@ main_menu() {
     echo "   2) 更新（部署最新版，保留数据与配置）"
     echo "   3) 旧版本 / 回滚"
     echo "   4) 重置登录信息"
-    echo "   5) 添加域名 / 反向代理"
+    echo "   5) 域名管理（添加 / 更换 / 删除）"
     echo "   6) 查看日志"
     echo "   7) 退出"
     printf "   请输入数字后回车: "
