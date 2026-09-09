@@ -90,7 +90,7 @@ export default function InboundsPage() {
     setRelayBusy(true);
     try {
       await api.post(`/inbounds/${relayTarget.id}/relay`, { socksId: s.id });
-      toast.success(`已把 SOCKS 中转绑定到节点 ${relayTarget.email}`);
+      toast.success(`已把 SOCKS 出站绑定到节点 ${relayTarget.email}`);
       setRelayTarget(null);
       fetchData();
     } catch (err: any) {
@@ -102,11 +102,11 @@ export default function InboundsPage() {
 
   const doUnbindRelay = async () => {
     if (!relayTarget) return;
-    if (!confirm('确认卸载该节点上的 SOCKS 中转？卸载后节点恢复直连出站。')) return;
+    if (!confirm('确认卸载该节点上的 SOCKS 出站？卸载后节点恢复直连。')) return;
     setRelayBusy(true);
     try {
       await api.delete(`/inbounds/${relayTarget.id}/relay`);
-      toast.success('已卸载 SOCKS 中转');
+      toast.success('已卸载 SOCKS 出站');
       setRelayTarget(null);
       fetchData();
     } catch (err: any) {
@@ -141,7 +141,7 @@ export default function InboundsPage() {
     },
     { key: 'status', header: '状态', render: (i: any) => <StatusBadge status={i.status} /> },
     {
-      key: 'relay', header: 'SOCKS 中转',
+      key: 'relay', header: 'SOCKS 出站',
       render: (i: any) => (i.relayEnabled || i.relayTag
         ? <span className="text-xs font-medium text-amber-600">已挂载<Link2 className="ml-1 inline h-3 w-3" /></span>
         : <span className="text-xs text-muted-foreground">未挂载</span>),
@@ -152,7 +152,7 @@ export default function InboundsPage() {
         <div className="flex gap-1">
           <Button
             size="sm" variant="outline"
-            title={i.relayEnabled || i.relayTag ? '查看 / 卸载中转' : '手动绑定 SOCKS 中转'}
+            title={i.relayEnabled || i.relayTag ? '查看 / 卸载出站' : '手动绑定 SOCKS 出站'}
             onClick={() => openRelay(i)}
           ><Link2 className="h-3 w-3" /></Button>
           {i.status === 'ACTIVE' ? (
@@ -217,25 +217,25 @@ export default function InboundsPage() {
         />
       </Card>
 
-      {/* SOCKS 中转绑定 / 卸载 */}
+      {/* SOCKS 出站绑定 / 卸载 */}
       <Dialog open={!!relayTarget} onOpenChange={(o) => !o && setRelayTarget(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>节点 SOCKS 中转：{relayTarget?.email}</DialogTitle>
+            <DialogTitle>节点 SOCKS 出站：{relayTarget?.email}</DialogTitle>
             <DialogDescription>把该节点流量全程经所选 SOCKS 出站（后台手动绑定）；已挂载时可一键卸载恢复直连。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             {relayTarget?.relayEnabled || relayTarget?.relayTag ? (
               <div className="space-y-3">
                 <div className="rounded-md border p-3 text-sm">
-                  <p className="font-medium text-amber-600">已挂载 SOCKS 中转</p>
+                  <p className="font-medium text-amber-600">已挂载 SOCKS 出站</p>
                   <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
                     {relayTarget.relaySocksHost}:{relayTarget.relaySocksPort}
                     {relayTarget.relayTag ? ` · tag ${relayTarget.relayTag}` : ''}
                   </p>
                 </div>
                 <Button variant="destructive" className="w-full" onClick={doUnbindRelay} disabled={relayBusy}>
-                  {relayBusy ? '处理中…' : '卸载中转'}
+                  {relayBusy ? '处理中…' : '卸载出站'}
                 </Button>
               </div>
             ) : (
@@ -243,7 +243,7 @@ export default function InboundsPage() {
                 {relayBusy ? (
                   <p className="px-2 py-4 text-center text-sm text-muted-foreground">加载 SOCKS 列表…</p>
                 ) : socksList.length === 0 ? (
-                  <p className="px-2 py-4 text-center text-sm text-muted-foreground">暂无 SOCKS，可先到「SOCKS 中转管理」新增。</p>
+                  <p className="px-2 py-4 text-center text-sm text-muted-foreground">暂无 SOCKS，可先到「SOCKS 出站管理」新增。</p>
                 ) : socksList.map((s) => (
                   <div key={s.id} className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-muted">
                     <div className="min-w-0">

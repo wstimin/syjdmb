@@ -80,6 +80,10 @@ export function StatusBadge({ status }: { status: string }) {
     USED: { label: '已使用', cls: 'bg-emerald-500/15 text-emerald-600' },
     UNUSED: { label: '未使用', cls: 'bg-blue-500/15 text-blue-600' },
     OFFLINE: { label: '离线', cls: 'bg-red-500/15 text-red-600' },
+    BANNED: { label: '已封禁', cls: 'bg-red-500/15 text-red-600' },
+    HIDDEN: { label: '隐藏', cls: 'bg-slate-500/15 text-slate-600' },
+    SOLD_OUT: { label: '已售罄', cls: 'bg-amber-500/15 text-amber-600' },
+    ARCHIVED: { label: '已下架', cls: 'bg-slate-500/15 text-slate-600' },
     DELETED: { label: '已删除', cls: 'bg-gray-500/15 text-gray-600' },
   };
   const s = map[status] || { label: status, cls: 'bg-gray-500/15 text-gray-600' };

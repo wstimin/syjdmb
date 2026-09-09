@@ -14,7 +14,12 @@ import Pagination from '@/components/shared/pagination';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const PLAN_STATUSES = ['ACTIVE', 'HIDDEN', 'SOLD_OUT', 'ARCHIVED'];
+const PLAN_STATUSES = [
+  { value: 'ACTIVE', label: '在售' },
+  { value: 'HIDDEN', label: '隐藏' },
+  { value: 'SOLD_OUT', label: '已售罄' },
+  { value: 'ARCHIVED', label: '已下架' },
+];
 
 export default function PlansPage() {
   const [plans, setPlans] = useState<any[]>([]);
@@ -165,7 +170,7 @@ export default function PlansPage() {
 
   const columns = [
     { key: 'id', header: 'ID' },
-    { key: 'name', header: '方案名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
+    { key: 'name', header: '产品名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
     { key: 'price', header: '价格', render: (p: any) => <span className="text-primary font-medium">¥{Number(p.price)}</span> },
     {
       key: 'duration', header: '时长',
@@ -195,7 +200,7 @@ export default function PlansPage() {
           className="rounded-md border bg-background px-2 py-1 text-xs"
         >
           {PLAN_STATUSES.map((s) => (
-            <option key={s} value={s}>{s}</option>
+            <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </select>
       ),
@@ -213,7 +218,7 @@ export default function PlansPage() {
 
   return (
     <div>
-      <PageHeader title="网络方案管理" subtitle="管理可售卖的节点网络方案">
+      <PageHeader title="网络产品管理" subtitle="管理可售卖的节点网络产品">
         <div className="flex items-center gap-2">
           <Input
             className="max-w-xs"
@@ -221,19 +226,19 @@ export default function PlansPage() {
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
-          <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建方案</Button>
+          <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建产品</Button>
         </div>
       </PageHeader>
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard title="方案总数" value={stats?.totalPlans ?? 0} />
-        <StatCard title="活跃方案" value={stats?.activePlans ?? 0} sub="状态为 ACTIVE" color="#10b981" />
+        <StatCard title="产品总数" value={stats?.totalPlans ?? 0} />
+        <StatCard title="活跃产品" value={stats?.activePlans ?? 0} sub="状态为在售" color="#10b981" />
         <StatCard title="累计成交额" value={stats ? `¥${Number(stats.totalRevenue || 0).toFixed(2)}` : '¥0.00'} />
       </div>
 
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={pagePlans} keyField="id" emptyMessage="暂无方案" />
+          <DataTable columns={columns} data={pagePlans} keyField="id" emptyMessage="暂无产品" />
           <Pagination
             page={safePage}
             limit={limit}
@@ -249,7 +254,7 @@ export default function PlansPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑方案 #${editing.id}` : '新建方案'}</DialogTitle>
+            <DialogTitle>{editing ? `编辑产品 #${editing.id}` : '新建产品'}</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -317,7 +322,7 @@ export default function PlansPage() {
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                用户购买该方案后，将在这几台服务器上自动创建节点。至少绑定一台。
+                用户购买该产品后，将在这几台服务器上自动创建节点。至少绑定一台。
               </p>
             </div>
             <div className="space-y-2 col-span-2">

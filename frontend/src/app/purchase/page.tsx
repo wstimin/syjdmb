@@ -123,7 +123,7 @@ function PurchaseContent() {
         // 兜底超时：10 分钟节点还没建出来，别让用户无限等待
         if (Date.now() - startedAt > 10 * 60 * 1000) {
           clearInterval(pollRef.current!);
-          toast.error('等待节点创建超时，请稍后到「我的节点」查看，或联系客服');
+          toast.error('等待节点创建超时，请稍后到「我的网络」查看，或联系客服');
         }
       } catch {
         // Silently ignore transient errors during polling
@@ -152,7 +152,7 @@ function PurchaseContent() {
         return;
       }
       if (relay && !relaySocksId) {
-        toast.error('请选择一个 SOCKS 代理作为中转出口');
+        toast.error('请选择一个 SOCKS 代理作为出站出口');
         return;
       }
     }
@@ -185,7 +185,7 @@ function PurchaseContent() {
         if (data?.activationFailed) {
           // 扣款成功、激活失败（如面板瞬时故障）：订单已是 PAID/PROCESSING，
           // 后台会每分钟自动重试建节点，用户无需重新下单
-          toast.error('支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的节点」查看');
+          toast.error('支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的网络」查看');
           setTimeout(() => router.push('/user/nodes'), 1500);
           return;
         }
@@ -408,7 +408,7 @@ function PurchaseContent() {
         </Card>
       )}
 
-      {/* 开启中转（选装）— 仅网络方案单；虚拟商品单无服务器/中转概念 */}
+      {/* 开启出站（选装）— 仅网络方案单；虚拟商品单无服务器/出站概念 */}
       {!isVirtual && (
       <Card className="mt-6 border-border/60">
         <CardContent className="p-5">
@@ -422,7 +422,7 @@ function PurchaseContent() {
                 className="h-5 w-5 accent-primary"
               />
               <label htmlFor="relay-toggle" className="cursor-pointer">
-                <div className="text-sm font-semibold">开启中转（SOCKS 线路）</div>
+                <div className="text-sm font-semibold">开启出站（SOCKS 线路）</div>
                 <div className="text-xs text-muted-foreground">
                   节点流量全程经 SOCKS 链路转发，出口 IP 为你选择的 SOCKS 节点所在地址
                 </div>

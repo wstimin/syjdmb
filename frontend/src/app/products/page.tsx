@@ -47,7 +47,7 @@ export default function ProductsPage() {
         <p className="mt-3 text-lg text-muted-foreground">{t('products.subtitle')}</p>
       </div>
 
-      {/* 顶部 Tab：全部 / 网络方案 / 虚拟商品 */}
+      {/* 顶部 Tab：全部 / 网络产品 / NP店铺 */}
       <div className="mt-10 flex justify-center">
         <div className="inline-flex rounded-full border border-border/60 bg-muted/40 p-1">
           {tabs.map((item) => (
@@ -77,7 +77,7 @@ export default function ProductsPage() {
         </div>
       ) : (
         <>
-          {/* 全部：网络方案在前，虚拟商品在后，同一栅格 */}
+          {/* 全部：网络产品在前，NP店铺在后，同一栅格 */}
           {(tab === 'all') && (
             <div className="mt-12 space-y-14">
               {plans.length > 0 && (

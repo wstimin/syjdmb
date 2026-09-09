@@ -340,7 +340,7 @@ export default function SocksAdminPage() {
   const doBindNode = async (node: any) => {
     if (!bindTarget) return;
     if (node.relayEnabled || node.relayTag) {
-      toast.error(`节点 ${node.email} 已挂载中转，请先在其节点页卸载`);
+      toast.error(`节点 ${node.email} 已挂载出站，请先在其节点页卸载`);
       return;
     }
     setBindBusy(true);
@@ -384,7 +384,7 @@ export default function SocksAdminPage() {
 
   return (
     <div>
-      <PageHeader title="SOCKS 中转管理" subtitle={`共 ${total} 个 SOCKS 中转`}>
+      <PageHeader title="SOCKS 出站管理" subtitle={`共 ${total} 个 SOCKS 出站`}>
         <div className="flex items-center gap-2">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -412,7 +412,7 @@ export default function SocksAdminPage() {
 
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={proxies} keyField="id" emptyMessage="暂无 SOCKS 中转" />
+          <DataTable columns={columns} data={proxies} keyField="id" emptyMessage="暂无 SOCKS 出站" />
           <Pagination
             page={page}
             limit={limit}
@@ -485,7 +485,7 @@ export default function SocksAdminPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>授权用户：{grantTarget ? `${grantTarget.host}:${grantTarget.port}` : ''}</DialogTitle>
-            <DialogDescription>授权后，该用户在购买开启中转时可直接选用此 SOCKS（归属用户始终可用）。</DialogDescription>
+            <DialogDescription>授权后，该用户在购买开启出站时可直接选用此 SOCKS（归属用户始终可用）。</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="max-h-52 space-y-1 overflow-auto rounded-md border p-2">
@@ -539,7 +539,7 @@ export default function SocksAdminPage() {
                   <p className="truncate text-xs text-muted-foreground">{n.user?.email || '—'} · {n.server?.name || '—'} · :{n.port}</p>
                 </div>
                 {n.relayEnabled ? (
-                  <span className="shrink-0 text-xs text-amber-600">已挂中转</span>
+                  <span className="shrink-0 text-xs text-amber-600">已挂出站</span>
                 ) : (
                   <Button size="sm" onClick={() => doBindNode(n)} disabled={bindBusy}>绑定</Button>
                 )}

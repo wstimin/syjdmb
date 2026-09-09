@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Wallet, Server, Clock, Activity, Plus, ArrowRight } from 'lucide-react';
+import { Wallet, Server, Clock, Activity, Plus, ArrowRight, Package } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -124,6 +124,13 @@ export default function DashboardPage() {
           <Button variant="gradient">
             <Plus className="mr-1 h-4 w-4" />
             {t('dashboard.buyNew')}
+          </Button>
+        </Link>
+        <Link href="/user/products">
+          <Button variant="outline">
+            <Package className="mr-1 h-4 w-4" />
+            {t('dashboard.viewProducts')}
+            <ArrowRight className="ml-1 h-4 w-4" />
           </Button>
         </Link>
         <Link href="/user/nodes">

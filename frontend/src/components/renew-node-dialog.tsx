@@ -254,7 +254,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
           // （节点被删/暂停、已过期、旧版 addDays&addBytes=0…）订单已置 FAILED，cron 从不重试，
           // 承诺「自动重试」永远不会发生，还把后端给的真实原因（d.message，如「请联系客服」）丢掉。
           // 改为直接展示后端原因：PROCESSING 类自带「系统将自动重试」，FAILED 类自带正确指引。
-          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的节点」查看');
+          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的网络」查看');
           onClose();
           return;
         }
@@ -300,7 +300,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
       setOrderNo(existing.orderNo);
       if (existing.status !== 'PENDING') {
         // PAID/PROCESSING：续费已付款、正在应用，重复支付会白付第二笔
-        toast('已有续费正在处理中，请勿重复支付，稍后在「我的节点」查看');
+        toast('已有续费正在处理中，请勿重复支付，稍后在「我的网络」查看');
         setMethod('');
         return;
       }
@@ -314,7 +314,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
           // （节点被删/暂停、已过期、旧版 addDays&addBytes=0…）订单已置 FAILED，cron 从不重试，
           // 承诺「自动重试」永远不会发生，还把后端给的真实原因（d.message，如「请联系客服」）丢掉。
           // 改为直接展示后端原因：PROCESSING 类自带「系统将自动重试」，FAILED 类自带正确指引。
-          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的节点」查看');
+          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的网络」查看');
           onClose();
           return;
         }

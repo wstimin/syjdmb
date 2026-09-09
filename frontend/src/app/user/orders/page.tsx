@@ -144,7 +144,7 @@ export default function OrdersPage() {
                         </div>
                         <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
                           {order.payMethod && <span>支付方式：{order.payMethod}</span>}
-                          {order.relayEnabled && <span className="text-violet-500">含 SOCKS 中转</span>}
+                          {order.relayEnabled && <span className="text-violet-500">含 SOCKS 出站</span>}
                           {order.protocol && <span>协议：{order.protocol}</span>}
                           {order.renewalOfInbound && (
                             <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-medium text-amber-500">

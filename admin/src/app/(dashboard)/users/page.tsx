@@ -301,9 +301,9 @@ export default function UsersPage() {
                   onChange={(e) => setCreateForm({ ...createForm, status: e.target.value })}
                   className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
                 >
-                  <option value="ACTIVE">ACTIVE</option>
-                  <option value="BANNED">BANNED</option>
-                  <option value="SUSPENDED">SUSPENDED</option>
+                  <option value="ACTIVE">正常</option>
+                  <option value="BANNED">已封禁</option>
+                  <option value="SUSPENDED">已暂停</option>
                 </select>
               </div>
             </div>

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Server, Ticket, User, ArrowLeft, Network, Wallet } from 'lucide-react';
+import { LayoutDashboard, Server, Ticket, User, ArrowLeft, Network, Wallet, Store } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 import { BrandLogo } from '@/components/layout/brand-logo';
 import { cn } from '@/lib/utils';
@@ -14,8 +14,9 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
   const nav = [
     { href: '/user/dashboard', label: t('common.dashboard'), icon: LayoutDashboard },
     { href: '/user/nodes', label: t('common.nodes'), icon: Server },
+    { href: '/user/products', label: t('myProducts.title'), icon: Store },
     { href: '/user/balance', label: '余额', icon: Wallet },
-    { href: '/user/socks', label: 'SOCKS中继', icon: Network },
+    { href: '/user/socks', label: 'SOCKS出站', icon: Network },
     { href: '/user/tickets', label: t('tickets.title'), icon: Ticket },
     { href: '/user/profile', label: t('profile.title'), icon: User },
   ];

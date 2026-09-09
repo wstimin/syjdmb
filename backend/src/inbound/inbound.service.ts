@@ -573,7 +573,7 @@ export class InboundService {
   ) {
     if (!socks.host || !socks.port) {
       throw new BadRequestException(
-        '开启中转需要填写 SOCKS 节点的地址和端口',
+        '开启出站需要填写 SOCKS 节点的地址和端口',
       );
     }
 
@@ -1074,10 +1074,10 @@ export class InboundService {
     });
     if (!inbound) throw new NotFoundException('节点不存在');
     if (inbound.status !== 'ACTIVE') {
-      throw new BadRequestException('仅对活跃节点可挂载中转');
+      throw new BadRequestException('仅对活跃节点可挂载出站');
     }
     if (inbound.relayEnabled || inbound.relayTag) {
-      throw new BadRequestException('该节点已挂载中转，请先卸载');
+      throw new BadRequestException('该节点已挂载出站，请先卸载');
     }
 
     const proxy = await this.prisma.socksProxy.findFirst({
@@ -1127,7 +1127,7 @@ export class InboundService {
     });
     if (!inbound) throw new NotFoundException('节点不存在');
     if (!inbound.relayEnabled && !inbound.relayTag) {
-      throw new BadRequestException('该节点未挂载中转');
+      throw new BadRequestException('该节点未挂载出站');
     }
 
     await this.unmountRelayFromNode(inbound.serverId, inbound);
@@ -1155,17 +1155,17 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id: inboundId } });
     if (!inbound) throw new NotFoundException('节点不存在');
     if (inbound.status === 'DELETED') {
-      throw new BadRequestException('节点已删除，无法绑定中转');
+      throw new BadRequestException('节点已删除，无法绑定出站');
     }
     if (inbound.relayEnabled || inbound.relayTag) {
-      throw new BadRequestException('该节点已挂载中转，请先卸载');
+      throw new BadRequestException('该节点已挂载出站，请先卸载');
     }
 
     const proxy = await this.prisma.socksProxy.findFirst({
       where: { id: socksId, status: { not: 'DELETED' } },
     });
     if (!proxy) {
-      throw new BadRequestException('所选 SOCKS 中转不存在或已删除');
+      throw new BadRequestException('所选 SOCKS 出站不存在或已删除');
     }
 
     const serverId = inbound.serverId;
@@ -1200,7 +1200,7 @@ export class InboundService {
     const inbound = await this.prisma.inbound.findUnique({ where: { id: inboundId } });
     if (!inbound) throw new NotFoundException('节点不存在');
     if (!inbound.relayEnabled && !inbound.relayTag) {
-      throw new BadRequestException('该节点未挂载中转');
+      throw new BadRequestException('该节点未挂载出站');
     }
 
     await this.unmountRelayFromNode(inbound.serverId, inbound);

@@ -80,7 +80,7 @@ export default function NodesPage() {
     setRelayBusy(true);
     try {
       await api.post(`/inbounds/mine/${nodeId}/relay`, { socksId: relaySocksId });
-      toast.success('中转已挂载');
+      toast.success('出站已挂载');
       setRelayDialogId(null);
       refetch();
     } catch (err: any) {
@@ -91,10 +91,10 @@ export default function NodesPage() {
   };
 
   const detachRelay = async (nodeId: number) => {
-    if (!confirm('确认卸载该节点的 SOCKS 中转？')) return;
+    if (!confirm('确认卸载该节点的 SOCKS 出站？')) return;
     try {
       await api.delete(`/inbounds/mine/${nodeId}/relay`);
-      toast.success('中转已卸载');
+      toast.success('出站已卸载');
       refetch();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
@@ -179,7 +179,7 @@ export default function NodesPage() {
                         {node.protocol === 'vless' && node.realityDest && (
                           <Badge variant="secondary" className="bg-violet-500/15 text-violet-500 border-violet-500/30">Reality</Badge>
                         )}
-                        {node.relayEnabled && <Badge variant="success">中转</Badge>}
+                        {node.relayEnabled && <Badge variant="success">出站</Badge>}
                       </div>
                     </div>
 
@@ -267,19 +267,19 @@ export default function NodesPage() {
                       ) : null}
                     </div>
 
-                    {/* SOCKS 中转（后期挂载/卸载） */}
+                    {/* SOCKS 出站（后期挂载/卸载） */}
                     <div className="flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-3 py-2">
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
                         <Network className="h-4 w-4" />
                         {node.relayEnabled ? (
-                          <span>中转出口：<span className="font-mono text-foreground">{node.relaySocksHost || '—'}:{node.relaySocksPort || ''}</span></span>
+                          <span>出站出口：<span className="font-mono text-foreground">{node.relaySocksHost || '—'}:{node.relaySocksPort || ''}</span></span>
                         ) : (
-                          <span>未开启中转</span>
+                          <span>未开启出站</span>
                         )}
                       </div>
                       {node.relayEnabled ? (
                         <Button size="sm" variant="ghost" className="h-7 text-destructive" onClick={() => detachRelay(node.id)}>
-                          卸载中转
+                          卸载出站
                         </Button>
                       ) : (
                         <Button size="sm" variant="outline" className="h-7" onClick={() => openRelayDialog(node.id)} disabled={node.status !== 'ACTIVE'}>
@@ -295,11 +295,11 @@ export default function NodesPage() {
         </div>
       )}
 
-      {/* 挂载 SOCKS 中转 弹窗 */}
+      {/* 挂载 SOCKS 出站 弹窗 */}
       <Dialog open={relayDialogId !== null} onOpenChange={(open) => !open && setRelayDialogId(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>挂载 SOCKS 中转</DialogTitle>
+            <DialogTitle>挂载 SOCKS 出站</DialogTitle>
           </DialogHeader>
           {socksList.length === 0 ? (
             <div className="py-6 text-center text-sm text-muted-foreground">
@@ -339,7 +339,7 @@ export default function NodesPage() {
                 onClick={() => relayDialogId && attachRelay(relayDialogId)}
               >
                 {relayBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Network className="mr-2 h-4 w-4" />}
-                挂载中转
+                挂载出站
               </Button>
             </div>
           )}

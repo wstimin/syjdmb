@@ -15,8 +15,8 @@ import { BrandLogo } from '@/components/layout/brand-logo';
 const navItems = [
   { href: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
   { href: '/users', label: '用户管理', icon: Users },
-  { href: '/plans', label: '网络方案', icon: Globe },
-  { href: '/vproducts', label: '虚拟商品', icon: Package },
+  { href: '/plans', label: '网络产品', icon: Globe },
+  { href: '/vproducts', label: 'NP店铺', icon: Package },
   { href: '/orders', label: '订单管理', icon: ShoppingCart },
   { href: '/cards', label: '卡密管理', icon: CreditCard },
   { href: '/coupons', label: '优惠券管理', icon: Tag },

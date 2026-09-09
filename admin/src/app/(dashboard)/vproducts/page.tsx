@@ -14,7 +14,12 @@ import Pagination from '@/components/shared/pagination';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const VP_STATUSES = ['ACTIVE', 'HIDDEN', 'SOLD_OUT', 'ARCHIVED'];
+const VP_STATUSES = [
+  { value: 'ACTIVE', label: '在售' },
+  { value: 'HIDDEN', label: '隐藏' },
+  { value: 'SOLD_OUT', label: '已售罄' },
+  { value: 'ARCHIVED', label: '已下架' },
+];
 const DELIVERY_TYPES = [
   { id: 'AUTO', label: '自动发货（上传交付码，付款后自动发放）' },
   { id: 'MANUAL', label: '人工发货（付款后在订单里手动填交付内容）' },
@@ -107,7 +112,7 @@ export default function VirtualProductsPage() {
   };
 
   const remove = async (id: number) => {
-    if (!confirm('确定删除该虚拟商品？已有成交订单的商品无法删除，请改用 ARCHIVED 下架。')) return;
+    if (!confirm('确定删除该商品？已有成交订单的商品无法删除，请改用已下架（ARCHIVED）。')) return;
     try {
       await api.delete(`/virtual-products/${id}`);
       toast.success('已删除');
@@ -229,7 +234,7 @@ export default function VirtualProductsPage() {
           className="rounded-md border bg-background px-2 py-1 text-xs"
         >
           {VP_STATUSES.map((s) => (
-            <option key={s} value={s}>{s}</option>
+            <option key={s.value} value={s.value}>{s.label}</option>
           ))}
         </select>
       ),
@@ -252,7 +257,7 @@ export default function VirtualProductsPage() {
 
   return (
     <div>
-      <PageHeader title="虚拟商品" subtitle="商城数字商品：自动发货（交付码）或人工发货">
+      <PageHeader title="NP店铺" subtitle="NP 店铺数字商品：自动发货（交付码）或人工发货">
         <div className="flex items-center gap-2">
           <Input
             className="max-w-xs"
@@ -272,7 +277,7 @@ export default function VirtualProductsPage() {
 
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={pageProducts} keyField="id" emptyMessage="暂无虚拟商品" />
+          <DataTable columns={columns} data={pageProducts} keyField="id" emptyMessage="暂无商品" />
           <Pagination
             page={safePage}
             limit={limit}
@@ -331,7 +336,7 @@ export default function VirtualProductsPage() {
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
               >
                 {VP_STATUSES.map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                  <option key={s.value} value={s.value}>{s.label}</option>
                 ))}
               </select>
             </div>

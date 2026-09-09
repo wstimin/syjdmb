@@ -89,7 +89,7 @@ export default function SocksPage() {
         <div>
           <h1 className="text-2xl font-bold">{t('nodes.socksTitle')}</h1>
           <p className="text-sm text-muted-foreground">
-            记录你自有的 SOCKS5 服务器作为台账；购买方案时可「开启中转」，让节点走 SOCKS 线路
+            记录你自有的 SOCKS5 服务器作为台账；购买方案时可「开启出站」，让节点走 SOCKS 线路
           </p>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

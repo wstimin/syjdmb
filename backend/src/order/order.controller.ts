@@ -109,6 +109,13 @@ export class OrderController {
     return { success: true, data: result };
   }
 
+  @Get('mine/products')
+  @ApiOperation({ summary: 'Get my purchased virtual products' })
+  async getMineProducts(@CurrentUser('id') userId: number) {
+    const result = await this.orderService.getUserProducts(userId);
+    return { success: true, data: result };
+  }
+
   @Get('mine/:id')
   @ApiOperation({ summary: 'Get my order by ID' })
   async getMineById(

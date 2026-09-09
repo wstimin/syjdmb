@@ -168,7 +168,7 @@ export class OrderService {
         }
       }
       if (params.relay) {
-        throw new BadRequestException('续费无需开启 SOCKS 中转');
+        throw new BadRequestException('续费无需开启 SOCKS 出站');
       }
 
       // 【#续费批处理 对抗复核】同节点同类型已存在未完成续费单（未支付/已付未激活/激活中）→
@@ -248,7 +248,7 @@ export class OrderService {
     }
     // 勾选中转但既没选台账也没手填地址/端口 → 直接报错，避免下单后激活时才发现
     if (relay && (!relayHost || !relayPort)) {
-      throw new BadRequestException('开启中转需要选择或填写 SOCKS 节点的地址和端口');
+      throw new BadRequestException('开启出站需要选择或填写 SOCKS 节点的地址和端口');
     }
 
     // 服务器选择：只允许套餐绑定的服务器；未传则取第一个绑定（激活时兜底自动选）
@@ -1381,6 +1381,29 @@ export class OrderService {
     ]);
 
     return { orders, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  /**
+   * 我的商品：用户已购的虚拟商品订单（支付成功即视为已购）。
+   * PAID=刚支付完仍在激活中；COMPLETED=AUTO 已自动发码 / MANUAL 已完结整单（deliveryInfo
+   * 留空=等待管理员发货）。已退款/已取消/未支付的不算已购。
+   */
+  async getUserProducts(userId: number) {
+    const orders = await this.prisma.order.findMany({
+      where: {
+        userId,
+        virtualProductId: { not: null },
+        status: { in: ['PAID', 'COMPLETED'] },
+      },
+      include: {
+        virtualProduct: {
+          select: { id: true, name: true, nameEn: true, deliveryType: true, price: true, status: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+    return orders;
   }
 
   async findAll(page = 1, limit = 20, status?: string, search?: string) {
