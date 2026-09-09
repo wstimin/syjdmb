@@ -186,8 +186,8 @@ export default function NodesPage() {
                     {/* Info */}
                     <div className="grid grid-cols-3 gap-2 text-center text-sm">
                       <div className="rounded-lg bg-muted/50 p-2">
-                        <div className="text-muted-foreground">{t('nodes.port')}</div>
-                        <div className="font-medium">{node.port}</div>
+                        <div className="text-muted-foreground">{t('nodes.expiry')}</div>
+                        <div className="font-medium">{node.expiryTime ? new Date(node.expiryTime).toLocaleDateString() : t('nodes.expiryNone')}</div>
                       </div>
                       <div className="rounded-lg bg-muted/50 p-2">
                         <div className="text-muted-foreground">{t('nodes.used')}</div>

@@ -8,6 +8,7 @@ export const API_URL = '/api';
 export const api = axios.create({
   baseURL: API_URL,
   headers: { 'Content-Type': 'application/json' },
+  timeout: 30000, // 30s：网关/面板异常时避免请求无限挂起（轮询类调用靠后端兜底）
 });
 
 // Helper to map backend error to a readable message

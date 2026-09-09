@@ -4,8 +4,9 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Mail, Lock, User, Zap } from 'lucide-react';
+import { Mail, Lock, User } from 'lucide-react';
 import Link from 'next/link';
+import { BrandLogo } from '@/components/layout/brand-logo';
 import { useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
@@ -58,8 +59,8 @@ export default function RegisterPage() {
       >
         <Card className="border-border/60 shadow-xl">
           <CardHeader className="text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-primary">
-              <Zap className="h-6 w-6 text-white" />
+            <div className="mx-auto flex h-12 w-12 items-center justify-center">
+              <BrandLogo size={46} />
             </div>
             <CardTitle className="text-2xl">{t('auth.registerTitle')}</CardTitle>
             <CardDescription>{t('auth.registerSubtitle')}</CardDescription>

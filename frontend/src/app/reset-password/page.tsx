@@ -3,8 +3,9 @@
 import { useState, Suspense } from 'react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Lock, Zap, CheckCircle2, XCircle } from 'lucide-react';
+import { Lock, CheckCircle2, XCircle } from 'lucide-react';
 import Link from 'next/link';
+import { BrandLogo } from '@/components/layout/brand-logo';
 import { useSearchParams } from 'next/navigation';
 import { api, getErrorMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -119,8 +120,8 @@ export default function ResetPasswordPage() {
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-md">
         <Card className="border-border/60 shadow-xl">
           <CardHeader className="text-center">
-            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-primary">
-              <Zap className="h-6 w-6 text-white" />
+            <div className="mx-auto flex h-12 w-12 items-center justify-center">
+              <BrandLogo size={46} />
             </div>
             <CardTitle className="text-2xl">重置密码</CardTitle>
             <CardDescription>设置一个新密码，完成后即可用新密码登录</CardDescription>

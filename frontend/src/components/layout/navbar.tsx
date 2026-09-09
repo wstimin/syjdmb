@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
-import { Menu, X, Zap, Languages } from 'lucide-react';
+import { Menu, X, Languages, LayoutDashboard } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
+import { BrandLogo } from '@/components/layout/brand-logo';
 import { cn } from '@/lib/utils';
 
 export function Navbar() {
@@ -15,20 +16,27 @@ export function Navbar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
-  // 导航不含「套餐」入口（套餐页从首页 CTA / 页脚 / 用户中心可达）
+  // 官网导航：官方展示页（首页/套餐/使用场景/常见问题）+ 登录注册入口。
+  // 用户中心为独立区域（/user 自带侧边栏），不混入官网导航。
   const links = [
     { href: '/', label: t('common.home') },
-    { href: user ? '/user/dashboard' : '/login', label: t('common.dashboard') },
+    { href: '/products', label: t('common.products') },
+    { href: '/#scenarios', label: t('nav.scenarios') },
+    { href: '/#faq', label: t('nav.faq') },
   ];
+
+  const isActive = (href: string) => {
+    // 锚点项（/#scenarios、/#faq）属页内导航，不参与「当前页」高亮
+    if (href.includes('#')) return false;
+    return href === '/' ? pathname === '/' : pathname === href;
+  };
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-lg">
       <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-primary">
-            <Zap className="h-5 w-5 text-white" />
-          </div>
+        <Link href="/" className="flex items-center gap-2.5">
+          <BrandLogo size={34} />
           <span className="text-lg font-bold tracking-tight">{t('common.appName')}</span>
         </Link>
 
@@ -40,7 +48,7 @@ export function Navbar() {
               href={link.href}
               className={cn(
                 'rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                pathname === link.href
+                isActive(link.href)
                   ? 'bg-accent text-foreground'
                   : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
               )}
@@ -59,11 +67,12 @@ export function Navbar() {
           {user ? (
             <div className="flex items-center gap-3">
               <Link href="/user/dashboard">
-                <span className="text-sm font-medium">
-                  {user.username || user.email.split('@')[0]}
-                </span>
+                <Button variant="outline" size="sm">
+                  <LayoutDashboard className="mr-1.5 h-4 w-4" />
+                  {t('common.dashboard')}
+                </Button>
               </Link>
-              <Button variant="outline" size="sm" onClick={logout}>
+              <Button variant="ghost" size="sm" onClick={logout}>
                 {t('common.logout')}
               </Button>
             </div>
@@ -101,9 +110,17 @@ export function Navbar() {
             ))}
             <div className="mt-2 border-t pt-3">
               {user ? (
-                <Button variant="outline" className="w-full" onClick={() => { logout(); setOpen(false); }}>
-                  {t('common.logout')}
-                </Button>
+                <>
+                  <Link href="/user/dashboard" onClick={() => setOpen(false)}>
+                    <Button variant="outline" className="w-full">
+                      <LayoutDashboard className="mr-1.5 h-4 w-4" />
+                      {t('common.dashboard')}
+                    </Button>
+                  </Link>
+                  <Button variant="ghost" className="mt-2 w-full" onClick={() => { logout(); setOpen(false); }}>
+                    {t('common.logout')}
+                  </Button>
+                </>
               ) : (
                 <div className="flex gap-2">
                   <Link href="/login" className="flex-1" onClick={() => setOpen(false)}>

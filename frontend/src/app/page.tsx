@@ -5,7 +5,7 @@ import { motion } from 'framer-motion';
 import Link from 'next/link';
 import {
   Zap, Shield, Rocket, Globe, ArrowRight, ChevronDown,
-  ShoppingBag, Share2, Sparkles, Briefcase,
+  ShoppingBag, Share2, Sparkles, Database,
 } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 import { api } from '@/lib/api';
@@ -18,7 +18,7 @@ const scenarios = [
   { icon: ShoppingBag, titleKey: 'scenario1Title', descKey: 'scenario1Desc', color: 'text-violet-500' },
   { icon: Share2, titleKey: 'scenario2Title', descKey: 'scenario2Desc', color: 'text-blue-500' },
   { icon: Sparkles, titleKey: 'scenario3Title', descKey: 'scenario3Desc', color: 'text-emerald-500' },
-  { icon: Briefcase, titleKey: 'scenario4Title', descKey: 'scenario4Desc', color: 'text-amber-500' },
+  { icon: Database, titleKey: 'scenario4Title', descKey: 'scenario4Desc', color: 'text-amber-500' },
 ];
 
 const features = [

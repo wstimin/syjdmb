@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Server, Ticket, User, ArrowLeft, Network, Wallet } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
+import { BrandLogo } from '@/components/layout/brand-logo';
 import { cn } from '@/lib/utils';
 
 export default function UserLayout({ children }: { children: React.ReactNode }) {
@@ -21,17 +22,23 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {/* 用户中心顶部条：仅返回官网，不带任何官网导航 */}
+      <div className="mb-6 flex items-center justify-between border-b pb-4">
+        <Link href="/" className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" />
+          {t('nav.official')}
+        </Link>
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <BrandLogo size={26} />
+          <span>{t('common.appName')}</span>
+          <span className="hidden text-xs font-normal text-muted-foreground sm:inline">· {t('common.dashboard')}</span>
+        </div>
+      </div>
+
       <div className="grid gap-8 lg:grid-cols-[240px_1fr]">
         {/* Sidebar */}
         <aside className="hidden lg:block">
           <nav className="sticky top-24 space-y-1">
-            <Link
-              href="/"
-              className="mb-4 flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              {t('common.back')}
-            </Link>
             {nav.map((item) => (
               <Link
                 key={item.href}

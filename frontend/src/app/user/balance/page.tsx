@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
-import { Wallet, Loader2, XCircle, Plus, Minus } from 'lucide-react';
+import { Wallet, Loader2, XCircle, Plus, Minus, Ticket as TicketIcon } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -25,6 +25,7 @@ const QUICK_AMOUNTS = [50, 100, 200, 500];
 const paymentMethods = [
   { id: 'wechat', label: '微信支付', icon: '💚' },
   { id: 'alipay', label: '支付宝', icon: '💙' },
+  { id: 'card', label: '卡密兑换', icon: <TicketIcon className="h-5 w-5" /> },
 ];
 
 export default function BalancePage() {
@@ -33,6 +34,9 @@ export default function BalancePage() {
   const [creating, setCreating] = useState(false);
   const [payQr, setPayQr] = useState<string | null>(null);
   const [method, setMethod] = useState<string>('');
+  const [cardCode, setCardCode] = useState<string>('');
+  const [redeeming, setRedeeming] = useState(false);
+  const redeemingRef = useRef(false); // Enter/按钮双击防重入（按钮 disabled 挡不住 Enter 提交）
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   // 余额明细
@@ -100,6 +104,12 @@ export default function BalancePage() {
   }, [refreshUser]);
 
   const createRecharge = async (m: string) => {
+    setMethod(m);
+    // 卡密兑换不是网关支付：不校验充值金额、不建 RC 单，直接展开卡密输入面板（兑换进余额）
+    if (m === 'card') {
+      setPayQr(null);
+      return;
+    }
     const amt = Number(amount);
     if (!(amt > 0)) {
       toast.error('请输入充值金额（大于 0）');
@@ -109,7 +119,6 @@ export default function BalancePage() {
       toast.error('单笔充值金额不能超过 50000 元');
       return;
     }
-    setMethod(m);
     setCreating(true);
     try {
       const recharge = await api.post('/recharges', { amount: amt });
@@ -132,6 +141,30 @@ export default function BalancePage() {
     // 取消支付展示态；若尚未支付，后台 RC 单保持 PENDING，稍后可再次拉起或由用户忽略
     if (pollRef.current) clearInterval(pollRef.current);
     setPayQr(null);
+  };
+
+  // 卡密兑换 → 余额入账（后端 POST /payments/card/redeem：原子占卡 + 递增入账 + 记流水）
+  const redeemCard = async () => {
+    if (redeemingRef.current) return; // ref 锁：连按 Enter/按钮不会并发重复兑换同一张卡
+    const code = cardCode.trim();
+    if (!code) {
+      toast.error('请输入卡密');
+      return;
+    }
+    redeemingRef.current = true;
+    setRedeeming(true);
+    try {
+      const res = await api.post('/payments/card/redeem', { code });
+      toast.success(`卡密兑换成功，余额 +¥${fmtMoney(res.data.data.amount)}`);
+      await refreshUser();
+      setCardCode('');
+      setTrigger((v) => v + 1); // 刷新余额明细
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setRedeeming(false);
+      redeemingRef.current = false;
+    }
   };
 
   const fmtMoney = (n: any) => Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -207,6 +240,23 @@ export default function BalancePage() {
                   {creating && method === m.id && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* 卡密兑换面板：选中「卡密兑换」时展开（不建充值单，兑换直接进余额） */}
+          {method === 'card' && !payQr && (
+            <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center">
+              <Input
+                value={cardCode}
+                onChange={(e) => setCardCode(e.target.value.toUpperCase())}
+                placeholder="输入卡密（如 XXXX-XXXX-XXXX-XXXX），不区分大小写"
+                className="font-mono sm:max-w-sm"
+                onKeyDown={(e) => e.key === 'Enter' && redeemCard()}
+              />
+              <Button onClick={redeemCard} disabled={!cardCode.trim() || redeeming} className="sm:w-28">
+                {redeeming && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                兑换到余额
+              </Button>
             </div>
           )}
 

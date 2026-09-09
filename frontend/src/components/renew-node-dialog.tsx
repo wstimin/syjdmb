@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Loader2, Banknote, Ticket as TicketIcon, XCircle, CheckCircle2 } from 'lucide-react';
+import { Loader2, Banknote, Ticket as TicketIcon, XCircle, CheckCircle2, CalendarClock, Gauge } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { cn } from '@/lib/utils';
 
 interface Props {
   node: any;
@@ -19,80 +20,202 @@ interface Props {
 }
 
 const GB = 1024 * 1024 * 1024;
+const DAY_MS = 24 * 3600 * 1000;
 
-/** 节点续期 / 流量续费弹窗：选套餐 → 支付（余额直付 / 微信 / 支付宝 / 卡密充值）。 */
+type RenewKind = 'EXPIRY' | 'TRAFFIC';
+
+/** 节点续费弹窗：续费拆成两类（到期续费 / 流量重置），均为「开新周期、不叠加」：
+ *  - 到期续费（EXPIRY）：到期日顺延套餐时长；套餐含流量且节点限流量时，流量重置为套餐额度满额（不叠加）。
+ *  - 流量重置（TRAFFIC）：仅流量重置为套餐额度满额（不叠加），到期时间不变。
+ */
 export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) {
   const { user, refreshUser } = useAuth();
   const { t } = useI18n();
   const [plans, setPlans] = useState<any[]>([]);
+  const [kind, setKind] = useState<RenewKind | null>(null);
   const [selected, setSelected] = useState<any>(null);
   const [method, setMethod] = useState<string>('');
   const [orderNo, setOrderNo] = useState<string>('');
+  const [orderId, setOrderId] = useState<number | null>(null); // 用于「返回」时取消未支付单
   const [payQr, setPayQr] = useState<string | null>(null);
   const [cardCode, setCardCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [paid, setPaid] = useState(false); // 网关支付成功但节点还在应用
+  const paidRef = useRef(false); // 轮询闭包里的 paid 恒为开启时的旧值 → 用 ref 挡重复 toast（118）
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+  // 【对抗复核 F10：setTimeout 轮询链的共享停表开关】`stopped` 只是 startPolling 的闭包局部量，
+  // stopPolling() 与 open→false 清理 effect 都够不到它 —— 关闭弹窗的瞬间若恰有一跳 await 未归，
+  // 该跳回来后仍会执行 `pollRef.current = setTimeout(tick, ...)` 把轮询链「复活」，后台每 3s 请求
+  // 直至订单 48h 过期，还会对共享状态发迟到 toast/清空二维码（可能清掉新开的一笔）。用一个
+  // stoppedRef 作为统一停表开关：stopPolling()/清理 effect/终态分支都置 true，tick 入口与重排
+  // 前都检查它，彻底堵死复活。
+  const stoppedRef = useRef(false);
 
-  const renewable = useCallback(
+  // 本节点能力：
+  //  - 到期续费：节点必须限期（有到期时间）
+  //  - 流量重置：节点必须限流量，且「没有到期时间」或「尚未到期」（已到期节点重置流量无意义）
+  const canExpiry = !!node?.expiryTime;
+  const isTimeExpired = !!node?.expiryTime && new Date(node.expiryTime).getTime() <= Date.now();
+  const canTraffic = Number(node?.trafficLimit) > 0 && !isTimeExpired;
+
+  const nextExpiryOf = useCallback(
     (p: any) => {
-      const hasDays = Number(p.duration) > 0;
-      const hasTraffic = Number(p.traffic) > 0;
-      const daysOk = hasDays && !!node?.expiryTime; // 不限时节点无法续期（面板会跳过）
-      const trafficOk = hasTraffic && Number(node?.trafficLimit) > 0; // 不限流量节点无法续流量
-      return (daysOk || trafficOk) && !p.isTrial;
+      if (!node?.expiryTime) return null;
+      return new Date(new Date(node.expiryTime).getTime() + Number(p.duration) * DAY_MS);
     },
     [node],
+  );
+
+  // 每种续费类型的可选套餐：
+  //  - 到期续费：套餐必须含时长；且「顺延后的新到期日」仍在未来（否则续了仍过期，后端也会拒绝）
+  //  - 流量重置：套餐必须含流量
+  const plansFor = useCallback(
+    (k: RenewKind) => {
+      if (!plans.length) return plans;
+      if (k === 'EXPIRY') {
+        return plans.filter((p: any) => {
+          const hasDays = Number(p.duration) > 0;
+          const next = nextExpiryOf(p);
+          // 70：含流量的套餐，在节点不限流量时不可用于「到期续费」—— 后端对不限流量节点
+          // 不会做流量重置，卡片上却标着“流量重置为满额”会误导
+          if (Number(p.traffic) > 0 && Number(node?.trafficLimit) <= 0) return false;
+          return hasDays && !p.isTrial && next !== null && next.getTime() > Date.now();
+        });
+      }
+      return plans.filter((p: any) => Number(p.traffic) > 0 && !p.isTrial);
+    },
+    [plans, nextExpiryOf],
   );
 
   useEffect(() => {
     if (!open) return;
     setPlans([]);
+    setKind(null);
     setSelected(null);
     setMethod('');
     setOrderNo('');
     setPayQr(null);
     setCardCode('');
     setPaid(false);
+    paidRef.current = false;
+    // 默认选中可用的续费类型：优先「到期续费」，不可用则「流量重置」
+    const def: RenewKind | null = canExpiry ? 'EXPIRY' : canTraffic ? 'TRAFFIC' : null;
+    setKind(def);
     api
       .get('/plans')
-      .then((res) => setPlans((res.data.data || []).filter(renewable)))
+      .then((res) => setPlans((res.data.data || []).filter((p: any) => !p.isTrial)))
       .catch(() => setPlans([]));
-  }, [open, renewable]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
-  // 清理轮询：组件卸载 / 关闭弹窗 / 重新打开
+  // 清理轮询：关闭弹窗（open→false）/ 组件卸载时停表，阻止对已关闭订单继续轮询（99）。
+  // 【对抗复核 F10】除了清定时器，还必须把 stoppedRef 置 true —— 否则在途的一跳 await 回来后
+  // 会重排下一跳，把轮询链在后台复活。
   useEffect(() => {
+    if (!open) return undefined;
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      stoppedRef.current = true;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
-  }, []);
+  }, [open]);
+
+  const stopPolling = () => {
+    stoppedRef.current = true;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  // 【复核】防重报错时的出口：拉取该节点在途的续费单（PENDING/PAID/PROCESSING）。
+  // 旧网关单 cancel-self 退不掉、会一直占着未完成名额 → 再下单必被防重拦截。
+  // 命中防重错误时用这单「继续支付」，而不是把用户留在死胡同。
+  const findExistingRenewalOrder = useCallback(async (): Promise<any | null> => {
+    for (let page = 1; page <= 3; page++) {
+      const res = await api.get(`/orders/mine?page=${page}&limit=50`);
+      const data = res.data?.data;
+      const orders: any[] = data?.orders || [];
+      const hit = orders.find(
+        (o: any) =>
+          o?.renewalOfInbound?.id === node?.id &&
+          // 【对抗复核确认】后端防重按 (userId, 节点, renewType) 分组 —— EXPIRY 的在途单
+          // 不会拦 TRAFFIC 下单，反之亦然。捞回的订单必须与用户当前选的续费类型一致，
+          // 否则可能付到另一种类型的单（付了流量重置的钱却去付到期续费的单，语义错乱）。
+          // legacy（renewType=null）在途单同理不匹配新类型，不捞。
+          o?.renewType === kind &&
+          ['PENDING', 'PAID', 'PROCESSING'].includes(o?.status),
+      );
+      if (hit) return hit;
+      if (!orders.length || page >= (data?.totalPages ?? 1)) break;
+    }
+    return null;
+  }, [node, kind]);
 
   const startPolling = (no: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
+    stopPolling();
+    // 【对抗复核 F10】stopPolling() 刚把 stoppedRef 置 true；这里重置为 false，保证
+    // 「上一次轮询被终态/关闭停掉后，用户重新开启一笔新续费」时本轮轮询能真正跑起来。
+    stoppedRef.current = false;
+    // 【对抗复核确认】旧实现 setInterval + async：上一跳 await 未返回时下一跳已触发
+    // （tick 重叠），成功块缺合并护栏，多跳可能并发 onClose；且只处理 COMPLETED，
+    // FAILED/EXPIRED/CANCELLED 落入 paid=false 分支被跳过，二维码视图永久冻结。
+    // 改 setTimeout 链：await 期间绝无下一跳；stopped 闭包标记 + stopPolling() 双保险，
+    // 保证任一终态（成功/终止）只执行一次。
+    let stopped = false;
+    const tick = async () => {
+      // 入口双保险：闭包 stopped 挡本链自己的终态，stoppedRef 挡「关闭弹窗/stopPolling 后
+      // 在途 await 回来」的复活（F10）——任一处停了就绝不再继续，也不重排。
+      if (stopped || stoppedRef.current) return;
       try {
         const res = await api.get(`/payments/status/${no}`);
         const d = res.data.data;
         if (d.status === 'COMPLETED') {
-          clearInterval(pollRef.current!);
+          stopped = true;
+          stopPolling();
           toast.success('续费成功，节点已更新并恢复');
           onDone();
           onClose();
           return;
         }
-        if (d.paid && !paid) {
+        if (d.status === 'FAILED' || d.status === 'EXPIRED' || d.status === 'CANCELLED') {
+          // 终态必须让二维码视图退场（否则永久冻结）。FAILED 可能是「订单未通过审核 /
+          // 续费应用被拒」—— 已付款的续费订单不走自动退款（退款仅限购买订单），
+          // 提示联系客服核实；EXPIRED/CANCELLED = 未支付单超时/被取消，直接重下即可。
+          stopped = true;
+          stopPolling();
+          setPayQr(null);
+          setMethod('');
+          setOrderId(null);
+          setOrderNo('');
+          toast.error(
+            d.status === 'FAILED'
+              ? '订单未通过审核或续费应用被拒（若已付款请联系客服核实），请重新发起续费'
+              : '订单已终止（未支付订单超时自动关闭），请重新发起续费',
+          );
+          return;
+        }
+        if (d.paid && !paidRef.current) {
+          // 闭包读的 paid 永远是开启轮询时的 false → 用 ref 只 toast 一次（118）
+          paidRef.current = true;
           setPaid(true);
           toast.success('支付成功，正在应用续费...');
         }
       } catch {
-        // 轮询瞬间错误静默
+        // 轮询瞬间错误静默，下一跳重试
       }
-    }, 3000);
+      // 重排前再查一次 stoppedRef：await 期间若弹窗被关（F10），这里不得复活轮询链。
+      if (stopped || stoppedRef.current) return;
+      pollRef.current = setTimeout(tick, 3000);
+    };
+    pollRef.current = setTimeout(tick, 3000);
   };
 
-  // 下单 + 支付
+  // 下单 + 支付（renewType 区分 到期续费/流量重置，后端按类型激活，不叠加）
   const confirmRenew = async (m: string) => {
-    if (!selected) return;
+    if (!selected || !kind) return;
     setMethod(m);
     // 卡密：充进余额，不建单（后续用户改用余额支付）
     if (m === 'card') {
@@ -103,17 +226,26 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
     try {
       const res = await api.post('/orders', {
         planId: selected.id,
-        renewalOfInboundId: node.id, // 后端校验归属 + 面板 bulkAdjust 加量 + 自动重启
+        renewalOfInboundId: node.id, // 后端校验归属 + 面板重置/加量 + 自动重启
+        renewType: kind,
       });
       const order = res.data.data;
       setOrderNo(order.orderNo);
+      setOrderId(order.id);
 
       if (m === 'balance') {
-        const payRes = await api.post(`/orders/${order.id}/pay/balance`);
+        // 余额支付走同步激活：面板建入站→加量→重启可能超过实例 30s 默认超时，
+        // 单独给足 90s，避免「后端已在生效、前端已超时报错」的假失败（11）
+        const payRes = await api.post(`/orders/${order.id}/pay/balance`, undefined, { timeout: 90000 });
         await refreshUser(); // 扣款成功，立即刷新余额
         const d = payRes.data?.data;
         if (d?.activationFailed) {
-          toast.error('支付成功，但续费应用暂时失败，系统将自动重试，稍后可在「我的节点」查看');
+          // 【对抗复核 F15】不能对一切激活失败都承诺「系统将自动重试」—— 只有 PROCESSING 类
+          // 失败（settle 保持 PROCESSING，cron 会按差值补）才真的会重试；终态 FAILED 类防护
+          // （节点被删/暂停、已过期、旧版 addDays&addBytes=0…）订单已置 FAILED，cron 从不重试，
+          // 承诺「自动重试」永远不会发生，还把后端给的真实原因（d.message，如「请联系客服」）丢掉。
+          // 改为直接展示后端原因：PROCESSING 类自带「系统将自动重试」，FAILED 类自带正确指引。
+          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的节点」查看');
           onClose();
           return;
         }
@@ -130,11 +262,67 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
       setPayQr(qr);
       startPolling(order.orderNo);
     } catch (err: any) {
-      toast.error(getErrorMessage(err));
+      const msg = getErrorMessage(err);
+      // 【复核】防重拦截时的「继续支付已有订单」出口：旧网关单 cancel-self 退不掉、
+      // 占着未完成名额 → 再下单被防重拦截 → 死胡同。命中该错误时自动捞回已有单
+      // 重新出码（或提示正在处理中），不重复建单。
+      if (msg.includes('未完成的续费订单') && m !== 'card') {
+        await continueExistingRenewal(m);
+        return;
+      }
+      toast.error(msg);
       setMethod('');
       setPayQr(null);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // 续费点「返回」后再次下单撞防重 → 用已有订单继续支付（同上条复核注释）
+  const continueExistingRenewal = async (m: string) => {
+    try {
+      const existing = await findExistingRenewalOrder();
+      if (!existing) {
+        toast.error('未找到可继续的续费订单，请稍后重试');
+        setMethod('');
+        return;
+      }
+      setOrderId(existing.id);
+      setOrderNo(existing.orderNo);
+      if (existing.status !== 'PENDING') {
+        // PAID/PROCESSING：续费已付款、正在应用，重复支付会白付第二笔
+        toast('已有续费正在处理中，请勿重复支付，稍后在「我的节点」查看');
+        setMethod('');
+        return;
+      }
+      if (m === 'balance') {
+        const payRes = await api.post(`/orders/${existing.id}/pay/balance`, undefined, { timeout: 90000 });
+        await refreshUser();
+        const d = payRes.data?.data;
+        if (d?.activationFailed) {
+          // 【对抗复核 F15】不能对一切激活失败都承诺「系统将自动重试」—— 只有 PROCESSING 类
+          // 失败（settle 保持 PROCESSING，cron 会按差值补）才真的会重试；终态 FAILED 类防护
+          // （节点被删/暂停、已过期、旧版 addDays&addBytes=0…）订单已置 FAILED，cron 从不重试，
+          // 承诺「自动重试」永远不会发生，还把后端给的真实原因（d.message，如「请联系客服」）丢掉。
+          // 改为直接展示后端原因：PROCESSING 类自带「系统将自动重试」，FAILED 类自带正确指引。
+          toast.error(d.message || '支付成功，但续费应用暂时失败，请稍后在「我的节点」查看');
+          onClose();
+          return;
+        }
+        toast.success('续费成功，节点已更新并恢复');
+        onDone();
+        onClose();
+        return;
+      }
+      const payRes = await api.post(`/payments/orders/${existing.id}`, { method: m });
+      const qr = payRes.data.data?.qrContent;
+      if (!qr) throw new Error('支付网关未返回二维码内容，请确认支付已配置');
+      setPayQr(qr);
+      startPolling(existing.orderNo);
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+      setMethod('');
+      setPayQr(null);
     }
   };
 
@@ -161,17 +349,57 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
     { id: 'card', label: t('purchase.cardKey'), icon: <TicketIcon className="h-5 w-5" /> },
     { id: 'balance', label: t('purchase.balance'), icon: <Banknote className="h-5 w-5" /> },
   ];
+
+  // 二维码视图「返回」：尝试取消这张未支付单（否则旧单占着未完成续费单名额，
+  // 且后端防重会拦截新一轮下单）。【对抗复核确认】只有取消成功才停表并清空订单状态：
+  // 取消失败（带支付方式的单恒被后端拒）时订单仍在等支付，轮询必须继续 —— 否则支付
+  // 成功的回调再也没有观察者，toast 却邀请「继续扫码」，用户很可能再下一单（撞防重 /
+  // 重复付款），二维码视图却已消失。
+  const backFromQr = async () => {
+    if (!orderId) {
+      stopPolling();
+      setOrderId(null);
+      setOrderNo('');
+      setPayQr(null);
+      return;
+    }
+    try {
+      await api.post(`/orders/${orderId}/cancel-self`);
+      stopPolling();
+      // 能取消（未带支付方式的 PENDING 单 / FAILED 单）→ 回套餐选择页，可放心重下
+      setOrderId(null);
+      setOrderNo('');
+      setPayQr(null);
+      setMethod('');
+    } catch {
+      // 【复核：backFromQr】这里能进二维码视图说明订单已带支付方式（出码时后端写入
+      // payMethod）；而「PENDING + WECHAT/ALIPAY」的单 cancel-self 恒被后端
+      // ConflictException 拒绝（带支付方式的订单只能管理员取消或 48h 超时收敛，
+      // 见 order.service cancelSelf）。若此处清空视图，用户回套餐页再下单又会撞防重拦截，
+      // 死胡同；且直接停表会让支付成功无人观察。所以：保留二维码视图 + 轮询照走 +
+      // 诚实提示，可继续扫这张码付，或关掉弹窗等订单超时自动释放后再续。
+      toast.error('该订单已生成支付码，无法自行取消。您可以继续扫码完成支付；或关闭后等待订单超时自动释放，再重新续费（也可联系客服取消）。');
+    }
+  };
   const statusLabel: Record<string, any> = {
     ACTIVE: <Badge variant="success">活跃</Badge>,
     EXPIRED: <Badge variant="danger">已过期</Badge>,
     SUSPENDED: <Badge variant="warning">已暂停</Badge>,
   };
 
+  const kindTabs: { id: RenewKind; label: string; icon: any; desc: string; enabled: boolean }[] = [
+    { id: 'EXPIRY', label: '到期续费', icon: <CalendarClock className="h-4 w-4" />, desc: '到期日顺延 + 流量回到满额（不叠加）', enabled: canExpiry },
+    { id: 'TRAFFIC', label: '流量重置', icon: <Gauge className="h-4 w-4" />, desc: '仅重置流量为满额，到期时间不变', enabled: canTraffic },
+  ];
+  const showTabs = kindTabs.filter((k) => k.enabled).length > 1;
+  const curPlans = kind ? plansFor(kind) : [];
+  const activeTab = kindTabs.find((k) => k.id === kind);
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>节点续费 / 续流量</DialogTitle>
+          <DialogTitle>节点续费（到期续费 / 流量重置）</DialogTitle>
         </DialogHeader>
 
         {/* 节点现状 */}
@@ -203,29 +431,76 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
             <p className="text-sm text-muted-foreground">请用 {method === 'wechat' ? '微信' : '支付宝'} 扫码支付</p>
             {paid && <p className="text-sm font-medium text-primary">支付成功，正在应用续费...</p>}
             <span className="text-xs text-muted-foreground">{orderNo}</span>
-            <Button variant="outline" size="sm" onClick={() => { setPayQr(null); }}>返回</Button>
+            <Button variant="outline" size="sm" onClick={backFromQr}>返回</Button>
           </div>
         ) : (
           <>
-            {/* 套餐选择 */}
+            {/* 续费类型 Tab：两种都可用才显示 Tab 栏；否则直接显示唯一的类型 */}
+            {showTabs ? (
+              <div className="grid grid-cols-2 gap-2">
+                {kindTabs.map((k) => (
+                  <button
+                    key={k.id}
+                    type="button"
+                    disabled={!k.enabled}
+                    onClick={() => { setKind(k.id); setSelected(null); setMethod(''); setOrderNo(''); setOrderId(null); }}
+                    className={cn(
+                      'flex flex-col items-start gap-1 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors disabled:opacity-40',
+                      kind === k.id ? 'border-primary bg-primary/10' : 'border-input hover:bg-accent',
+                    )}
+                  >
+                    <span className="flex items-center gap-1.5 font-medium">
+                      {k.icon}{k.label}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{k.desc}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              activeTab && (
+                <div className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                  <div className="flex items-center gap-1.5 text-sm font-medium">
+                    {activeTab.icon}{activeTab.label}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{activeTab.desc}</div>
+                </div>
+              )
+            )}
+
+            {/* 套餐选择（按当前续费类型过滤） */}
             <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">选择续费套餐（时长在现有到期时间上累加，剩余时间不浪费）：</p>
-              {plans.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                {kind === 'EXPIRY'
+                  ? '选择到期续费套餐（时长在现有到期日上顺延，流量按套餐重置为满额，不叠加）'
+                  : kind === 'TRAFFIC'
+                    ? '选择流量重置套餐（仅重置流量为套餐满额，到期时间不变，不叠加）'
+                    : '选择续费套餐'}
+              </p>
+              {curPlans.length === 0 && (
                 <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-                  <p>当前没有可续费的套餐</p>
-                  <p className="mt-1 text-xs">（需要含时长或流量，且与节点能力匹配的套餐）</p>
+                  <p>当前没有可{kind === 'EXPIRY' ? '到期续费' : '流量重置'}的套餐</p>
+                  <p className="mt-1 text-xs">
+                    {kind === 'TRAFFIC' ? '（需要含流量额度的套餐）' : '（需要含时长、且能使节点回到有效期的套餐）'}
+                  </p>
                 </div>
               )}
-              {plans.map((p) => {
+              {curPlans.map((p) => {
                 const active = selected?.id === p.id;
                 const parts: string[] = [];
-                if (Number(p.duration) > 0 && node.expiryTime) parts.push(`+${Number(p.duration)} 天有效期`);
-                if (Number(p.traffic) > 0 && Number(node.trafficLimit) > 0) parts.push(`+${(Number(p.traffic) / GB).toFixed(0)}GB 流量`);
+                if (kind === 'EXPIRY') {
+                  if (Number(p.duration) > 0) parts.push(`顺延 +${Number(p.duration)} 天`);
+                  if (Number(p.traffic) > 0 && Number(node.trafficLimit) > 0) {
+                    parts.push(`流量重置为 ${(Number(p.traffic) / GB).toFixed(0)}GB（满额）`);
+                  }
+                } else if (Number(p.traffic) > 0) {
+                  parts.push(`流量重置为 ${(Number(p.traffic) / GB).toFixed(0)}GB（满额）`);
+                }
+                const nextExpiry = kind === 'EXPIRY' ? nextExpiryOf(p) : null;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => { setSelected(p); setMethod(''); setPayQr(null); }}
+                    onClick={() => { setSelected(p); setMethod(''); setPayQr(null); setOrderNo(''); setOrderId(null); }}
                     className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
                       active ? 'border-primary bg-primary/10' : 'border-input hover:bg-accent'
                     }`}
@@ -233,6 +508,11 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
                     <div>
                       <div className="font-medium">{p.name}</div>
                       <div className="text-xs text-muted-foreground">{parts.join(' · ')}</div>
+                      {nextExpiry && (
+                        <div className="mt-0.5 text-xs text-primary">
+                          续费后到期：{nextExpiry.toLocaleDateString()}
+                        </div>
+                      )}
                     </div>
                     <span className="font-semibold text-primary">¥{Number(p.price)}</span>
                   </button>
@@ -294,7 +574,13 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
               </div>
             )}
 
-            <div className="pt-2 text-xs text-muted-foreground">续费后节点将自动恢复并重启（面板侧自动生效）</div>
+            <div className="pt-2 text-xs text-muted-foreground">
+              {kind === 'EXPIRY'
+                ? '续费后节点将自动恢复并重启（到期日顺延，流量回到所选套餐的满额，不会叠加）'
+                : kind === 'TRAFFIC'
+                  ? '续费后节点将自动恢复并重启（仅流量回到所选套餐的满额，到期时间不变，不会叠加）'
+                  : '续费后节点将自动恢复并重启（面板侧自动生效）'}
+            </div>
             <div className="pt-1 text-xs text-muted-foreground">续费订单不支持申请退款（退款仅限购买订单），费用问题请联系客服。</div>
           </>
         )}

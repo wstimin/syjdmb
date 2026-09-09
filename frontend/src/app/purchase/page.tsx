@@ -150,9 +150,10 @@ function PurchaseContent() {
       const newOrder = res.data.data;
       setOrder(newOrder);
 
-      // Balance: pay directly, skip QR
+      // Balance: pay directly, skip QR（面板建入站→加量→重启可能超过实例 30s 默认超时，
+      // 单独给足 90s，避免「后端已生效、前端超时报错」的假失败）
       if (m === 'balance') {
-        const payRes = await api.post(`/orders/${newOrder.id}/pay/balance`);
+        const payRes = await api.post(`/orders/${newOrder.id}/pay/balance`, undefined, { timeout: 90000 });
         await refreshUser(); // 扣款成功，立即刷新余额等用户信息
         const data = payRes.data?.data;
         if (data?.activationFailed) {

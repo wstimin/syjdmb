@@ -29,3 +29,6 @@ Thumbs.db
 
 # Build info caches
 *.tsbuildinfo
+
+# Local tooling (not part of the product)
+.claude/

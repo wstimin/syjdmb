@@ -1,13 +1,23 @@
-# 售卖网站（NodeShop）— 综合型商业VPN节点售卖平台
+# 售卖网站（NodeShop）— 面向跨境业务与 AI 用户的国际网络连接服务
 
-一个完整的商业节点售卖系统：**前端用户端 + NestJS后端 + 管理后台**，对接 **3-XUI** 面板自动创建节点。
+一套完整的国际网络连接服务电商系统：**前端用户端 + NestJS 后端 + 管理后台**，对接 **3-XUI** 面板自动创建节点，即买即用。
+
+面向**跨境电商**（访问海外市场、平台与工具）、**海外社媒运营**、**远程办公与团队协作**、**大数据同步**等行业用户，以及需要**直连访问 ChatGPT、Claude、Gemini 等 AI 服务与 API** 的用户。
 
 ## 功能特性
 
 - 🎯 **3-XUI 自动对接**：购买后自动在面板创建入站节点，返回连接信息
 - 💳 **多种支付**：微信支付、支付宝、卡密兑换、余额支付
-- 📡 **多协议支持**：VLESS / VMess / Trojan / Shadowsocks
+- 📡 **多协议支持**：VLESS（+Reality）、VMess、Trojan、Shadowsocks
 - 🔄 **SOCKS5 中转**：用户自填 or 服务器自动创建
+- 📅 **套餐续费**：到期顺延（EXPIRY）或流量重置（TRAFFIC）两种续费类型，数据库级防重复下单
+- 💰 **余额体系**：余额充值、消费与交易流水全记录
+- 🎫 **优惠券**：优惠券折扣下单
+- ↩️ **退款**：已支付订单可申请退款，审核通过后退至余额
+- 🏷️ **卡密兑换**：卡密兑换与余额互通
+- 🎫 **工单客服**：用户工单 + 管理端回复
+- 📧 **邮件提醒**：购买/续费/工单等关键事件邮件通知
+- 🛡️ **安全加固**：登录防爆破（限流）、JWT access + refresh 双令牌、支付回调验签、退款/余额操作的并发防重与 Redis 锁
 - 🌍 **中英双语**：满足国际化需求
 - ⚙️ **完整管理后台**：用户/套餐/订单/服务器/节点/卡密/财务/工单/公告/设置
 - 📱 **现代精美 UI**：Next.js + Tailwind + Framer Motion
@@ -30,6 +40,7 @@
 ├── frontend/     # 用户端 UI (端口 3000)
 ├── admin/        # 管理后台 UI (端口 3002)
 ├── docker-compose.yml
+├── deploy.sh     # 一站式部署/运维脚本（安装后命令为 shop）
 └── .env.example
 ```
 
@@ -55,7 +66,7 @@ cd backend
 npm install
 cp ../.env .env
 npx prisma migrate dev   # 初始化数据库
-npx prisma db seed       # 创建管理员 admin@nodeshop.com / admin123456
+npx prisma db seed       # 首次创建默认管理员（仅在用户表为空时创建，非空则跳过）
 npm run start:dev        # http://localhost:3001/docs
 ```
 
@@ -75,7 +86,14 @@ npm install
 npm run dev              # http://localhost:3002
 ```
 
-使用 `admin@nodeshop.com / admin123456` 登录管理后台。
+## 默认管理员
+
+- 邮箱：`admin@nodeshop.com`（可用环境变量 `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` 覆盖）
+- 密码：`admin123456`
+
+⚠️ **只对全新数据库（用户表为空）创建一次**：数据库里一旦有任何用户，`prisma db seed` 与部署脚本都**不会重建或重置默认管理员**（避免每次部署用默认口令改写登录凭据的后门）。生产环境请立即修改。
+
+若需重置管理员登录信息，在服务器上使用 `shop` → 菜单 **4 重置登录**。
 
 ## XUI 面板对接
 
@@ -87,6 +105,8 @@ XUI_PANELS='[{"name":"Server 1","url":"http://your-panel:54321","username":"admi
 
 也可在管理后台「服务器管理」页面直接添加面板连接并点击「测试」验证。
 
+> 节点的创建/续费/停止/删除均通过面板 API 完成，面板配置错误会导致节点操作失败，请确保面板地址与凭据正确。
+
 ### 支付配置
 
 微信支付和支付宝参数在**管理后台「系统设置」中填写并保存**（数据库存储，不写入代码/环境变量）。
@@ -96,6 +116,8 @@ XUI_PANELS='[{"name":"Server 1","url":"http://your-panel:54321","username":"admi
 - **支付宝**：开启/关闭、APP ID、应用私钥、支付宝公钥、网关、回调地址
 
 配置完成后前端即生成真实付款二维码，回调地址由后端自动处理。未配置完整的渠道会返回明确错误提示。
+
+卡密、优惠券、余额充值等在管理后台对应页面维护（无需环境变量）。
 
 > ⚠️ 种子脚本不预置任何演示套餐（套餐由管理员在后台手动创建，保证真实可售卖）。
 
@@ -113,7 +135,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy
 3. 让你输入管理员邮箱和密码（有默认值，回车即可）
 4. 生成随机 JWT 密钥和数据库密码
 5. 构建并启动全部 5 个服务（PostgreSQL、Redis、Backend、Frontend、Admin）
-6. 自动执行数据库迁移和初始化（创建管理员账号）
+6. 自动执行数据库迁移和初始化（**仅在全新数据库时创建默认管理员，用户表非空则不覆盖**）
 7. 输出访问地址和登录凭据
 
 > 无需预先安装任何东西（除 root 权限），脚本会从头装好，全程只在你输入账号时停下。
@@ -131,6 +153,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wstimin/syjdmb/master/deploy
 ### 常用运维命令
 
 ```bash
+shop                                # 管理菜单（查看信息/更新/回滚/重置登录/域名反代/日志）
 docker compose -f /opt/nodeshop/docker-compose.yml logs -f backend   # 查看后端日志
 docker compose -f /opt/nodeshop/docker-compose.yml restart           # 重启所有服务
 docker compose -f /opt/nodeshop/docker-compose.yml down              # 停止所有服务
@@ -145,13 +168,6 @@ docker compose -f /opt/nodeshop/docker-compose.yml down              # 停止所
   - `https://admin.shop.example.com` → 管理后台
 - 后端 API **不配置独立域名**（内置服务，经前端 `/api` 代理访问，文档见 `https://shop.example.com/docs`）
 - ⚠️ 配置前请先把这两个域名解析（DNS A 记录）到本机公网 IP，证书签发后即可 HTTPS 访问
-
-## 默认管理员
-
-- 邮箱：`admin@nodeshop.com`
-- 密码：`admin123456`
-
-⚠️ 生产环境请立即修改！
 
 ## 免责声明
 

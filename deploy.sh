@@ -2,13 +2,17 @@
 # =====================================================================
 #  NodeShop 管理工具  （命令: shop）
 #  --------------------------------------------------------------------
+#  面向跨境业务与 AI 用户（ChatGPT/Claude/Gemini 直连）的国际网络连接
+#  服务售买平台：前端用户端 + NestJS 后端 + 管理后台，对接 3-XUI 面板
+#  自动创建节点。
 #  - 首次运行（curl 管道或尚未安装时）：自动 装 Docker→拉代码→生成 .env→
 #    设置管理员账号（默认值，回车即可）→构建→启动→迁移（管理员已建则保留）。
+#  - 默认管理员: admin@nodeshop.com / admin123456（仅在全新数据库创建，
+#    用户表非空不创建/不改口令；重置请用菜单 4）。
 #  - 域名反代只填一个主域名，自动生成 前端 + 管理后台 两个对外地址；
 #    API 为内置服务不对外（文档经 https://<域名>/docs 查看）。
 #  - 之后用 `shop` 调出管理菜单：查看信息 / 更新 / 回滚 / 重置登录 /
 #    添加域名反代 / 查看日志 / 退出。所有操作保留数据库与 .env。
-#  - 默认管理员: admin@nodeshop.com / admin123456（可通过菜单 4 修改）
 # =====================================================================
 set -euo pipefail
 
@@ -30,21 +34,63 @@ ok(){   echo -e "${GREEN}[ OK ]${NC} $*"; }
 warn(){ echo -e "${YELLOW}[WARN]${NC} $*"; }
 err(){  echo -e "${RED}[ERR!]${NC} $*"; }
 
-# 获取公网 IP：优先向公网回显服务查询（避免 hostname -I 取到内网/VPC 私网 IP），
-# 全部失败时退回本机网卡首址。
+# 是否为私网/保留地址（对外不可达，严禁写入对外地址）：回环、链路本地、CGNAT、
+# 10/8、172.16-31/12、192.168/16 —— 这类地址写进 FRONTEND_URL 会让支付回调/邮件链接全部失效
+is_private_ip() {
+  local a b c
+  IFS=. read -r a b c _ <<<"$1" 2>/dev/null || return 0
+  case "$a" in
+    10|127|169|172|192|100) ;;
+    *) return 1 ;;
+  esac
+  [ "$a" = "10" ] && return 0
+  [ "$a" = "127" ] && return 0
+  [ "$a" = "169" ] && [ "$b" = "254" ] && return 0
+  # 10#$b 强制十进制：$b 可能是 08/09 之类的八进制写法，[ -ge ] 按八进制解析会报错/误判
+  [ "$a" = "172" ] && [ $((10#$b)) -ge 16 ] 2>/dev/null && [ $((10#$b)) -le 31 ] 2>/dev/null && return 0
+  [ "$a" = "192" ] && [ "$b" = "168" ] && return 0
+  [ "$a" = "100" ] && [ $((10#$b)) -ge 64 ] 2>/dev/null && [ $((10#$b)) -le 127 ] 2>/dev/null && return 0
+  return 1
+}
+
+# 获取公网 IP：优先向公网回显服务查询（拒绝私网/保留地址），全部失败时退回本机网卡地址
+# （逐个扫描取第一个非私网 IPv4，兼容 IPv6 在前、多网卡的情况）。
 detect_public_ip() {
   local ip=""
   if command -v curl &>/dev/null; then
     local host
     for host in https://ip.sb https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
-      ip=$(curl -fsSL --connect-timeout 4 --max-time 6 "$host" 2>/dev/null | tr -d ' \r\n' || true)
+      ip=$(curl -fsSL --connect-timeout 4 --max-time 6 "$host" 2>/dev/null | head -1 | tr -d '\r\n ' || true)
       case "$ip" in
-        [0-9]*.[0-9]*.[0-9]*.[0-9]*) break ;;
-        *) ip="" ;;
+        [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
+        *) ip=""; continue ;;
       esac
+      is_private_ip "$ip" && { ip=""; continue; }
+      break
     done
   fi
-  [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  # 回退：本机网卡地址。hostname -I 可能输出多个地址（如 IPv6 在前）——取第一个非私网 IPv4
+  if [ -z "$ip" ]; then
+    local addr
+    for addr in $(hostname -I 2>/dev/null || true); do
+      case "$addr" in
+        [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
+        *) continue ;;
+      esac
+      is_private_ip "$addr" && continue
+      ip="$addr"; break
+    done
+  fi
+  echo "$ip"
+}
+
+# 从 .env 的 FRONTEND_URL/ADMIN_URL 提取服务器 IP（安装摘要/状态显示优先用配置值，
+# 避免每次重新探测 24s 挂起）。用两条宽松 grep 只取第一个 IPv4：域名形态
+# （https://shop.example.com）不含 IP → 返回空，由调用方决定是否回退探测。
+read_env_ip() {
+  local ip
+  ip=$(grep -E '^FRONTEND_URL=' "$INSTALL_DIR/.env" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  [ -z "$ip" ] && ip=$(grep -E '^ADMIN_URL=' "$INSTALL_DIR/.env" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
   echo "$ip"
 }
 
@@ -105,6 +151,22 @@ ensure_env() {
   DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
   JWT_SEC=$(openssl rand -base64 36 | tr -dc 'a-zA-Z0-9' | head -c 48)
   SERVER_IP=$(detect_public_ip)
+  # 对外地址写私网 IP（10./172.16-31./192.168./100.64-127./127./169.254.）会生成
+  # FRONTEND_URL=http://<私网>:3000 —— 外部完全不可达（支付回调/邮件链接全部失效）。
+  # 自动探测只认公网地址；探测失败或仅拿到私网地址时 → 让用户手动输入公网 IP，仍无效则取消安装。
+  if [ -z "$SERVER_IP" ] || is_private_ip "$SERVER_IP"; then
+    if [ -n "$SERVER_IP" ]; then
+      warn "自动探测到的地址（${SERVER_IP}）为内网/保留地址，对外不可达。"
+    else
+      warn "自动探测公网 IP 失败（公网回显服务与网卡地址均不可用）。"
+    fi
+    read -rp "  请手动输入服务器公网 IP（如 8.8.8.8，回车取消安装）: " SERVER_IP || true
+    case "$SERVER_IP" in
+      [0-9]*.[0-9]*.[0-9]*.[0-9]*) ;;
+      *) err "未提供有效的公网 IP，安装已取消（可修复服务器网络后重跑脚本）"; exit 1 ;;
+    esac
+    is_private_ip "$SERVER_IP" && { err "该地址为内网/保留地址（${SERVER_IP}），不允许写入对外地址，安装已取消"; exit 1; }
+  fi
   cat > "$INSTALL_DIR/.env" <<EOF
 DB_PASS=${DB_PASS}
 DATABASE_URL="postgresql://nodeadmin:${DB_PASS}@postgres:5432/nodeshop?schema=public"
@@ -206,6 +268,9 @@ deploy_core() {
   # CI 构建时在镜像内写入 /app/.git-hash（build.yml → GIT_HASH=${{ github.sha }}）；
   # 本机编译经 compose build args 传入 GIT_HASH。镜像标注缺失（旧 CI 产物）或
   # 与当前工作树提交不一致（CI 尚未产出最新包）→ 本机重编译兜底，保证更新即最新。
+  # build_ok：是否为「代码与镜像一致」的干净构建。本机编译修正失败（fail-open 分支）时置 0，
+  # 后续迁移/seed 一并跳过 —— 否则新迁移会作用到正在运行的旧镜像对应数据库（可能破坏旧版服务）。
+  local build_ok=1
   if command -v git >/dev/null 2>&1; then
     local EXPECT_HASH IMG_HASH
     EXPECT_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -215,26 +280,36 @@ deploy_core() {
     else
       warn "镜像与代码不一致（期望提交 ${EXPECT_HASH}，镜像标注 ${IMG_HASH:-无}）→ 本机编译修正..."
       if ! docker compose up -d --build 2>&1; then
-        err "本机编译失败："; docker compose ps; docker compose logs --tail=30 backend frontend admin 2>/dev/null
-        return 1
+        # fail-open：编译失败不中断部署 —— 当前已载入的镜像继续运行，服务不中断
+        # （代码与镜像暂不一致，但旧版本仍可用；等资源/网络恢复后再次「更新」即可）。
+        # 注意：不能让本函数 return 1 —— 那会把正在跑的服务/迁移流程整个拉垮。
+        build_ok=0
+        warn "本机编译失败，维持当前已载入镜像继续运行（服务不受影响，可稍后重新「更新」）。本批跳过迁移与 seed。日志如下："
+        docker compose ps || true
+        docker compose logs --tail=30 backend frontend admin 2>/dev/null || true
+      else
+        for i in $(seq 1 90); do
+          local STATE2
+          STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
+          if [ "$STATE2" = "running" ]; then break; fi
+          sleep 3
+        done
+        ok "本机编译完成，后端容器重启"
       fi
-      for i in $(seq 1 90); do
-        local STATE2
-        STATE2=$(docker inspect -f '{{.State.Status}}' nodeshop-backend 2>/dev/null || echo "")
-        if [ "$STATE2" = "running" ]; then break; fi
-        sleep 3
-      done
-      ok "本机编译完成，后端容器重启"
     fi
   fi
 
-  info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
-  docker exec nodeshop-backend npx prisma migrate deploy || {
-    warn "迁移异常，日志："; docker logs nodeshop-backend 2>&1 | tail -20; return 1; }
-  ok "数据库迁移完成"
+  if [ "$build_ok" = "1" ]; then
+    info "执行数据库迁移（保留数据，仅应用缺失的迁移）..."
+    docker exec nodeshop-backend npx prisma migrate deploy || {
+      warn "迁移异常，日志："; docker logs nodeshop-backend 2>&1 | tail -20; return 1; }
+    ok "数据库迁移完成"
+  fi
 
-  # 默认管理员/系统设置（upsert 幂等：已存在则不覆盖）
-  info "同步系统设置与默认管理员（${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}，已存在则不修改）..."
+  # 【复核】默认管理员/系统设置 seed 移出 build_ok 门、【始终执行】：迁移在 build_ok=0
+  # 时保持跳过（新迁移不应作用到旧镜像对应库），但 seed 是 upsert 幂等仅同步/补齐 ——
+  # 全新库若被跳过就永远没有默认管理员，管理端无法登录；失败也仅 warn，不影响部署。
+  info "同步系统设置与默认管理员（${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}，用户表非空则不创建/不改口令；重置请用菜单 4）..."
   docker exec -e SEED_ADMIN_EMAIL="${SEED_ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}" \
     -e SEED_ADMIN_PASSWORD="${SEED_ADMIN_PASSWORD:-$DEFAULT_ADMIN_PASS}" \
     nodeshop-backend node prisma/seed.cjs 2>/dev/null || warn "seed 提示（仅同步系统设置，不影响已有数据）"
@@ -273,32 +348,50 @@ bootstrap_if_needed() {
 # 菜单各项
 # =====================================================================
 
+# 查询当前管理员邮箱（后端在线时从数据库读取；容器未运行/出错返回空）
+get_admin_email() {
+  docker exec -i -w /app nodeshop-backend node -e "const{P}=require('@prisma/client');const p=new P();p.user.findFirst({where:{role:{in:['SUPER_ADMIN','ADMIN']}}}).then(u=>{console.log(u?u.email:'');return p.\$disconnect()})" 2>/dev/null || echo ""
+}
+
 # 1) 查看当前信息
 cmd_status() {
   echo; echo -e "${CYAN}-------- 当前信息 --------${NC}"
   echo "  安装目录 : $INSTALL_DIR"
   echo "  软件版本 : ${SOFTWARE_VERSION}"
   echo "  当前版本 : $(cd "$INSTALL_DIR" && git rev-parse --short HEAD 2>/dev/null || echo 未知)（$(cd "$INSTALL_DIR" && git log -1 --format=%cd --date=short 2>/dev/null || echo '')）"
-  local ip; ip=$(detect_public_ip)
-  echo "  服务器IP : $ip"
+  local ip; ip=$(read_env_ip)
+  # 域名已配置：对外地址走域名，没必要（也不该）再回退公网 IP 探测（会挂起数秒且结果无意义）
+  if [ ! -f "$INSTALL_DIR/domain.txt" ]; then
+    [ -z "$ip" ] && ip=$(detect_public_ip)
+  fi
+  if [ -z "$ip" ]; then
+    echo "  服务器IP : 未知（自动探测失败）"
+  else
+    echo "  服务器IP : $ip"
+  fi
   if [ -f "$INSTALL_DIR/domain.txt" ]; then
     local d; d=$(cat "$INSTALL_DIR/domain.txt")
     echo "  域名     : $d（已配置反代）"
     echo "  前端     : https://$d"
     echo "  管理后台 : https://admin.$d"
     echo "  API      : 内置服务（不对外，文档见 https://$d/docs）"
-  else
+  elif [ -n "$ip" ]; then
     echo "  前端     : http://${ip}:3000"
     echo "  管理后台 : http://${ip}:3002"
     echo "  API      : 内置服务（不对外，本机 127.0.0.1:3001）"
+  else
+    echo "  前端     : 未配置（无公网 IP 信息，请用菜单 5 配置域名或编辑 .env）"
+    echo "  管理后台 : 未配置（同上）"
+    echo "  API      : 内置服务（不对外，本机 127.0.0.1:3001）"
   fi
-  echo "  管理员   : ${DEFAULT_ADMIN_EMAIL}（密码可用菜单 4 重置）"
+  local adm; adm=$(get_admin_email)
+  echo "  管理员   : ${adm:-未知}（密码可用菜单 4 重置）"
   echo "  数据卷   : $(docker volume inspect nodeshop_postgres_data >/dev/null 2>&1 && echo '存在（数据已保留）' || echo '未创建')"
   echo
   echo "  容器状态:"
-  docker compose ps
+  docker compose ps || true   # set -e 保护：docker daemon 异常时不至于崩掉整个菜单
   echo
-  read -rp "  按回车返回菜单..." _
+  read -rp "  按回车返回菜单..." _ || true
 }
 
 # 2) 更新
@@ -309,19 +402,26 @@ cmd_update() {
   [ "$a" = "y" ] || [ "$a" = "Y" ] || { info "已取消"; return; }
 
   info "拉取最新代码..."
-  # 1) 回滚（菜单3）会把 HEAD 游离到旧提交，此时 git pull 会失败 → 自动切回 master
-  local cur
-  cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
-  if [ "$cur" != "master" ]; then
-    warn "当前不在 master 分支（${cur}，可能之前回滚过），自动切回..."
-    git checkout master 2>/dev/null || git checkout -f -B master origin/master
-  fi
-  # 2) 工作区若有本地改动（如手工改过 deploy.sh）会阻塞 --ff-only：
-  #    先 stash 备份再拉取；改动一直留在 stash 里，可随时 git stash list / git stash pop 找回
+  # 1) 工作区若有本地改动（如手工改过 deploy.sh）会阻塞 checkout/pull —— 先 stash 备份。
+  #    必须在切分支【之前】stash：否则下一步 git checkout -f 会静默丢弃本地改动。
   if ! git diff --quiet 2>/dev/null; then
     warn "检测到本地改动（git diff 非空），先暂存再拉取..."
     git stash push -m "shop-update-before-$(date +%F_%T)" 2>/dev/null \
       || { warn "git stash 失败，本次更新取消。可先：cd /opt/nodeshop && git status 查看后手动处理"; return; }
+  fi
+  # 2) 回滚（菜单3）会把 HEAD 游离到旧提交，此时 git pull 会失败 → 自动切回 master
+  #    （工作区已 stash 干净，可安全重建本地 master，不会丢改动）
+  local cur
+  cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
+  if [ "$cur" != "master" ]; then
+    warn "当前不在 master 分支（${cur}，可能之前回滚过），自动切回..."
+    # 两条路径都可能失败（无本地 master 分支 + origin/master 解析失败）：此时若继续，
+    # set -e 会把整个菜单崩掉 → 显式失败的，恢复本地改动并取消本次更新
+    if ! git checkout master 2>/dev/null && ! git checkout -f -B master origin/master; then
+      warn "切回 master 失败（本地与远程分支均不可用），恢复本地改动并取消本次更新"
+      git stash pop 2>/dev/null || true
+      return
+    fi
   fi
   if ! git pull --ff-only origin master; then
     warn "git pull 失败，恢复本地改动（git stash pop）..."
@@ -330,7 +430,12 @@ cmd_update() {
     return
   fi
   # 新代码里的 deploy_core/load_prebuilt_images 是本文件新实现的：
-  # 直接 exec 新脚本的 __deploy 分支，让本次更新立即用上预编译镜像逻辑（不再多编译一次）
+  # 直接 exec 新脚本的 __deploy 分支，让本次更新立即用上预编译镜像逻辑（不再多编译一次）。
+  # exec 之前先做语法检查 —— 否则新脚本有语法错误时 exec 直接失败退出，连菜单都回不去
+  if ! bash -n "$MANAGE" 2>/dev/null; then
+    warn "新脚本语法检查未通过，跳过自动部署（代码已更新；可手动 bash deploy.sh 继续，或先用菜单 3 回滚）"
+    return
+  fi
   info "已拉取新代码，切换到新部署脚本执行..."
   exec bash "$MANAGE" __deploy
 }
@@ -344,7 +449,19 @@ cmd_rollback() {
   [ -z "$rev" ] && { info "已取消"; return; }
   if ! git cat-file -e "$rev^{commit}" 2>/dev/null; then warn "无效的提交号：$rev"; return; fi
   info "回滚到 $rev 并重新部署（master 会指向该提交，后续更新正常，不再游离 HEAD）..."
-  git checkout -B master "$rev"
+  # 工作区有本地改动（如手工改过 deploy.sh）时 checkout 会被拒绝，且 set -e 会直接退出整个菜单：
+  # 先把本地改动暂存（可随时 git stash pop 找回），切换失败则提示取消、留在菜单
+  if ! git diff --quiet 2>/dev/null; then
+    warn "检测到本地改动，先暂存再回滚（改动保留在 stash，可 git stash pop 找回）..."
+    if ! git stash push -m "shop-rollback-$(date +%F_%T)" 2>/dev/null; then
+      warn "本地改动暂存失败，回滚已取消。可先：cd /opt/nodeshop && git status 查看后手动处理"
+      return
+    fi
+  fi
+  if ! git checkout -B master "$rev"; then
+    warn "切换到提交 $rev 失败，回滚已取消（本地改动已暂存到 stash，可用 git stash pop 找回）"
+    return
+  fi
   SKIP_PREBUILT=1 deploy_core || { warn "回滚部署失败，代码已切换。"; return; }
   warn "已回滚到 $rev（仅代码回滚，数据库结构不回滚；回到最新版请使用菜单 2「更新」）。"
 }
@@ -353,11 +470,12 @@ cmd_rollback() {
 cmd_reset_login() {
   echo; echo -e "${CYAN}-------- 重置登录信息 --------${NC}"
   local cur
-  cur=$(docker exec -i -w /app nodeshop-backend node -e "const{P}=require('@prisma/client');const p=new P();p.user.findFirst({where:{role:{in:['SUPER_ADMIN','ADMIN']}}}).then(u=>{console.log(u?u.email:'');return p.\$disconnect()})" 2>/dev/null || echo "")
+  cur=$(get_admin_email)
   echo "  当前管理员邮箱 : ${cur:-未知}"
-  read -rp "  新邮箱（回车保持不变: ${cur:-admin@nodeshop.com}）: " email
+  read -rp "  新邮箱（回车保持不变: ${cur:-admin@nodeshop.com}）: " email || true
   email="${email:-$cur}"
-  read -rp "  新密码（留空则保持当前密码）: " pass
+  read -rsp "  新密码（留空则保持当前密码，输入不回显）: " pass || true
+  echo
   [ -z "$email" ] && { warn "邮箱不能为空"; return; }
   info "正在更新管理员登录信息..."
   if docker exec -i -w /app -e EMAIL="$email" -e PASS="$pass" nodeshop-backend node - <<'JS'
@@ -398,6 +516,19 @@ cmd_domain() {
   echo "  请先把上面两个域名解析（DNS A 记录）到本机公网 IP。"
   read -rp "  请输入主域名（如 shop.example.com，回车取消）: " domain
   [ -z "$domain" ] && { info "已取消"; return; }
+  # 严格校验域名：只允许字母/数字/连字符/点、必须含至少一个点；禁止协议头(https://)、通配符、
+  # 路径、空格和 & | $ 等特殊字符——否则 sed 会把 .env 写成损坏地址、Caddyfile 无法加载。
+  case "$domain" in
+    *://*|*\**|*/*|*[!a-zA-Z0-9.-]*|.*|*.|*..*) warn "域名格式无效（应形如 shop.example.com，不要带 https://、* 等字符）"; return ;;
+  esac
+  case "$domain" in
+    *.*) ;;
+    *) warn "域名格式无效（需包含点，如 shop.example.com）"; return ;;
+  esac
+  case "$domain" in
+    admin.*) warn "请输入主域名本身（示例 admin.example.com 请填 example.com）"; return ;;
+  esac
+  info "已确认主域名：$domain（将自动创建 https://$domain 与 https://admin.$domain）..."
 
   mkdir -p "$INSTALL_DIR/proxy"
   cat > "$INSTALL_DIR/proxy/Caddyfile" <<EOF
@@ -519,6 +650,12 @@ bootstrap_if_needed      # 首次/外部运行：装环境、落盘、装 shop�
 cd "$INSTALL_DIR"
 # 忽略文件执行位差异（安装时会 chmod +x，git 会把 0644→0755 误判为“本地改动”导致 pull 被拒；关掉此项一劳永逸）
 git config core.filemode false 2>/dev/null || true
+
+# 已部署判定：以 .env 是否存在为准（首次生成 .env 即视为已有部署框架）。
+# 容器存在性不能当判据 —— 上一轮更新若 docker compose up 失败/中断，后端容器会缺失，
+# 此时 `shop` 仍必须进菜单（可用菜单 2 重新部署），绝不能掉进首次安装交互流程。
+ENV_EXISTED=0
+[ -f "$INSTALL_DIR/.env" ] && ENV_EXISTED=1
 ensure_env               # 首次生成 .env；已有则保留
 
 # `shop __deploy`：由 cmd_update 在 git pull 后 exec 进来，用新脚本逻辑直接部署
@@ -528,9 +665,8 @@ if [ "${1:-}" = "__deploy" ]; then
   exit 0
 fi
 
-# 首次部署检测：后端容器尚不存在 → 自动安装
-if ! docker inspect nodeshop-backend >/dev/null 2>&1; then
-  # 首次安装交互：设置管理员账号（README 承诺的步骤）。
+if [ "$ENV_EXISTED" = "0" ]; then
+  # 首次部署（.env 刚生成）：交互设置管理员 + 自动安装。
   # 已用环境变量 SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD 预设（自动化脚本）时跳过提问；直接回车用默认值。
   if [ -z "${SEED_ADMIN_EMAIL:-}" ] && [ -z "${SEED_ADMIN_PASSWORD:-}" ]; then
     echo; echo -e "${CYAN}-------- 设置管理员账号（回车使用默认值）--------${NC}"
@@ -542,11 +678,16 @@ if ! docker inspect nodeshop-backend >/dev/null 2>&1; then
   fi
   info "检测到首次部署，正在安装并启动（管理员 ${SEED_ADMIN_EMAIL}）..."
   deploy_core || { err "首次部署失败，请检查上方日志"; exit 1; }
-  # 安装完成摘要（README 承诺：输出访问地址和登录凭据；地址使用公网 IP）
-  INSTALL_IP=$(detect_public_ip)
+  # 安装完成摘要（README 承诺：输出访问地址和登录凭据；地址直接读 .env，不再二次探测公网 IP）
+  INSTALL_IP=$(read_env_ip)
+  [ -z "$INSTALL_IP" ] && INSTALL_IP=$(detect_public_ip)
   echo; echo -e "${GREEN}════════════════ 安装完成 ════════════════${NC}"
-  echo "  前端用户端   : http://${INSTALL_IP}:3000"
-  echo "  管理后台     : http://${INSTALL_IP}:3002"
+  if [ -n "$INSTALL_IP" ]; then
+    echo "  前端用户端   : http://${INSTALL_IP}:3000"
+    echo "  管理后台     : http://${INSTALL_IP}:3002"
+  else
+    echo "  访问地址     : 见 $INSTALL_DIR/.env 中的 FRONTEND_URL / ADMIN_URL（公网 IP 探测失败）"
+  fi
   echo "  API          : 内置服务（不对外暴露，配置域名后在 https://<域名>/docs 查看文档）"
   if [ -f "$INSTALL_DIR/domain.txt" ]; then
     echo "  域名前端     : https://$(cat "$INSTALL_DIR/domain.txt")"
@@ -557,6 +698,10 @@ if ! docker inspect nodeshop-backend >/dev/null 2>&1; then
   ok "安装完成！以后在任意位置输入 shop 即可调出管理菜单"
 else
   ok "已检测到已有部署，进入管理菜单"
+  # 后端容器缺失（如上轮更新失败/中断）→ 提示用菜单 2 重新部署即可，不拦截进菜单
+  if ! docker inspect nodeshop-backend >/dev/null 2>&1; then
+    warn "后端容器当前未运行（可能上轮更新中断）。请使用菜单 2「更新」重新部署；其余菜单功能不受影响。"
+  fi
 fi
 
 main_menu
