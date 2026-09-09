@@ -28,6 +28,7 @@ export default function VirtualProductsPage() {
 
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
+  const [search, setSearch] = useState('');
 
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '',
@@ -184,9 +185,16 @@ export default function VirtualProductsPage() {
     }
   };
 
-  const totalPages = Math.max(1, Math.ceil(products.length / limit));
+  // 客户端搜索过滤（整表在前端分页，全量过滤）
+  const filteredProducts = search.trim()
+    ? products.filter((p) =>
+        [p.name, p.nameEn, p.description].some((v) => String(v ?? '').toLowerCase().includes(search.trim().toLowerCase())),
+      )
+    : products;
+
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / limit));
   const safePage = Math.min(page, totalPages);
-  const pageProducts = products.slice((safePage - 1) * limit, safePage * limit);
+  const pageProducts = filteredProducts.slice((safePage - 1) * limit, safePage * limit);
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
@@ -245,7 +253,15 @@ export default function VirtualProductsPage() {
   return (
     <div>
       <PageHeader title="虚拟商品" subtitle="商城数字商品：自动发货（交付码）或人工发货">
-        <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建商品</Button>
+        <div className="flex items-center gap-2">
+          <Input
+            className="max-w-xs"
+            placeholder="搜索名称 / 描述…"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          />
+          <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建商品</Button>
+        </div>
       </PageHeader>
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

@@ -27,6 +27,7 @@ export default function PlansPage() {
   // 客户端分页（后端 /plans/admin/all 一次性返回全部）
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
+  const [search, setSearch] = useState('');
 
   const [form, setForm] = useState({
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
@@ -147,11 +148,18 @@ export default function PlansPage() {
     }
   };
 
+  // 客户端搜索过滤（整表在前端分页，全量过滤）
+  const filteredPlans = search.trim()
+    ? plans.filter((p: any) =>
+        [p.name, p.nameEn, p.description].some((v) => String(v ?? '').toLowerCase().includes(search.trim().toLowerCase())),
+      )
+    : plans;
+
   // 客户端分页切片
-  const totalPlans = plans.length;
+  const totalPlans = filteredPlans.length;
   const totalPages = Math.max(1, Math.ceil(totalPlans / limit));
   const safePage = Math.min(page, totalPages);
-  const pagePlans = plans.slice((safePage - 1) * limit, safePage * limit);
+  const pagePlans = filteredPlans.slice((safePage - 1) * limit, safePage * limit);
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
@@ -206,7 +214,15 @@ export default function PlansPage() {
   return (
     <div>
       <PageHeader title="网络方案管理" subtitle="管理可售卖的节点网络方案">
-        <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建方案</Button>
+        <div className="flex items-center gap-2">
+          <Input
+            className="max-w-xs"
+            placeholder="搜索名称 / 描述…"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          />
+          <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建方案</Button>
+        </div>
       </PageHeader>
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

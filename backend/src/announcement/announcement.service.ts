@@ -29,14 +29,23 @@ export class AnnouncementService {
     }));
   }
 
-  async findAll(page = 1, limit = 20) {
+  async findAll(page = 1, limit = 20, search?: string) {
+    const where: any = {};
+    if (search) {
+      where.OR = [
+        { title: { contains: search, mode: 'insensitive' } },
+        { titleEn: { contains: search, mode: 'insensitive' } },
+        { content: { contains: search, mode: 'insensitive' } },
+      ];
+    }
     const [announcements, total] = await Promise.all([
       this.prisma.announcement.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      this.prisma.announcement.count(),
+      this.prisma.announcement.count({ where }),
     ]);
     return { announcements, total, page, limit, totalPages: Math.ceil(total / limit) };
   }

@@ -35,8 +35,12 @@ export class AnnouncementController {
   @Roles('ADMIN', 'SUPER_ADMIN')
   @ApiBearerAuth()
   @ApiOperation({ summary: '[Admin] List announcements' })
-  async findAll(@Query('page') page?: number, @Query('limit') limit?: number) {
-    const result = await this.announcementService.findAll(page || 1, limit || 20);
+  async findAll(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('search') search?: string,
+  ) {
+    const result = await this.announcementService.findAll(page || 1, limit || 20, search);
     return { success: true, data: result };
   }
 

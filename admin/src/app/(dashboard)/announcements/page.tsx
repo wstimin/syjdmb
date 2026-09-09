@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, Pin, PinOff, Power, PowerOff } from 'lucide-react';
+import { Plus, Pencil, Trash2, Pin, PinOff, Power, PowerOff, Search } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -34,8 +34,8 @@ export default function AnnouncementsPage() {
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
 
-  const fetchData = (p = page, l = limit) => {
-    api.get('/announcements', { params: { page: p, limit: l } })
+  const fetchData = () => {
+    api.get('/announcements', { params: { page, limit, search: search || undefined } })
       .then((res) => {
         setList(res.data.data.announcements);
         setTotal(res.data.data.total);
@@ -45,7 +45,9 @@ export default function AnnouncementsPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { fetchData(); }, [page, limit, search]);
+
+  const resetPage = () => setPage(1);
 
   const openCreate = () => {
     setEditing(null);
@@ -110,10 +112,6 @@ export default function AnnouncementsPage() {
 
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
-  const filtered = search.trim()
-    ? list.filter((a) => (a.title || '').toLowerCase().includes(search.toLowerCase()) || (a.content || '').toLowerCase().includes(search.toLowerCase()))
-    : list;
-
   const columns = [
     { key: 'id', header: 'ID' },
     { key: 'title', header: '标题', render: (a: any) => <span className="font-medium">{a.title}</span> },
@@ -152,21 +150,25 @@ export default function AnnouncementsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="flex items-center gap-3 p-4">
-            <Input
-              placeholder="搜索标题 / 内容"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="max-w-xs"
-            />
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="搜索标题 / 内容"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); resetPage(); }}
+                onKeyDown={(e) => e.key === 'Enter' && resetPage()}
+                className="max-w-xs pl-10"
+              />
+            </div>
           </div>
-          <DataTable columns={columns} data={filtered} keyField="id" emptyMessage="暂无公告" />
+          <DataTable columns={columns} data={list} keyField="id" emptyMessage="暂无公告" />
           <Pagination
             page={page}
             limit={limit}
             total={total}
             totalPages={totalPages}
-            onPageChange={(p) => { setPage(p); fetchData(p, limit); }}
-            onLimitChange={(l) => { setLimit(l); setPage(1); fetchData(1, l); }}
+            onPageChange={setPage}
+            onLimitChange={(l) => { setLimit(l); resetPage(); }}
           />
         </CardContent>
       </Card>
