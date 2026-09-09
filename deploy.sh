@@ -315,22 +315,19 @@ deploy_core() {
       fi
     }
     # 历史故障自动恢复（仅针对已知迁移 20260910000001）：该迁移曾以 enum→text 索引表达式
-    # 部署失败（42P17），整体回滚、数据无残留；防重索引已由 0002 以 NULLS NOT DISTINCT
-    # 重建。若 _prisma_migrations 残留其失败记录，deploy 会被 P3009 永久卡住。此处把该记录
-    # 归一化为 prisma migrate resolve --rolled-back 的结果（rolled_back_at 已设、finished_at 为空）：
-    #   a) 真失败：两列皆空 → 补 rolled_back_at=NOW()
-    #   b) 被误标成双时间戳（早期手工命令把 finished_at 一并写成 NOW()）→ Prisma 会将其判为
-    #      「已应用」，随后对比修复版迁移文件时因内容已修改而拒绝部署 → 清掉 finished_at。
-    # 已应用（仅 finished_at）/ 已正确回滚（仅 rolled_back_at）的行不命中，重复执行幂等。
-    # 双保险：仅当本镜像确认带 0002 修复迁移时才允许归一化 0001 的记录。
+    # 部署失败（42P17）。PG 下该迁移在单事务内执行、失败即整体回滚，库内【零残留】（0002 注释
+    # 亦明确此点）——因此最稳健的自愈是直接删除该「失败/被误标」记录，让 deploy 以修复版 0001
+    # 从零重放，等价全新库路径（已被 CI 的 fresh 全量迁移持续验证）。若改为「标记已回滚」
+    # （resolve --rolled-back），Prisma 对比库里旧记录与新修复版文件时可能因内容已修改而拒绝
+    # 部署，故不采用。仅当该行确属失败态/被误标时才删除；真「已应用」（仅 finished_at）绝不删。
     if run_backend_migrate sh -c 'test -f prisma/migrations/20260910000002_fix_renewal_dup_key/migration.sql' 2>/dev/null; then
       local NL
       NL=$(docker exec nodeshop-db psql -U nodeadmin -d nodeshop -tAc \
-        "SELECT count(*) FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND (( \"finished_at\" IS NULL AND \"rolled_back_at\" IS NULL ) OR ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NOT NULL ));" 2>/dev/null | tr -d '[:space:]' || echo 0)
+        "SELECT count(*) FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND NOT ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NULL );" 2>/dev/null | tr -d '[:space:]' || echo 0)
       if [ "${NL:-0}" != "0" ]; then
-        info "检测到迁移 20260910000001 处于失败/被误标状态（${NL} 条），归一化为已回滚（0002 已修复该迁移）..."
-        docker exec nodeshop-db psql -U nodeadmin -d nodeshop -c "UPDATE public.\"_prisma_migrations\" SET \"finished_at\"=NULL, \"rolled_back_at\"=COALESCE(\"rolled_back_at\",NOW()) WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND (( \"finished_at\" IS NULL AND \"rolled_back_at\" IS NULL ) OR ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NOT NULL ));" \
-          && ok "迁移记录已归一化为已回滚" || warn "标记失败，继续尝试 deploy"
+        info "检测到迁移 20260910000001 处于失败/被误标状态（${NL} 条），删除后以修复版重放（0002 幂等兜底）..."
+        docker exec nodeshop-db psql -U nodeadmin -d nodeshop -c "DELETE FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND NOT ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NULL );" \
+          && ok "失败迁移记录已删除，deploy 将重放修复版 0001" || warn "删除失败，继续尝试 deploy"
       fi
     fi
     run_backend_migrate npx prisma migrate deploy || {
