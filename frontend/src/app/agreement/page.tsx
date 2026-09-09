@@ -25,7 +25,7 @@ export default function AgreementPage() {
               <section>
                 <h2 className="text-xl font-semibold">二、服务内容</h2>
                 <p className="text-muted-foreground">
-                  本平台为用户提供国际网络连接服务，适用于跨境办公、跨境电商、海外社媒运营与 AI 工具直连等场景（包括 SOCKS5 中转服务）。用户购买套餐后，系统将自动为指定节点开通服务。
+                  本平台为用户提供国际网络连接服务，适用于跨境办公、跨境电商、海外社媒运营与 AI 工具直连等场景（包括 SOCKS5 中转服务）。用户购买方案后，系统将自动为指定节点开通服务。
                 </p>
               </section>
 

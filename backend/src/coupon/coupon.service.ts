@@ -82,7 +82,7 @@ export class CouponService {
 
     const price = Number(plan.price);
     if (Number(coupon.minAmount) > 0 && price < Number(coupon.minAmount)) {
-      throw new BadRequestException(`本套餐满 ¥${Number(coupon.minAmount)} 才可使用该优惠券`);
+      throw new BadRequestException(`本订单满 ¥${Number(coupon.minAmount)} 才可使用该优惠券`);
     }
 
     // 每人限用次数：统计该用户使用本券的未取消订单（已占名额的 PENDING 也算在内，取消后自然释放）
@@ -176,7 +176,7 @@ export class CouponService {
     }
     const price = Number(plan.price);
     if (Number(coupon.minAmount) > 0 && price < Number(coupon.minAmount)) {
-      throw new BadRequestException(`本套餐满 ¥${Number(coupon.minAmount)} 才可使用该优惠券`);
+      throw new BadRequestException(`本订单满 ¥${Number(coupon.minAmount)} 才可使用该优惠券`);
     }
     const { discount, chargeAmount } = this.computeDiscount(coupon, price);
 

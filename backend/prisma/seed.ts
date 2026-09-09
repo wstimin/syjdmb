@@ -59,7 +59,7 @@ async function main() {
     });
   }
   console.log('✅ System settings initialized');
-  console.log('ℹ️  无预置演示套餐：请到管理后台「套餐管理」创建真实套餐后再开放售卖');
+  console.log('ℹ️  无预置演示方案：请到管理后台「网络方案」创建真实方案后再开放售卖');
 }
 
 main()

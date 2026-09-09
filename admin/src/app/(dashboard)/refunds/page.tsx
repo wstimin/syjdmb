@@ -114,7 +114,7 @@ export default function RefundsPage() {
   const columns = [
     { key: 'orderNo', header: '订单号', render: (r: any) => <span className="font-mono text-xs">{r.order?.orderNo || '—'}</span> },
     { key: 'user', header: '用户', render: (r: any) => r.user?.email || '—' },
-    { key: 'plan', header: '套餐', render: (r: any) => r.order?.plan?.name || '—' },
+    { key: 'plan', header: '商品', render: (r: any) => r.order?.virtualProduct?.name || r.order?.plan?.name || '—' },
     // 退款金额 = 订单实付快照（payAmount ?? amount），钱从平台出，显示红负
     { key: 'amount', header: '退款金额', render: (r: any) => <span className="font-medium text-red-500">-¥{Number(r.amount)}</span> },
     { key: 'reason', header: '申请理由', render: (r: any) => (

@@ -6,6 +6,7 @@ import { UserModule } from './user/user.module';
 import { ServerModule } from './server/server.module';
 import { InboundModule } from './inbound/inbound.module';
 import { PlanModule } from './plan/plan.module';
+import { VirtualProductModule } from './virtual-product/virtual-product.module';
 import { OrderModule } from './order/order.module';
 import { PaymentModule } from './payment/payment.module';
 import { CardModule } from './card/card.module';
@@ -43,6 +44,7 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
     ServerModule,
     InboundModule,
     PlanModule,
+    VirtualProductModule,
     OrderModule,
     PaymentModule,
     CardModule,

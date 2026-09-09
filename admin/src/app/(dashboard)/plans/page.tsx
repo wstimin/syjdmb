@@ -125,7 +125,7 @@ export default function PlansPage() {
   };
 
   const remove = async (id: number) => {
-    if (!confirm('确定删除该套餐？')) return;
+    if (!confirm('确定删除该方案？')) return;
     try {
       await api.delete(`/plans/${id}`);
       toast.success('已删除');
@@ -157,7 +157,7 @@ export default function PlansPage() {
 
   const columns = [
     { key: 'id', header: 'ID' },
-    { key: 'name', header: '套餐名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
+    { key: 'name', header: '方案名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
     { key: 'price', header: '价格', render: (p: any) => <span className="text-primary font-medium">¥{Number(p.price)}</span> },
     {
       key: 'duration', header: '时长',
@@ -205,19 +205,19 @@ export default function PlansPage() {
 
   return (
     <div>
-      <PageHeader title="套餐管理" subtitle="管理可售卖的节点套餐">
-        <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建套餐</Button>
+      <PageHeader title="网络方案管理" subtitle="管理可售卖的节点网络方案">
+        <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建方案</Button>
       </PageHeader>
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <StatCard title="套餐总数" value={stats?.totalPlans ?? 0} />
-        <StatCard title="活跃套餐" value={stats?.activePlans ?? 0} sub="状态为 ACTIVE" color="#10b981" />
+        <StatCard title="方案总数" value={stats?.totalPlans ?? 0} />
+        <StatCard title="活跃方案" value={stats?.activePlans ?? 0} sub="状态为 ACTIVE" color="#10b981" />
         <StatCard title="累计成交额" value={stats ? `¥${Number(stats.totalRevenue || 0).toFixed(2)}` : '¥0.00'} />
       </div>
 
       <Card>
         <CardContent className="p-0">
-          <DataTable columns={columns} data={pagePlans} keyField="id" emptyMessage="暂无套餐" />
+          <DataTable columns={columns} data={pagePlans} keyField="id" emptyMessage="暂无方案" />
           <Pagination
             page={safePage}
             limit={limit}
@@ -233,7 +233,7 @@ export default function PlansPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editing ? `编辑套餐 #${editing.id}` : '新建套餐'}</DialogTitle>
+            <DialogTitle>{editing ? `编辑方案 #${editing.id}` : '新建方案'}</DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -301,7 +301,7 @@ export default function PlansPage() {
                 </div>
               )}
               <p className="text-xs text-muted-foreground">
-                用户购买该套餐后，将在这几台服务器上自动创建节点。至少绑定一台。
+                用户购买该方案后，将在这几台服务器上自动创建节点。至少绑定一台。
               </p>
             </div>
             <div className="space-y-2 col-span-2">

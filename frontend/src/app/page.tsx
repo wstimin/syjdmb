@@ -212,7 +212,7 @@ export default function HomePage() {
             </div>
           ) : plansError ? (
             <div className="rounded-xl border border-dashed p-10 text-center">
-              <p className="text-muted-foreground">套餐加载失败，请稍后刷新页面查看</p>
+              <p className="text-muted-foreground">方案加载失败，请稍后刷新页面查看</p>
               <Link href="/products" className="mt-3 inline-block text-sm font-medium text-primary hover:underline">
                 {t('home.viewAllPlans')} →
               </Link>

@@ -14,12 +14,15 @@ import { Input } from '@/components/ui/input';
 
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const planId = searchParams.get('plan');
+  const productId = searchParams.get('product'); // 虚拟商品单（商城）：无服务器/中转，直连购买
+  const isVirtual = !!productId;
 
   const [plan, setPlan] = useState<any>(null);
+  const [product, setProduct] = useState<any>(null);
   const [servers, setServers] = useState<any[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<number | null>(null);
   const [serversLoaded, setServersLoaded] = useState(false);
@@ -40,6 +43,17 @@ function PurchaseContent() {
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
+    // 虚拟商品单：不拉服务器列表（无节点/中转概念），只拉商品详情
+    if (productId) {
+      api.get(`/virtual-products/${productId}`)
+        .then((res) => setProduct(res.data.data))
+        .catch((err) => toast.error(getErrorMessage(err)))
+        .finally(() => {
+          setLoading(false);
+          setServersLoaded(true);
+        });
+      return;
+    }
     if (!planId) return;
     api.get(`/plans/${planId}`)
       .then((res) => setPlan(res.data.data))
@@ -90,6 +104,13 @@ function PurchaseContent() {
         // 节点创建完成才跳转；仅收到支付（PAID/PROCESSING）说明节点还在建，继续轮询
         if (d.status === 'COMPLETED') {
           clearInterval(pollRef.current!);
+          if (isVirtual) {
+            // 虚拟商品单：AUTO 已自动发货 / MANUAL 等待管理员发货，转「我的订单」查看交付内容
+            const auto = product?.deliveryType === 'AUTO';
+            toast.success(auto ? t('purchase.autoSuccess') : t('purchase.manualSuccess'));
+            setTimeout(() => router.push('/user/orders'), 1500);
+            return;
+          }
           toast.success(t('purchase.orderSuccess') || '支付成功，节点已就绪');
           setTimeout(() => router.push('/user/nodes'), 1200);
           return;
@@ -124,23 +145,28 @@ function PurchaseContent() {
       setProcessing(false);
       return;
     }
-    if (relay && relaySocksList.length === 0) {
-      toast.error('请先在「SOCKS」页添加一个 SOCKS 代理，或在下方选择一个已添加的代理');
-      return;
-    }
-    if (relay && !relaySocksId) {
-      toast.error('请选择一个 SOCKS 代理作为中转出口');
-      return;
+    // 中转校验仅网络方案单（虚拟商品单无服务器/中转概念）
+    if (!isVirtual) {
+      if (relay && relaySocksList.length === 0) {
+        toast.error('请先在「SOCKS」页添加一个 SOCKS 代理，或在下方选择一个已添加的代理');
+        return;
+      }
+      if (relay && !relaySocksId) {
+        toast.error('请选择一个 SOCKS 代理作为中转出口');
+        return;
+      }
     }
     setProcessing(true);
     try {
       const res = await api.post('/orders', {
-        planId: Number(planId),
+        planId: isVirtual ? undefined : Number(planId),
+        virtualProductId: isVirtual ? Number(productId) : undefined, // 虚拟商品单（商城交付）
         payMethod: m === 'card' ? undefined : m,
-        serverId: selectedServerId ?? undefined, // 用户选择在这台服务器上建节点
-        relay,
+        // 服务器与中转仅网络方案单需要
+        serverId: isVirtual ? undefined : (selectedServerId ?? undefined), // 用户选择在这台服务器上建节点
+        relay: isVirtual ? false : relay,
         couponCode: couponCode.trim() || undefined, // 优惠券（下单即占用名额，取消支付需在「我的订单」取消以释放）
-        ...(relay
+        ...(!isVirtual && relay
           ? {
               // 优先从用户台账选代理（出口 = 该 SOCKS 节点 IP）
               relaySocksId: relaySocksId ?? undefined,
@@ -161,6 +187,14 @@ function PurchaseContent() {
           // 后台会每分钟自动重试建节点，用户无需重新下单
           toast.error('支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的节点」查看');
           setTimeout(() => router.push('/user/nodes'), 1500);
+          return;
+        }
+        if (isVirtual) {
+          // 虚拟商品单（余额直付 → 即时激活交付）：
+          // AUTO 已自动发码 / MANUAL 已完结等待管理员发货
+          const auto = product?.deliveryType === 'AUTO';
+          toast.success(auto ? t('purchase.autoSuccess') : t('purchase.manualSuccess'));
+          setTimeout(() => router.push('/user/orders'), 1500);
           return;
         }
         toast.success(t('purchase.paySuccess') || '支付成功！正在创建节点...');
@@ -201,7 +235,7 @@ function PurchaseContent() {
     setCouponValidating(true);
     setCouponError('');
     try {
-      const res = await api.post('/coupons/validate', { code, price: Number(plan.price) });
+      const res = await api.post('/coupons/validate', { code, price: Number(isVirtual ? product?.price : plan?.price) });
       setCouponInfo(res.data.data);
     } catch (err: any) {
       setCouponInfo(null);
@@ -228,31 +262,57 @@ function PurchaseContent() {
   };
 
   if (loading) return <div className="py-32 text-center">{t('common.loading')}</div>;
-  if (!plan) return <div className="py-32 text-center">Plan not found</div>;
+  if (isVirtual && !product) return <div className="py-32 text-center">Product not found</div>;
+  if (!isVirtual && !plan) return <div className="py-32 text-center">Plan not found</div>;
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6">
       <h1 className="text-3xl font-bold">{t('purchase.title')}</h1>
 
-      {/* Plan summary */}
+      {/* Order summary：网络方案 or 虚拟商品 */}
       <Card className="mt-6 border-border/60">
-        <CardContent className="flex items-center justify-between p-6">
-          <div>
-            <div className="text-lg font-semibold">{plan.name}</div>
-            <div className="mt-1 text-sm text-muted-foreground">
-              {plan.duration > 0 ? `${t('products.duration')}: ${plan.duration}${t('products.days')}` : t('products.unlimited')}
-              {' · '}
-              {t('products.traffic')}: {Number(plan.traffic) > 0 ? `${Number(plan.traffic)/1024/1024/1024}GB` : t('products.unlimited')}
-            </div>
+        <CardContent className="flex items-center justify-between gap-4 p-6">
+          <div className="min-w-0">
+            {isVirtual ? (
+              <>
+                <div className="text-lg font-semibold">
+                  {locale === 'en' && product?.nameEn ? product.nameEn : product?.name}
+                </div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {product?.description || t('products.virtualDesc')}
+                </div>
+                <div className="mt-2 inline-flex rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                  {product?.deliveryType === 'AUTO'
+                    ? t('products.deliveryAuto')
+                    : t('products.deliveryManual')}
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {product?.deliveryType === 'AUTO'
+                    ? t('purchase.deliveryNote')
+                    : t('purchase.manualNote')}
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="text-lg font-semibold">{plan.name}</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {plan.duration > 0 ? `${t('products.duration')}: ${plan.duration}${t('products.days')}` : t('products.unlimited')}
+                  {' · '}
+                  {t('products.traffic')}: {Number(plan.traffic) > 0 ? `${Number(plan.traffic)/1024/1024/1024}GB` : t('products.unlimited')}
+                </div>
+              </>
+            )}
           </div>
-          <div className="text-2xl font-bold text-primary">
+          <div className="shrink-0 text-2xl font-bold text-primary">
             {couponInfo ? (
               <>
                 ¥{Number(couponInfo.chargeAmount)}
-                <span className="ml-2 text-base text-muted-foreground line-through">¥{Number(plan.price)}</span>
+                <span className="ml-2 text-base text-muted-foreground line-through">
+                  ¥{Number(isVirtual ? product?.price : plan?.price)}
+                </span>
               </>
             ) : (
-              `¥${Number(plan.price)}`
+              `¥${Number(isVirtual ? product?.price : plan?.price)}`
             )}
           </div>
         </CardContent>
@@ -317,8 +377,8 @@ function PurchaseContent() {
         </CardContent>
       </Card>
 
-      {/* 选择服务器 — 用户选在哪台服务器上建节点（协议为系统默认 VLESS+Reality，不在购买页展示） */}
-      {servers.length > 0 && (
+      {/* 选择服务器 — 仅网络方案单；用户选在哪台服务器上建节点（协议为系统默认 VLESS+Reality，不在购买页展示） */}
+      {!isVirtual && servers.length > 0 && (
         <Card className="mt-6 border-border/60">
           <CardContent className="p-5">
             <div className="mb-3 flex items-center justify-between">
@@ -348,7 +408,8 @@ function PurchaseContent() {
         </Card>
       )}
 
-      {/* 开启中转（选装） — 在源节点上挂 SOCKS，节点全程走中转，出口 = 用户选择的 SOCKS 代理 IP */}
+      {/* 开启中转（选装）— 仅网络方案单；虚拟商品单无服务器/中转概念 */}
+      {!isVirtual && (
       <Card className="mt-6 border-border/60">
         <CardContent className="p-5">
           <div className="flex items-center justify-between">
@@ -413,14 +474,15 @@ function PurchaseContent() {
           )}
         </CardContent>
       </Card>
+      )}
 
       {/* Payment method selection */}
       {!order && !payQr && (
         <div className="mt-6">
           <h2 className="mb-4 text-lg font-semibold">{t('purchase.paymentMethod')}</h2>
-          {serversLoaded && servers.length === 0 && (
+          {!isVirtual && serversLoaded && servers.length === 0 && (
             <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              该套餐暂无可用服务器，暂不可购买，请联系客服
+              该方案暂无可用服务器，暂不可购买，请联系客服
             </div>
           )}
           <div className="grid gap-3 sm:grid-cols-2">
@@ -428,7 +490,7 @@ function PurchaseContent() {
               <button
                 key={m.id}
                 onClick={() => createOrder(m.id)}
-                disabled={processing || (serversLoaded && servers.length === 0)}
+                disabled={processing || (!isVirtual && serversLoaded && servers.length === 0)}
                 className="flex items-center gap-3 rounded-xl border p-4 text-left transition-all hover:border-primary hover:shadow-md disabled:opacity-50"
               >
                 <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-secondary text-xl">

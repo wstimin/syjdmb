@@ -13,7 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 // 流水类型 → 中文（管理端编辑后台也用这套语义）
 const TX_LABELS: Record<string, string> = {
   RECHARGE: '余额充值',
-  PURCHASE: '购买套餐',
+  PURCHASE: '购买方案',
   REFUND: '退款',
   CARD_REDEEM: '卡密兑换',
   REFERRAL: '邀请返利',
@@ -187,7 +187,7 @@ export default function BalancePage() {
               <Wallet className="h-7 w-7 text-primary" />
             </span>
             <div>
-              <div className="text-sm text-muted-foreground">账户余额（余额可用于购买套餐与续费）</div>
+              <div className="text-sm text-muted-foreground">账户余额（余额可用于购买方案与续费）</div>
               <div className="mt-1 text-3xl font-bold text-primary">¥ {fmtMoney(user.balance)}</div>
             </div>
           </div>

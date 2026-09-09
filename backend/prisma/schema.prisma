@@ -135,6 +135,66 @@ enum PlanStatus {
 }
 
 // ==========================================
+// Virtual Products（虚拟商品）
+// ==========================================
+// 商城里的第二类商品：账号/教程/礼品码等数码商品，不产生 XUI 节点。
+// 交付方式：
+//  - AUTO  自动发码：商品关联一批「交付码」（ProductKey），付款后自动发放一个
+//  - MANUAL 人工发货：管理员在后台订单里填写交付内容，用户在「我的订单」查看
+// 已售数 sold 在每次成功交付（发码/发货）时 +1；无库存列，可用量以未售码为准。
+model VirtualProduct {
+  id             Int            @id @default(autoincrement())
+  name           String
+  nameEn         String?
+  description    String?
+  descriptionEn  String?
+  price          Decimal        @db.Decimal(10, 2)
+  originalPrice  Decimal?       @db.Decimal(10, 2)
+  coverUrl       String?        // 商品图 URL（可选，后台填外链）
+  deliveryType   DeliveryType   @default(AUTO) // AUTO=付款自动发码；MANUAL=人工发货
+  sort           Int            @default(0)
+  status         VirtualProductStatus @default(ACTIVE)
+  sold           Int            @default(0) // 已售（成功交付时 +1）
+  keys           ProductKey[]
+  orders         Order[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([status, sort])
+}
+
+enum DeliveryType {
+  AUTO
+  MANUAL
+}
+
+enum VirtualProductStatus {
+  ACTIVE
+  HIDDEN
+  SOLD_OUT
+  ARCHIVED
+}
+
+// 交付码库（仅 AUTO 商品使用）：每行一个交付码/内容，付款后原子抢占一个
+model ProductKey {
+  id        Int               @id @default(autoincrement())
+  productId Int
+  product   VirtualProduct    @relation(fields: [productId], references: [id], onDelete: Cascade)
+  code      String            // 交付内容：可多行（账号/密码/链接等）
+  status    ProductKeyStatus  @default(UNUSED)
+  orderNo   String?           // 售出订单号（审计：哪个订单发放的）
+  createdAt DateTime          @default(now())
+
+  @@unique([productId, code])
+  @@index([productId, status])
+}
+
+enum ProductKeyStatus {
+  UNUSED
+  SOLD
+}
+
+// ==========================================
 // Orders & Payments
 // ==========================================
 
@@ -143,8 +203,16 @@ model Order {
   orderNo      String      @unique @default(uuid())
   userId       Int
   user         User        @relation(fields: [userId], references: [id])
-  planId       Int
-  plan         Plan        @relation(fields: [planId], references: [id])
+  // 商品判别：网络方案单 planId 非空且 virtualProductId 为 null；
+  // 虚拟商品单 virtualProductId 非空且 planId 为 null（二选一）
+  planId       Int?        // 网络方案单=所选方案；虚拟商品单=null
+  plan         Plan?       @relation(fields: [planId], references: [id])
+  virtualProductId Int?    // 虚拟商品单=所选商品；网络方案单=null
+  virtualProduct   VirtualProduct? @relation(fields: [virtualProductId], references: [id], onDelete: SetNull)
+  // 交付信息：AUTO=自动发放的交付码；MANUAL=管理员发货时填写的交付内容；
+  // 待发货（MANUAL 已支付未发货）时为 null。deliveredAt=实际交付时间。
+  deliveryInfo   String?
+  deliveredAt    DateTime?
   amount       Decimal     @db.Decimal(10, 2)
   payAmount    Decimal?    @db.Decimal(10, 2) // discounted amount
   status       OrderStatus @default(PENDING)
@@ -193,6 +261,7 @@ model Order {
   @@index([userId, status])
   @@index([orderNo])
   @@index([status, createdAt])
+  @@index([virtualProductId])
 }
 
 enum OrderStatus {

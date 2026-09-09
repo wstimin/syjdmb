@@ -130,7 +130,7 @@ export class RefundsService {
       this.prisma.refundRequest.findMany({
         where: { userId },
         include: {
-          order: { select: { orderNo: true, plan: { select: { name: true } }, amount: true } },
+          order: { select: { orderNo: true, plan: { select: { name: true } }, virtualProduct: { select: { name: true } }, amount: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -175,7 +175,7 @@ export class RefundsService {
       this.prisma.refundRequest.findMany({
         where,
         include: {
-          order: { select: { orderNo: true, plan: { select: { name: true } }, amount: true, payAmount: true } },
+          order: { select: { orderNo: true, plan: { select: { name: true } }, virtualProduct: { select: { name: true } }, amount: true, payAmount: true } },
           user: { select: { email: true, username: true } },
         },
         orderBy: { createdAt: 'desc' },

@@ -26,7 +26,7 @@ type RenewKind = 'EXPIRY' | 'TRAFFIC';
 
 /** 节点续费弹窗：续费拆成两类（到期续费 / 流量续费），订阅周期制语义：
  *  - 到期续费（EXPIRY）：到期日顺延套餐时长。节点未到期 → 当前流量不变，到周期切换点（原到期日）
- *    由后端 cron 自动清零已用、额度回归套餐满额；节点已到期（一天续费宽限期内）→ 新周期锚在
+ *    由后端 cron 自动清零已用、额度回归方案满额；节点已到期（一天续费宽限期内）→ 新周期锚在
  *    原到期日（新到期日 = 原到期日 + 时长），切换点已过 → 激活即按周期切换恢复满额流量；过期
  *    超过一天的节点已被自动删除，只能重新购买套餐。
  *  - 流量续费（TRAFFIC）：在当前流量额度上【叠加】套餐流量（不清除已用），到期时间不变；
@@ -402,15 +402,15 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
       label: '到期续费',
       icon: <CalendarClock className="h-4 w-4" />,
       desc: isTimeExpired
-        ? '已到期（宽限期内）：周期从原到期日起算，流量恢复为套餐满额'
-        : '顺延到期日；到期时流量自动恢复为套餐满额',
+        ? '已到期（宽限期内）：周期从原到期日起算，流量恢复为方案满额'
+        : '顺延到期日；到期时流量自动恢复为方案满额',
       enabled: canExpiry,
     },
     {
       id: 'TRAFFIC',
       label: '流量续费',
       icon: <Gauge className="h-4 w-4" />,
-      desc: '在当前额度上叠加套餐流量（不清已用，随周期结束清零）',
+      desc: '在当前额度上叠加方案流量（不清已用，随周期结束清零）',
       enabled: canTraffic,
     },
   ];
@@ -447,7 +447,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
 
         {isTimeExpired && (
           <p className="mt-1 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-600">
-            该节点已到期，仅保留一天续费宽限期；超过一天未续费将被自动删除，只能重新购买套餐。
+            该节点已到期，仅保留一天续费宽限期；超过一天未续费将被自动删除，只能重新购买方案。
           </p>
         )}
 
@@ -501,17 +501,17 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
               <p className="text-xs text-muted-foreground">
                 {kind === 'EXPIRY'
                   ? isTimeExpired
-                    ? '选择到期续费套餐（已到期节点：周期从原到期日起算，流量恢复为套餐满额）'
-                    : '选择到期续费套餐（顺延时长；当前流量不变，到期时自动恢复为套餐满额）'
+                    ? '选择到期续费方案（已到期节点：周期从原到期日起算，流量恢复为方案满额）'
+                    : '选择到期续费方案（顺延时长；当前流量不变，到期时自动恢复为方案满额）'
                   : kind === 'TRAFFIC'
-                    ? '选择流量续费套餐（在当前额度上叠加套餐流量，不清除已用流量；到期时间不变）'
-                    : '选择续费套餐'}
+                    ? '选择流量续费方案（在当前额度上叠加方案流量，不清除已用流量；到期时间不变）'
+                    : '选择续费方案'}
               </p>
               {curPlans.length === 0 && (
                 <div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-                  <p>当前没有可{kind === 'EXPIRY' ? '到期续费' : '流量续费'}的套餐</p>
+                  <p>当前没有可{kind === 'EXPIRY' ? '到期续费' : '流量续费'}的方案</p>
                   <p className="mt-1 text-xs">
-                    {kind === 'TRAFFIC' ? '（需要含流量额度的套餐）' : '（需要含时长、且能使节点回到有效期的套餐）'}
+                    {kind === 'TRAFFIC' ? '（需要含流量额度的方案）' : '（需要含时长、且能使节点回到有效期的方案）'}
                   </p>
                 </div>
               )}
@@ -607,7 +607,7 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
                 )}
                 {Number(user?.balance) > 0 && (
                   <p className="text-xs text-muted-foreground">
-                    当前余额：<span className="font-semibold text-primary">¥{Number(user?.balance ?? 0)}</span>，选中套餐后可直接用余额支付
+                    当前余额：<span className="font-semibold text-primary">¥{Number(user?.balance ?? 0)}</span>，选中方案后可直接用余额支付
                   </p>
                 )}
               </div>
@@ -617,9 +617,9 @@ export default function RenewNodeDialog({ node, open, onClose, onDone }: Props) 
               {kind === 'EXPIRY'
                 ? isTimeExpired
                   ? '续费周期从原到期日起算（已过切换点的周期立即恢复满额流量）；过期超过一天的节点将被自动删除，请在宽限期内续费'
-                  : '续费后到期日顺延，当前流量保持不变；到期时系统自动将流量恢复为套餐满额'
+                  : '续费后到期日顺延，当前流量保持不变；到期时系统自动将流量恢复为方案满额'
                 : kind === 'TRAFFIC'
-                  ? '流量续费将在当前额度上叠加所选套餐流量（不清除已用流量），到期时间不变；叠加流量随本周期结束自动清零'
+                  ? '流量续费将在当前额度上叠加所选方案流量（不清除已用流量），到期时间不变；叠加流量随本周期结束自动清零'
                   : '续费后节点将自动恢复并重启（面板侧自动生效）'}
             </div>
             <div className="pt-1 text-xs text-muted-foreground">续费订单不支持申请退款（退款仅限购买订单），费用问题请联系客服。</div>

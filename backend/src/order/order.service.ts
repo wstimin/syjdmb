@@ -31,7 +31,8 @@ export class OrderService {
 
   async createOrder(params: {
     userId: number;
-    planId: number;
+    planId?: number;
+    virtualProductId?: number; // 虚拟商品单：商城虚拟商品（与 planId 互斥）；交付=AUTO 自动发码 / MANUAL 人工发货
     payMethod?: string;
     serverId?: number;
     protocol?: string;
@@ -46,8 +47,45 @@ export class OrderService {
     renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：EXPIRY=到期续费（顺延/开新周期）；TRAFFIC=流量续费（额度叠加）；不传=旧版叠加行为
     couponCode?: string;      // 优惠券码（下单即占名额，取消时释放）
   }) {
-    const { userId, planId } = params;
+    const { userId, planId, virtualProductId } = params;
 
+    // ---- 虚拟商品单：无 plan，付款后走交付（AUTO 自动发码 / MANUAL 人工发货）----
+    if (virtualProductId) {
+      if (planId) throw new BadRequestException('网络方案与虚拟商品不能同时下单');
+      const product = await this.prisma.virtualProduct.findUnique({
+        where: { id: virtualProductId },
+      });
+      if (!product) throw new NotFoundException('Virtual product not found');
+      if (product.status !== 'ACTIVE') throw new BadRequestException('该商品已下架');
+      // AUTO 商品必须有未售交付码，避免「付了钱没货发」
+      if (product.deliveryType === 'AUTO') {
+        const available = await this.prisma.productKey.count({
+          where: { productId: virtualProductId, status: 'UNUSED' },
+        });
+        if (available === 0) throw new BadRequestException('该商品库存不足或已售罄');
+      }
+
+      const orderNo = this.generateOrderNo();
+      // 优惠券口径按商品实价校验/占用（applyCoupon 只读 plan.price）
+      const couponOrderData = await this.claimCouponData(
+        params.couponCode,
+        userId,
+        { price: Number(product.price) } as any,
+      );
+      const order = await this.createOrderRow({
+        orderNo,
+        userId,
+        planId: null,
+        virtualProductId,
+        amount: product.price,
+        ...couponOrderData,
+        status: 'PENDING',
+        payMethod: (params.payMethod ? String(params.payMethod).toUpperCase() : null) as any,
+      });
+      return order;
+    }
+
+    if (!planId) throw new BadRequestException('缺少商品参数（网络方案或虚拟商品）');
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
     if (!plan) throw new NotFoundException('Plan not found');
     if (plan.status !== 'ACTIVE') throw new BadRequestException('Plan is not available');
@@ -79,7 +117,7 @@ export class OrderService {
       // 【订阅周期制·过期宽限期】时间到期后保留一天续费宽限期；越过宽限期的节点由 cron 自动删除，
       // 只能重新购买套餐。所有续费类型统一拦截（旧版叠加续费同此门：过期超一天补续没有可交付内容）。
       if (inbound.expiryTime && new Date(inbound.expiryTime).getTime() + DAY_MS < Date.now()) {
-        throw new BadRequestException('该节点已过期超过一天，过期节点仅保留一天续费宽限期，之后将被自动删除；请重新购买套餐');
+        throw new BadRequestException('该节点已过期超过一天，过期节点仅保留一天续费宽限期，之后将被自动删除；请重新购买方案');
       }
 
       // —— 按续费类型校验（订阅周期制）——
@@ -88,14 +126,14 @@ export class OrderService {
       if (wantsExpiry) {
         // 到期续费：套餐必须含时长，节点必须限期（不限时节点无可顺延）
         if (!(plan.duration > 0)) {
-          throw new BadRequestException('该套餐不含时长，请选择「流量续费」续费');
+          throw new BadRequestException('该方案不含时长，请选择「流量续费」续费');
         }
         if (!inbound.expiryTime) {
-          throw new BadRequestException('该节点为不限时套餐，无需续期');
+          throw new BadRequestException('该节点为不限时方案，无需续期');
         }
         // 套餐含流量但节点不限流量 → 套餐内的流量价值无法到账，直接拒绝（避免白付流量部分）
         if (Number(plan.traffic) > 0 && (!inbound.trafficLimit || Number(inbound.trafficLimit) <= 0)) {
-          throw new BadRequestException('该节点为不限流量套餐，无法兑换套餐内的流量部分');
+          throw new BadRequestException('该节点为不限流量方案，无法兑换方案内的流量部分');
         }
         // 【订阅周期制·严格周期锚】已到期节点仅保留「一天续费宽限期」（上方已统一拦截超期）。
         // 宽限期内续费的周期锚在「原到期日」：新到期日 = 原到期日 + 套餐时长（不因续费时刻顺延）；
@@ -103,15 +141,15 @@ export class OrderService {
         const expMs = new Date(inbound.expiryTime).getTime();
         // 极端兜底：原到期日落后超过一个完整周期 → 顺延后仍在过去，无可交付，拒绝补续
         if (new Date(expMs + Number(plan.duration) * DAY_MS).getTime() <= Date.now()) {
-          throw new BadRequestException('该节点已过期超过一个完整周期，无法通过续费恢复，请重新购买套餐');
+          throw new BadRequestException('该节点已过期超过一个完整周期，无法通过续费恢复，请重新购买方案');
         }
       } else if (wantsTraffic) {
         // 流量续费：套餐必须含流量，节点必须限流量（不限流量节点无可叠加）
         if (!(Number(plan.traffic) > 0)) {
-          throw new BadRequestException('该套餐不含流量，请选择「到期续费」');
+          throw new BadRequestException('该方案不含流量，请选择「到期续费」');
         }
         if (!inbound.trafficLimit || Number(inbound.trafficLimit) <= 0) {
-          throw new BadRequestException('该节点为不限流量套餐，无需充值流量');
+          throw new BadRequestException('该节点为不限流量方案，无需充值流量');
         }
         // 已到期节点叠加流量没有意义（时间维度仍停用）→ 引导走到期续费
         if (inbound.expiryTime && new Date(inbound.expiryTime).getTime() <= Date.now()) {
@@ -120,13 +158,13 @@ export class OrderService {
       } else {
         // 旧版叠加续费（renewType 未传，兼容已上线的旧前端）：保留历史校验
         if (!(plan.duration > 0 || Number(plan.traffic) > 0)) {
-          throw new BadRequestException('该套餐无可续内容（需包含时长或流量）');
+          throw new BadRequestException('该方案无可续内容（需包含时长或流量）');
         }
         if (plan.duration > 0 && !inbound.expiryTime) {
-          throw new BadRequestException('该节点为不限时套餐，无需续期');
+          throw new BadRequestException('该节点为不限时方案，无需续期');
         }
         if (Number(plan.traffic) > 0 && (!inbound.trafficLimit || Number(inbound.trafficLimit) <= 0)) {
-          throw new BadRequestException('该节点为不限流量套餐，无需充值流量');
+          throw new BadRequestException('该节点为不限流量方案，无需充值流量');
         }
       }
       if (params.relay) {
@@ -213,7 +251,7 @@ export class OrderService {
     if (params.serverId) {
       const boundIds = (plan.serverIds || []) as number[];
       if (!boundIds.includes(params.serverId)) {
-        throw new BadRequestException('所选服务器不在该套餐的可用服务器列表中');
+        throw new BadRequestException('所选服务器不在该方案的可用服务器列表中');
       }
       serverId = params.serverId;
     }
@@ -229,7 +267,7 @@ export class OrderService {
         ? await this.prisma.server.count({ where: { id: { in: boundIds }, status: 'ACTIVE' } })
         : await this.prisma.server.count({ where: { status: 'ACTIVE' } });
     if (availableCount === 0) {
-      throw new BadRequestException('该套餐暂无可用服务器');
+      throw new BadRequestException('该方案暂无可用服务器');
     }
 
     // 所有校验都通过后才占优惠券名额（校验抛错不会泄漏名额）
@@ -293,7 +331,7 @@ export class OrderService {
     const result = await this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
-        include: { plan: true },
+        include: { plan: true, virtualProduct: true },
       });
       if (!order) throw new NotFoundException('Order not found');
       if (order.status !== 'PENDING') throw new ConflictException('Order already processed');
@@ -337,7 +375,9 @@ export class OrderService {
           type: 'PURCHASE',
           amount: -amount,
           balance: updatedUser.balance,
-          description: `Purchase plan: ${order.plan.name}`,
+          description: order.plan
+            ? `Purchase plan: ${order.plan.name}`
+            : `Purchase product: ${order.virtualProduct?.name ?? order.orderNo}`,
           relatedId: order.orderNo,
         },
       });
@@ -442,6 +482,8 @@ export class OrderService {
       const later = await this.prisma.order.findUnique({ where: { id: orderId } });
       if (!later) throw new NotFoundException('Order not found');
       if (later.status === 'COMPLETED') {
+        // 虚拟商品单已完成（AUTO 已发码 / MANUAL 已完结整单）→ 幂等返回
+        if (later.virtualProductId) return { order: later };
         const existing = await this.prisma.inbound.findFirst({
           where: { userId: later.userId, remark: { contains: `Order ${later.orderNo}` } },
         });
@@ -452,13 +494,23 @@ export class OrderService {
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      include: { plan: true },
+      include: { plan: true, virtualProduct: { select: { id: true, deliveryType: true } } },
     });
     if (!order) throw new NotFoundException('Order not found');
+
+    // 虚拟商品单：不建节点、不续费，走交付（AUTO=自动发码 / MANUAL=人工发货）
+    if (order.virtualProductId) {
+      return this.activateVirtualDelivery(order);
+    }
 
     // 续费单：不建新节点，给已有节点续期/续流量（面板 bulkAdjust 加量并自动重启节点）
     if (order.renewalOfInboundId) {
       return this.activateRenewal(order);
+    }
+
+    // 走到这里必是网络方案单（虚拟单/续费单已 return）；plan 理论上非空，TS 窄化兜底
+    if (!order.plan) {
+      throw new ConflictException('订单缺少网络方案，无法开通节点');
     }
 
     // 防重复建：上一次激活可能「面板入站建好了、但回写 COMPLETED 前进程崩溃」，
@@ -505,6 +557,92 @@ export class OrderService {
     });
 
     return { inbound, order };
+  }
+
+  // ==========================================
+  // Virtual Delivery (虚拟商品交付)
+  // ==========================================
+
+  /**
+   * 虚拟商品单交付（付款后激活，崩溃安全 + 幂等 + 并发安全）：
+   * - AUTO：事务内用 FOR UPDATE SKIP LOCKED 行锁原子抢占一个 UNUSED 交付码；
+   *   抢到 → 码置 SOLD 并挂 orderNo、订单 COMPLETED + deliveryInfo=码 + deliveredAt、
+   *   商品 sold++，整个过程一个事务 → 「码已发」与「单已完结」绝不裂开（进程崩溃
+   *   不会出现「码没了/单没完结」或「单完结了/码没发」的孤岛）。
+   *   码全部耗尽（没抢到）→ 订单置 FAILED（提示售罄请退款），不假装发货。
+   * - MANUAL：订单直接 COMPLETED（deliveryInfo 留空 = 等待管理员后台发货）。
+   *   前置校验商品未 ARCHIVED（下架单不允许交付）。
+   *
+   * 兜底：认领把订单标成 PROCESSING，这里任意一步抛错订单停在 PROCESSING，
+   * 由 autoActivatePending cron（每分钟，SETNX 锁）重试；COMPLETED 幂等返回由
+   * activateOrderInner 顶部兜底。
+   */
+  private async activateVirtualDelivery(order: any) {
+    const product = await this.prisma.virtualProduct.findUnique({
+      where: { id: order.virtualProductId },
+      select: { id: true, name: true, deliveryType: true, status: true },
+    });
+    if (!product || product.status === 'ARCHIVED') {
+      // 商品被删/归档：不能交付，订单置 FAILED 引导退款
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'FAILED' },
+      });
+      throw new BadRequestException('该商品已下架，无法交付，请联系客服退款');
+    }
+
+    // MANUAL：完结整单，等待管理员后台发货
+    if (product.deliveryType === 'MANUAL') {
+      const done = await this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'COMPLETED', paidAt: order.paidAt || new Date() },
+      });
+      this.logger.log(`Virtual order ${order.orderNo} (MANUAL) completed, waiting admin delivery`);
+      return { order: done };
+    }
+
+    // AUTO：事务内行锁抢占交付码 —— 并发（余额支付 vs cron 重试）下只有一方抢到
+    // 同一个码；SKIP LOCKED 让双方各拿各的码，绝不重复发码，也不互相阻塞。
+    const txn = await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ id: number; code: string }>>`
+        SELECT "id", "code" FROM "ProductKey"
+        WHERE "productId" = ${product.id} AND "status" = 'UNUSED'
+        ORDER BY "createdAt" ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED`;
+      if (rows.length === 0) return { outOfStock: true } as const;
+
+      const key = rows[0];
+      await tx.productKey.update({
+        where: { id: key.id },
+        data: { status: 'SOLD', orderNo: order.orderNo },
+      });
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'COMPLETED',
+          paidAt: order.paidAt || new Date(),
+          deliveryInfo: key.code,
+          deliveredAt: new Date(),
+        },
+      });
+      await tx.virtualProduct.update({
+        where: { id: product.id },
+        data: { sold: { increment: 1 } },
+      });
+      return { code: key.code };
+    });
+
+    if (txn.outOfStock) {
+      await this.prisma.order.update({
+        where: { id: order.id },
+        data: { status: 'FAILED' },
+      });
+      throw new BadRequestException('该商品库存不足或已售罄，订单已标记失败，请联系客服退款');
+    }
+
+    this.logger.log(`Virtual order ${order.orderNo} (AUTO) delivered`);
+    return { order: await this.prisma.order.findUnique({ where: { id: order.id } }), delivered: true };
   }
 
   // ==========================================
@@ -560,7 +698,7 @@ export class OrderService {
         : 0;
     if (addDays === 0 && addBytes === 0) {
       await this.prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });
-      throw new BadRequestException('该套餐无可加量内容，续费失败');
+      throw new BadRequestException('该方案无可加量内容，续费失败');
     }
 
     // 捕获续费前的到期时间（回滚/公式基准用；面板失败不再走主动回滚，改为 settle 对账）
@@ -663,7 +801,7 @@ export class OrderService {
     const wantsTraffic = renewType === 'TRAFFIC' && Number(plan.traffic) > 0 && periodQuota > 0;
     if (!wantsExpiry && !wantsTraffic) {
       await this.prisma.order.update({ where: { id: order.id }, data: { status: 'FAILED' } });
-      throw new BadRequestException('该套餐无可加量内容，续费失败');
+      throw new BadRequestException('该方案无可加量内容，续费失败');
     }
     // 【对抗复核确认】TRAFFIC 激活时刻到期复核：下单后支付窗口内可能已到期。到期后叠加流量
     // 毫无意义 —— 下一分钟 cron 会按本地到期日打回 EXPIRED（用户白付）。与旧版同标准。
@@ -1151,7 +1289,7 @@ export class OrderService {
         await this.redis.expire(lockKey, 300).catch(() => {});
         try {
           const result = await this.activateOrder(order.id);
-          this.logger.log(`Auto-activated order ${order.orderNo} (${order.status} → ${result.order.status})`);
+          this.logger.log(`Auto-activated order ${order.orderNo} (${order.status} → ${result.order?.status})`);
         } catch (e) {
           // 失败不动状态：activateOrder 认领时已把订单置为 PROCESSING，下一轮 cron 会继续重试
           this.logger.warn(`Auto-activate order ${order.orderNo} failed: ${e.message}`);
@@ -1219,6 +1357,7 @@ export class OrderService {
         where: { userId },
         include: {
           plan: { select: { name: true, duration: true, traffic: true } },
+          virtualProduct: { select: { id: true, name: true, nameEn: true, deliveryType: true } },
           renewalOfInbound: {
             select: { id: true, remark: true, server: { select: { name: true, host: true } } },
           },
@@ -1254,6 +1393,7 @@ export class OrderService {
         where,
         include: {
           plan: { select: { name: true } },
+          virtualProduct: { select: { id: true, name: true, nameEn: true, deliveryType: true } },
           user: { select: { email: true, username: true } },
           renewalOfInbound: {
             select: { id: true, remark: true, server: { select: { name: true, host: true } } },
@@ -1281,7 +1421,11 @@ export class OrderService {
 
     const order = await this.prisma.order.findFirst({
       where,
-      include: { plan: true, user: { select: { email: true, username: true } } },
+      include: {
+        plan: true,
+        virtualProduct: { select: { id: true, name: true, nameEn: true, deliveryType: true } },
+        user: { select: { email: true, username: true } },
+      },
     });
     if (!order) throw new NotFoundException('Order not found');
     return order;
@@ -1304,6 +1448,52 @@ export class OrderService {
     }
 
     return this.activateOrder(id);
+  }
+
+  /**
+   * 管理员发货（仅 MANUAL 虚拟商品单）：
+   * 约束 virtualProductId 非空 + deliveryType=MANUAL + 订单 COMPLETED + deliveryInfo 为空。
+   * CAS（deliveryInfo IS NULL）防止并发双击重复发货；SOLD 的 AUTO 码单不允许走人工发货。
+   */
+  async deliverVirtualOrder(orderId: number, content: string) {
+    const text = String(content || '').trim();
+    if (!text) {
+      throw new BadRequestException('交付内容不能为空');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: { virtualProduct: { select: { id: true, deliveryType: true } } },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (!order.virtualProductId) {
+      throw new BadRequestException('该订单不是虚拟商品订单，无需发货');
+    }
+    if (order.virtualProduct?.deliveryType !== 'MANUAL') {
+      throw new BadRequestException('自动发货商品付款后已自动发放，无需人工发货');
+    }
+    if (order.status !== 'COMPLETED') {
+      throw new BadRequestException('订单尚未完成（未支付/处理中），暂不能发货');
+    }
+
+    // CAS：已发货（deliveryInfo 非空）的单不可再发；失败说明已被并发发货抢走
+    const claimed = await this.prisma.order.updateMany({
+      where: { id: orderId, virtualProductId: { not: null }, deliveryInfo: null },
+      data: { deliveryInfo: text, deliveredAt: new Date() },
+    });
+    if (claimed.count === 0) {
+      const cur = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { deliveryInfo: true },
+      });
+      if (cur?.deliveryInfo) {
+        throw new ConflictException('该订单已发货，请勿重复操作');
+      }
+      throw new ConflictException('订单状态已变更，无法发货，请刷新后重试');
+    }
+
+    this.logger.log(`Virtual order ${order.orderNo} delivered by admin`);
+    return this.prisma.order.findUnique({ where: { id: orderId } });
   }
 
   async cancel(id: number, reason = '') {

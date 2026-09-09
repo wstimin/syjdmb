@@ -24,11 +24,12 @@ export class OrderController {
 
   // ---- User ----
   @Post()
-  @ApiOperation({ summary: 'Create order to purchase a plan' })
+  @ApiOperation({ summary: 'Create order to purchase a plan or virtual product' })
   async create(
     @CurrentUser('id') userId: number,
     @Body() body: {
-      planId: number;
+      planId?: number;               // 网络方案单（与 virtualProductId 互斥）
+      virtualProductId?: number;     // 虚拟商品单（商城：AUTO 自动发码 / MANUAL 人工发货）
       payMethod?: string;
       serverId?: number;
       protocol?: string;
@@ -46,6 +47,7 @@ export class OrderController {
     const result = await this.orderService.createOrder({
       userId,
       planId: body.planId,
+      virtualProductId: body.virtualProductId,
       payMethod: body.payMethod,
       serverId: body.serverId,
       protocol: body.protocol,
@@ -154,6 +156,16 @@ export class OrderController {
   @ApiOperation({ summary: '[Admin] Manually activate order' })
   async adminActivate(@Param('id', ParseIntPipe) id: number) {
     const result = await this.orderService.adminActivate(id);
+    return { success: true, data: result };
+  }
+
+  // 管理员发货：仅 MANUAL 虚拟商品单可用（AUTO 已自动发码）
+  @Post(':id/deliver')
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiOperation({ summary: '[Admin] Deliver virtual product order (MANUAL)' })
+  async deliver(@Param('id', ParseIntPipe) id: number, @Body() body: { content?: string }) {
+    const result = await this.orderService.deliverVirtualOrder(id, body?.content || '');
     return { success: true, data: result };
   }
 

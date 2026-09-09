@@ -2,7 +2,7 @@
   "common": {
     "appName": "NodeShop",
     "home": "Home",
-    "products": "Plans",
+    "products": "Mall",
     "login": "Login",
     "register": "Register",
     "logout": "Logout",
@@ -81,7 +81,7 @@
     "step4Desc": "Paid — connect and use instantly",
     "planSectionTitle": "Choose Your Plan",
     "planSectionSubtitle": "Flexible plans for every need",
-    "viewAllPlans": "View All Plans",
+    "viewAllPlans": "Go to Mall",
     "faqTitle": "FAQ",
     "faqSubtitle": "Still have questions? Get in touch",
     "faq1Q": "What is this service for?",
@@ -130,8 +130,8 @@
     "registerSuccess": "Registered successfully"
   },
   "products": {
-    "title": "Choose Your Plan",
-    "subtitle": "International connectivity plans for cross-border & AI users",
+    "title": "Mall",
+    "subtitle": "Network plans & digital products for cross-border & AI users",
     "priceMonth": "/mo",
     "perMonth": "per month",
     "duration": "Duration",
@@ -143,7 +143,19 @@
     "protocols": "Protocols",
     "chooseServer": "Choose Location",
     "automatic": "Auto",
-    "empty": "No plans available"
+    "empty": "No plans or products yet",
+    "emptyPlans": "No network plans yet",
+    "emptyVirtual": "No digital products yet",
+    "tabsAll": "All",
+    "tabsPlans": "Network Plans",
+    "tabsVirtual": "Digital Products",
+    "soldOut": "Sold Out",
+    "sold": "Sold",
+    "deliveryAuto": "Auto Delivery",
+    "deliveryManual": "Manual Delivery",
+    "virtualDesc": "Digital products · delivered automatically or by staff",
+    "coverFallback": "Product",
+    "leftCount": "{n} left"
   },
   "purchase": {
     "title": "Confirm Order",
@@ -160,11 +172,17 @@
     "expiresIn": "Order expires in",
     "orderSuccess": "Payment successful, creating node...",
     "orderFailed": "Order processing failed",
+    "paySuccess": "Payment successful!",
     "cardRedeem": "Redeem Card",
     "cardPlaceholder": "Enter card key",
     "redeem": "Redeem",
     "redeemSuccess": "Redeemed successfully",
-    "balanceNow": "Current balance"
+    "balanceNow": "Current balance",
+    "product": "Digital Product",
+    "autoSuccess": "Payment successful — delivery sent automatically. View it in My Orders.",
+    "manualSuccess": "Payment successful — awaiting delivery. You can view it in My Orders once shipped.",
+    "deliveryNote": "This product is delivered automatically right after payment.",
+    "manualNote": "This product is shipped manually; the seller will fill in the delivery content after payment."
   },
   "dashboard": {
     "welcome": "Welcome back",

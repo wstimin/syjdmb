@@ -137,7 +137,7 @@ export default function OrdersPage() {
                   <Card className="border-border/60">
                     <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
                       <div className="min-w-0">
-                        <div className="font-medium">{order.plan?.name}</div>
+                        <div className="font-medium">{order.virtualProduct?.name || order.plan?.name}</div>
                         <div className="mt-0.5 text-xs text-muted-foreground">{order.orderNo}</div>
                         <div className="mt-0.5 text-xs text-muted-foreground">
                           {new Date(order.createdAt).toLocaleString()}
@@ -162,6 +162,41 @@ export default function OrdersPage() {
                             </span>
                           )}
                         </div>
+                        {/* 虚拟商品交付：AUTO 自动发码 / MANUAL 人工发货 */}
+                        {order.virtualProduct && (
+                          <div className="mt-2">
+                            {order.deliveryInfo ? (
+                              <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-medium text-emerald-600">
+                                    {order.virtualProduct.deliveryType === 'AUTO' ? '已自动发货' : '已发货'}
+                                    {order.deliveredAt && (
+                                      <span className="ml-1 text-muted-foreground">
+                                        · {new Date(order.deliveredAt).toLocaleString()}
+                                      </span>
+                                    )}
+                                  </span>
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(order.deliveryInfo || '');
+                                      toast.success('交付内容已复制');
+                                    }}
+                                    className="text-xs font-medium text-primary underline hover:text-primary/80"
+                                  >
+                                    复制交付内容
+                                  </button>
+                                </div>
+                                <pre className="mt-1.5 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
+                                  {order.deliveryInfo}
+                                </pre>
+                              </div>
+                            ) : order.status === 'COMPLETED' && order.virtualProduct.deliveryType === 'MANUAL' ? (
+                              <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 ring-1 ring-amber-500/30">
+                                等待发货 · 商家将尽快填写交付内容
+                              </span>
+                            ) : null}
+                          </div>
+                        )}
                         {/* 拒绝原因展示：用户能看到为什么被拒，且不影响重新申请 */}
                         {refund?.status === 'REJECTED' && refund.adminNote && (
                           <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-xs text-amber-600">

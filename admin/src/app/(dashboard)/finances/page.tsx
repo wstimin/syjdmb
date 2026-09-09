@@ -67,7 +67,7 @@ export default function FinancesPage() {
       transactions.map((t: any) => ({
         orderNo: t.orderNo,
         user: t.user?.email || '',
-        plan: t.plan?.name || '',
+        plan: t.virtualProduct?.name || t.plan?.name || '',
         amount: t.amount,
         payMethod: t.payMethod || '',
         status: t.status,
@@ -94,7 +94,7 @@ export default function FinancesPage() {
   const txColumns = [
     { key: 'orderNo', header: '订单号', render: (t: any) => <span className="font-mono text-xs">{t.orderNo}</span> },
     { key: 'user', header: '用户', render: (t: any) => t.user?.email || '—' },
-    { key: 'plan', header: '套餐', render: (t: any) => t.plan?.name || '—' },
+    { key: 'product', header: '商品', render: (t: any) => t.virtualProduct?.name || t.plan?.name || '—' },
     { key: 'amount', header: '金额', render: (t: any) => t.status === 'REFUNDED' ? (
         // 已退款单显示为红负（钱已退），不再是绿色收入
         <span className="font-medium text-red-500">-¥{Number(t.payAmount ?? t.amount)}</span>
