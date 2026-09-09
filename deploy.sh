@@ -729,26 +729,28 @@ cmd_uninstall() {
   warn "将删除本项目在本机的全部内容：容器、Docker 数据卷（数据库 / Redis）、镜像、"
   warn "配置文件（$INSTALL_DIR）、反代、shop 命令。"
   err "⚠ 数据库一经删除：用户 / 订单 / 余额 / 退款记录将永久丢失，不可恢复！"
-  echo "  卸载前可先自动备份数据库（推荐）。之后重新安装也拿不回旧数据。"
-  read -rp "  卸载前是否先备份数据库？(Y/n) " bak
+  echo "  如需保留数据可先自动备份（可选）；也可直接卸载不备份。"
+  read -rp "  是否先备份数据库？(y/N，直接回车 = 不备份) " bak
   read -rp "  确认卸载？输入 yes 后回车（其他任意键取消）: " a
   [ "$a" = "yes" ] || [ "$a" = "YES" ] || { info "已取消"; return; }
   read -rp "  是否连同 Docker 一起卸载（本服务器只跑本站请选 y）？(y/N) " dk
 
-  # 0) 备份数据库（可选，默认做）
+  # 0) 备份数据库（可选，默认不备份；输入 y 才会备份）
   local bk=""
-  if [ "$bak" != "n" ] && [ "$bak" != "N" ]; then
+  if [ "$bak" = "y" ] || [ "$bak" = "Y" ]; then
     bk="/opt/nodeshop-backup-$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$bk"
+    mkdir -p "$bk" || { warn "无法创建备份目录，已中止卸载"; return; }
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx nodeshop-db; then
       info "备份数据库到 $bk/nodeshop.sql.gz ..."
       if docker exec nodeshop-db pg_dump -U nodeadmin -d nodeshop -Fc 2>/dev/null | gzip > "$bk/nodeshop.sql.gz"; then
         ok "数据库已备份：$bk/nodeshop.sql.gz"
       else
-        warn "数据库备份失败，已中止卸载（避免数据无法找回）"; return
+        warn "数据库备份失败，未能产出备份文件！"
+        read -rp "  继续卸载将无法找回任何数据。输入 yes 仍继续，其他键取消: " cont
+        [ "$cont" = "yes" ] || [ "$cont" = "YES" ] || { info "已取消卸载"; return; }
       fi
     else
-      warn "未发现运行中的数据库容器，跳过备份（也就没有新数据可备份）"
+      warn "未发现运行中的数据库容器，跳过备份"
     fi
   fi
 
