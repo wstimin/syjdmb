@@ -128,7 +128,7 @@ jobs:
           echo "[OK] 终态 FAILED 不拦截（合法重下单不受影响）"
 
   heal:
-    name: 生产脏历史自愈回归（失败/被误标 → 删记录重放 → deploy 成功）
+    name: 生产脏历史自愈回归（失败/被误标 → 预删残留索引+删记录 → 0001 重放成功）
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -243,24 +243,28 @@ jobs:
           if [ "$RC" -eq 0 ]; then
             echo "::notice::观测：标记已回滚后 deploy 成功（该自愈其实可行）"
           else
-            echo "::error::观测：标记已回滚后 deploy 失败（exit=$RC），证实需改用删记录自愈"
+            echo "::error::观测：标记已回滚仍失败——阶段三已成功重放建索引，此处重放撞 E42P07「already exists」，证实必须预删残留索引"
           fi
-          # 复位为真失败状态，供阶段五干净测试删记录路径
+          # 复位为真失败状态 + 清掉阶段三残留索引，供阶段五干净测试
           npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          DROP INDEX IF EXISTS "Order_renewal_dup_key";
           UPDATE "_prisma_migrations" SET "finished_at"=NULL, "rolled_back_at"=NULL
           WHERE "migration_name"='20260910000001_add_renewal_dup_unique';
           SQL
           exit 0
 
-      - name: 阶段五 删失败记录（事务已整体回滚、零残留）后 deploy 必须成功且索引落库
+      - name: 阶段五 删坏记录＋预删残留索引后，修复版 0001 重放必须成功且索引落库
         working-directory: backend
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/nodeshop
         run: |
           set -e
           U="$DATABASE_URL"
-          # 与 deploy.sh 完全相同的删记录自愈：真失败/被误标（双时间戳/仅回滚）一律删除；
-          # 真「已应用」（仅 finished_at）绝不删
+          # 与 deploy.sh 完全相同的自愈：预删可能残留的索引（0001 重放即可安全重建），
+          # 再删除失败/被误标记录；真「已应用」（仅 finished_at）绝不删
+          npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
+          DROP INDEX IF EXISTS "Order_renewal_dup_key";
+          SQL
           npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
           DELETE FROM "_prisma_migrations" WHERE "migration_name"='20260910000001_add_renewal_dup_unique'
           AND NOT ( "finished_at" IS NOT NULL AND "rolled_back_at" IS NULL );
@@ -271,9 +275,8 @@ jobs:
           set -e
           tail -25 /tmp/heal5.log
           if [ "$RC" -ne 0 ]; then
-            echo "::error::删记录后 deploy 仍失败（exit=$RC）"; exit 1
+            echo "::error::删记录+预删索引后 deploy 仍失败（exit=$RC）"; exit 1
           fi
-          # 0001 已修复版重新应用；0002 幂等跳过/落库；索引为 NULLS NOT DISTINCT
           npx --yes prisma@5 db execute --url "$U" --stdin <<'SQL'
           SELECT 1 / (SELECT count(*) FROM "_prisma_migrations"
                       WHERE "migration_name"='20260910000001_add_renewal_dup_unique'
@@ -288,7 +291,7 @@ jobs:
           SELECT 1 / (SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                       WHERE c.relname = 'Order_renewal_dup_key' AND i.indnullsnotdistinct);
           SQL
-          echo "::notice::[OK] 删记录自愈路径验证通过（修复版 0001 重放 + 0002 幂等 + 索引落库）"
+          echo "::notice::[OK] 自愈闭环验证通过：0001 修复版重放 + 0002 幂等 + NULLS NOT DISTINCT 索引落库"
 
       - name: 上传诊断日志
         if: always()

@@ -315,19 +315,24 @@ deploy_core() {
       fi
     }
     # 历史故障自动恢复（仅针对已知迁移 20260910000001）：该迁移曾以 enum→text 索引表达式
-    # 部署失败（42P17）。PG 下该迁移在单事务内执行、失败即整体回滚，库内【零残留】（0002 注释
-    # 亦明确此点）——因此最稳健的自愈是直接删除该「失败/被误标」记录，让 deploy 以修复版 0001
-    # 从零重放，等价全新库路径（已被 CI 的 fresh 全量迁移持续验证）。若改为「标记已回滚」
-    # （resolve --rolled-back），Prisma 对比库里旧记录与新修复版文件时可能因内容已修改而拒绝
-    # 部署，故不采用。仅当该行确属失败态/被误标时才删除；真「已应用」（仅 finished_at）绝不删。
+    # 部署失败（42P17）。PG 下该迁移在单事务内执行、失败即整体回滚（0002 注释亦明确），
+    # 但 0001 可能已被成功重放过——此时库里已存在 Order_renewal_dup_key 索引，而 0001 的
+    # CREATE UNIQUE INDEX 无 IF NOT EXISTS，任何一次重放都会撞 E42P07「already exists」
+    # 直接 P3018（CI 已实证）。因此自愈必须两件事一起做，且幂等覆盖所有状态：
+    #   1) DROP INDEX IF EXISTS "Order_renewal_dup_key";   —— 清掉可能残留的索引，
+    #      使 0001 重放变为可安全重建；若 0001 已被跳过，0002 的 IF NOT EXISTS 会兜底重建。
+    #   2) DELETE 该迁移的“失败/被误标”记录（仅 finished_at 的已应用行绝不删），
+    #      deploy 随之以修复版 0001 从零重放，等价全新库路径（CI 持续验证）。
     if run_backend_migrate sh -c 'test -f prisma/migrations/20260910000002_fix_renewal_dup_key/migration.sql' 2>/dev/null; then
       local NL
       NL=$(docker exec nodeshop-db psql -U nodeadmin -d nodeshop -tAc \
         "SELECT count(*) FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND NOT ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NULL );" 2>/dev/null | tr -d '[:space:]' || echo 0)
       if [ "${NL:-0}" != "0" ]; then
-        info "检测到迁移 20260910000001 处于失败/被误标状态（${NL} 条），删除后以修复版重放（0002 幂等兜底）..."
-        docker exec nodeshop-db psql -U nodeadmin -d nodeshop -c "DELETE FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND NOT ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NULL );" \
-          && ok "失败迁移记录已删除，deploy 将重放修复版 0001" || warn "删除失败，继续尝试 deploy"
+        info "检测到迁移 20260910000001 处于失败/被误标状态（${NL} 条）：预删可能残留的防重索引并删除坏记录，随后重放修复版..."
+        docker exec nodeshop-db psql -U nodeadmin -d nodeshop \
+          -c "DROP INDEX IF EXISTS \"Order_renewal_dup_key\";" \
+          -c "DELETE FROM public.\"_prisma_migrations\" WHERE \"migration_name\"='20260910000001_add_renewal_dup_unique' AND NOT ( \"finished_at\" IS NOT NULL AND \"rolled_back_at\" IS NULL );" \
+          && ok "残留索引已预删、坏记录已删除，deploy 将重放修复版 0001" || warn "修复失败，继续尝试 deploy"
       fi
     fi
     run_backend_migrate npx prisma migrate deploy || {
