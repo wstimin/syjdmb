@@ -253,22 +253,24 @@ export default function BalancePage() {
                 className="relative mx-4 w-full max-w-md rounded-2xl bg-background shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* 顶部：购买卡密 */}
+                {/* 顶部：购买卡密 — 高亮跳转卡片 */}
                 {cardPurchaseUrl && (
                   <a
                     href={cardPurchaseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-3 border-b border-border px-6 py-4 transition-colors hover:bg-accent/50 rounded-t-2xl"
+                    className="flex items-center gap-3 rounded-t-2xl border-b border-primary/20 bg-gradient-to-r from-primary/10 via-primary/5 to-primary/10 px-6 py-5 transition-all hover:from-primary/20 hover:via-primary/10 hover:to-primary/20"
                   >
-                    <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                      <ShoppingCart className="h-5 w-5" />
+                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary shadow-sm">
+                      <ShoppingCart className="h-6 w-6" />
                     </span>
-                    <div>
-                      <div className="text-sm font-semibold">购买卡密</div>
-                      <div className="text-xs text-muted-foreground">前往购买页面获取卡密</div>
+                    <div className="min-w-0">
+                      <div className="text-base font-bold text-primary">购买卡密</div>
+                      <div className="text-xs text-primary/70">前往购买页面获取卡密</div>
                     </div>
-                    <span className="ml-auto text-muted-foreground">→</span>
+                    <span className="ml-auto shrink-0 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-sm">
+                      跳转 →
+                    </span>
                   </a>
                 )}
                 {/* 底部：兑换卡密输入 */}
