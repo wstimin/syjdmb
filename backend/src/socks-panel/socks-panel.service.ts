@@ -93,10 +93,24 @@ export class SocksPanelService {
 
     // —— 服务器：商品绑定多台时按权重随机挑一台（空数组=全局可用）——
     const server = await this.pickServer(product.serverIds || []);
+    // —— 端口范围：商品可配置（都填才生效；有一项为空视为未配置，用默认高位端口）——
+    const portStart = product.portStart != null ? Number(product.portStart) : null;
+    const portEnd = product.portEnd != null ? Number(product.portEnd) : null;
+    const rangeValid =
+      portStart != null && portEnd != null && portStart >= 1 && portEnd <= 65535 && portStart <= portEnd;
+    if (portStart != null || portEnd != null) {
+      if (!rangeValid) {
+        this.logger.warn(
+          `Invalid port range ${portStart}-${portEnd} on virtual product ${product.id}, fallback to default high ports`,
+        );
+      }
+    }
+    const rangeMin = rangeValid ? portStart : null;
+    const rangeMax = rangeValid ? portEnd : null;
     const remark = await this.computeRemark(server);
     const username = this.randomLowerAndNum(16);
     const password = this.randomLowerAndNum(24);
-    let port = await this.getAvailablePort(server.id);
+    let port = await this.getAvailablePort(server.id, rangeMin, rangeMax);
     const expiryTime = Date.now() + Number(product.duration) * 24 * 3600 * 1000;
 
     // Xray socks 入站：认证在入站级（accounts），没有 settings.clients；
@@ -148,9 +162,11 @@ export class SocksPanelService {
       }
       if (!/already in use|in use/i.test(response?.msg || '')) break;
       this.logger.warn(
-        `Port ${port} in use on server ${server.id}, retry with a random high port`,
+        `Port ${port} in use on server ${server.id}, retry within port range ${
+          rangeValid ? `${rangeMin}-${rangeMax}` : 'default high ports'
+        }`,
       );
-      port = await this.getAvailablePort(server.id);
+      port = await this.getAvailablePort(server.id, rangeMin, rangeMax);
     }
     if (!xuiInboundId) {
       // add 可能已成功但没定位到 id —— 尽力回收空入站，避免面板累积游离节点
@@ -812,20 +828,51 @@ export class SocksPanelService {
     throw new BadRequestException(`服务器「${name}」SOCKS 节点数已达上限 100，无法继续创建`);
   }
 
-  /** 随机高位端口（10000-65535），避开面板上已占用的端口；占用则换，有界重试。 */
-  private async getAvailablePort(serverId: number): Promise<number> {
+  /**
+   * SOCKS 节点端口分配（顺带作「端口范围已占满」前置校验）：
+   * - 未配置范围（min/max 为 null）→ 沿用默认随机高位端口 [10000, 65534]；面板 GET 失败
+   *   也保持旧行为：warn + 随机端口兜底（由调用方「占用重试」兜底），绝不提前中断交付。
+   * - 配置了范围 → 只在 [min,max] 内随机挑未占用端口；整个范围已被占满 → 明确抛错，
+   *   不反复打面板重试（此时订单留在 PROCESSING，端口释放后可重试）。
+   */
+  private async getAvailablePort(
+    serverId: number,
+    min: number | null = null,
+    max: number | null = null,
+  ): Promise<number> {
+    const rangeConfigured = min != null || max != null;
+    const low = min ?? 10000;
+    // 默认上限沿用旧行为（随机高位端口最多到 65534）；显式配置则按配置原样使用（含 65535）
+    const high = max ?? 65534;
+    // rangeValid 已保证 low <= high → span >= 1
+    const span = high - low + 1;
+    let usedPorts: Set<number> | null = null;
     try {
       const response = await this.serverService.getInbounds(serverId);
       const inbounds = Array.isArray(response?.obj) ? response.obj : [];
-      const usedPorts = new Set(inbounds.map((i: any) => i.port));
-      for (let i = 0; i < 300; i++) {
-        const candidate = 10000 + Math.floor(Math.random() * (65535 - 10000));
-        if (!usedPorts.has(candidate)) return candidate;
-      }
+      usedPorts = new Set(inbounds.map((i: any) => i.port));
     } catch (e) {
+      // 无论是否配置范围，面板 GET 失败都只降级不抛错（与旧版一致；占用冲突由重试兜底）
       this.logger.warn(`Could not fetch inbounds: ${e.message}`);
     }
-    return 10000 + Math.floor(Math.random() * (65535 - 10000));
+    if (usedPorts) {
+      // 快路径：随机 300 次
+      for (let i = 0; i < 300; i++) {
+        const candidate = low + Math.floor(Math.random() * span);
+        if (!usedPorts.has(candidate)) return candidate;
+      }
+      if (rangeConfigured) {
+        // 兜底：范围内顺序扫第一个空闲（范围小且几乎占满时随机命中率低）
+        for (let p = low; p <= high; p++) {
+          if (!usedPorts.has(p)) return p;
+        }
+        throw new BadRequestException(
+          `该商品的端口范围 ${low}-${high} 已被占满，暂无法创建 SOCKS 节点`,
+        );
+      }
+    }
+    // 未配置范围（或面板 GET 失败）→ 保持旧行为：均匀随机返回，占用冲突由「占用重试」兜底
+    return low + Math.floor(Math.random() * span);
   }
 
   private extractInboundId(response: any): number {
