@@ -32,6 +32,7 @@ model User {
   inbounds       Inbound[]
   socksProxies   SocksProxy[]
   socksGrants    SocksGrant[]
+  socksNodes     SocksNode[]
   tickets        Ticket[]
   cards          Card[]
   refundRequests RefundRequest[]
@@ -78,6 +79,7 @@ model Server {
   flag          String? // country flag emoji
   inbounds      Inbound[]
   socksProxies  SocksProxy[]
+  socksNodes    SocksNode[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
@@ -154,12 +156,18 @@ model VirtualProduct {
   price         Decimal              @db.Decimal(10, 2)
   originalPrice Decimal?             @db.Decimal(10, 2)
   coverUrl      String? // 商品图 URL（可选，后台填外链）
-  deliveryType  DeliveryType         @default(AUTO) // AUTO=付款自动发码；MANUAL=人工发货
+  deliveryType  DeliveryType         @default(AUTO) // AUTO=付款自动发码；MANUAL=人工发货；SOCKS_PANEL=面板交付 SOCKS 节点
+  // 仅 SOCKS_PANEL 使用：交付时长（天）。付款后在绑定服务器上创建 socks 入站，按此时长设到期；
+  // 到期停用→一天宽限期→自动删除（与现有节点完全一致），支持到期续费（EXPIRY）。
+  duration      Int? // 时长（天）
+  // 仅 SOCKS_PANEL 使用：允许落点的服务器（绑定多台，激活时加权随机挑一台）；空数组=全局可用
+  serverIds     Int[]                @default([]) // 绑定服务器 ID 列表
   sort          Int                  @default(0)
   status        VirtualProductStatus @default(ACTIVE)
   sold          Int                  @default(0) // 已售（成功交付时 +1）
   keys          ProductKey[]
   orders        Order[]
+  socksNodes    SocksNode[]
   createdAt     DateTime             @default(now())
   updatedAt     DateTime             @updatedAt
 
@@ -169,6 +177,7 @@ model VirtualProduct {
 enum DeliveryType {
   AUTO
   MANUAL
+  SOCKS_PANEL // 面板交付 SOCKS 节点：付款后在 XUI 面板创建 socks 入站，按 duration 时长订阅制管理（不限流量）
 }
 
 enum VirtualProductStatus {
@@ -241,6 +250,11 @@ model Order {
   // 续费单：对已有节点续期/续流量（非建新节点）。激活时走 bulkAdjust 加量 + 面板自动重启。
   renewalOfInboundId  Int? // 目标节点（Inbound.id），必须属于下单用户
   renewalOfInbound    Inbound?        @relation("OrderRenewal", fields: [renewalOfInboundId], references: [id])
+  // SOCKS 节点续费单：对面板交付的 SOCKS 节点（SocksNode.id）续时长。
+  // 与 renewalOfInboundId 互斥（同一单二选一）；仅支持 EXPIRY（时长制，不限流量）。
+  // 激活时按「面板入站 expiryTime 绝对 SET + 本地推进」两条腿交付（详情见 SocksPanelService）。
+  renewalOfSocksNodeId    Int? // 目标 SOCKS 节点（SocksNode.id），必须属于下单用户
+  renewalOfSocksNode      SocksNode?  @relation("SocksRenewal", fields: [renewalOfSocksNodeId], references: [id])
   renewalAppliedAt    DateTime? // 续费已应用标记：本地增量提交后写入，幂等/崩溃对账用
   // 续费类型：EXPIRY=到期续费（到期日顺延；已到期节点=新周期锚在原到期日、切换点已过激活即恢复
   // 满额；过期超过一天的节点被 cron 自动删除）、TRAFFIC=流量续费（在当前流量额度上叠加，不清
@@ -256,6 +270,9 @@ model Order {
   // 20260910000002_fix_renewal_dup_key（生产恢复/幂等）中创建 —— WHERE 子句无法用
   // Prisma schema 表达。若 prisma migrate dev 报告它为漂移对象并生成 DROP INDEX 迁移，
   // 请勿应用（用 --create-only 检查后保留）；生产只跑 migrate deploy 不会自动生成。
+  // SOCKS 续费版同款防重："Order_renewal_socks_dup_key"（userId, renewalOfSocksNodeId,
+  // renewType，NULLS NOT DISTINCT + WHERE 未完成状态）。手写迁移
+  // 20260911000003_add_socks_panel_delivery 创建，同样无法用 schema 表达、勿让 migrate dev 删除。
   referralEarning     Decimal?        @db.Decimal(10, 2)
   refundRequests      RefundRequest[]
   createdAt           DateTime        @default(now())
@@ -391,6 +408,58 @@ model SocksProxy {
 enum SocksStatus {
   ACTIVE
   INACTIVE
+  DELETED
+}
+
+// ==========================================
+// SOCKS 面板交付节点（SOCKS_PANEL 虚拟商品交付台账）
+// ==========================================
+// 「面板交付 SOCKS 节点」：用户购买 deliveryType=SOCKS_PANEL 的虚拟商品后，系统在 XUI 面板上
+// 创建 socks 入站（settings = { auth:"password", accounts:[{user,pass}] }；时长制、不限流量），
+// 并在本地登记本表。与 SocksProxy（用户台账）、Inbound（节点体系）完全解耦 —— 勿复用两者。
+// 生命周期与现有节点完全一致：到期停用 → 一天续费宽限期 → 自动删除（可重新购买）；支持到期
+// 续费（EXPIRY，严格周期锚）。面板侧用入站级操作（inbounds/add · update · del），不用
+// clients/*（socks 入站没有 settings.clients，面板不需要客户端实体）。
+model SocksNode {
+  id               Int              @id @default(autoincrement())
+  uuid             String           @unique @default(uuid())
+  userId           Int
+  user             User             @relation(fields: [userId], references: [id])
+  // 来源商品与订单（审计追溯；商品下架/删除不级联）
+  virtualProductId Int?
+  virtualProduct   VirtualProduct?  @relation(fields: [virtualProductId], references: [id], onDelete: SetNull)
+  orderId          Int? // 来源购买订单 ID（纯审计列，无外键：订单删除不级联）
+  orderNo          String? // 来源购买订单号
+  // 落点服务器与面板入站
+  serverId         Int?
+  server           Server?          @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  inboundId        Int? // XUI 面板入站 ID（/inbounds/add 后按端口回查定位）
+  host             String // 面板主机（本地拼接连接串用）
+  port             Int // SOCKS 入站端口
+  // socks 入站认证（面板对密码不回显，本地落库留存以便恢复/排查）
+  username         String?
+  password         String?
+  connectionUrl    String? // 本地拼接 socks5://user:pass@host:port
+  expiryTime       DateTime? // 到期时间（创建=now+duration 天；续费=原到期+时长，严格周期锚）
+  status           SocksNodeStatus @default(ACTIVE)
+  // 面板入站回读快照（/inbounds/list 定位到的记录）。/inbounds/update 是全量替换（与
+  // updateClient 同陷阱），到期停用/续费/删除必须基于快照重建完整 payload 回写，绝不裸传
+  // { enable:false } 之类的部分字段（会把 settings/streamSettings 清空成半废入站）。
+  panelSnapshot    Json?
+  remark           String? // 面板入站备注（服务器名+序号，与现有节点一致）
+  renewalOrders    Order[]         @relation("SocksRenewal")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([userId, status])
+  @@index([virtualProductId])
+  @@index([serverId])
+}
+
+enum SocksNodeStatus {
+  ACTIVE
+  EXPIRED
+  SUSPENDED
   DELETED
 }
 
