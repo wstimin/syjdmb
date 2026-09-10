@@ -42,6 +42,7 @@ export default function VirtualProductsPage() {
     deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
     duration: '', serverIds: [] as number[], // SOCKS_PANEL 交付字段
     stock: '', // SOCKS_PANEL 可售总数（可选，空=不限量）
+    portStart: '', portEnd: '', // SOCKS_PANEL 端口范围（可选，都填才生效；仅后台配置不对外展示）
   });
 
   // SOCKS_PANEL 绑定服务器候选（多选）
@@ -77,6 +78,7 @@ export default function VirtualProductsPage() {
       deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
       duration: '', serverIds: [] as number[],
       stock: '',
+      portStart: '', portEnd: '',
     });
     setDialogOpen(true);
   };
@@ -92,6 +94,8 @@ export default function VirtualProductsPage() {
       duration: p.deliveryType === 'SOCKS_PANEL' ? String(p.duration ?? '') : '',
       serverIds: p.deliveryType === 'SOCKS_PANEL' ? p.serverIds || [] : [],
       stock: p.deliveryType === 'SOCKS_PANEL' ? String(p.stock ?? '') : '',
+      portStart: p.deliveryType === 'SOCKS_PANEL' ? String(p.portStart ?? '') : '',
+      portEnd: p.deliveryType === 'SOCKS_PANEL' ? String(p.portEnd ?? '') : '',
     });
     setDialogOpen(true);
   };
@@ -114,6 +118,26 @@ export default function VirtualProductsPage() {
       toast.error('SOCKS 面板交付需要填写交付时长（天）');
       return;
     }
+    // 端口范围：两个都填或都不填；填写时需为 1-65535 整数且 下限 ≤ 上限
+    if (form.deliveryType === 'SOCKS_PANEL') {
+      const ps = form.portStart.trim();
+      const pe = form.portEnd.trim();
+      if (ps || pe) {
+        if (!ps || !pe) {
+          toast.error('端口范围需同时填写下限和上限（或不填使用默认）');
+          return;
+        }
+        const nps = Number(ps);
+        const npe = Number(pe);
+        if (
+          !Number.isInteger(nps) || !Number.isInteger(npe) ||
+          nps < 1 || npe < 1 || nps > 65535 || npe > 65535 || nps > npe
+        ) {
+          toast.error('端口范围需为 1-65535 的整数，且下限 ≤ 上限');
+          return;
+        }
+      }
+    }
     const payload = {
       name: form.name,
       nameEn: form.nameEn || null,
@@ -130,6 +154,9 @@ export default function VirtualProductsPage() {
       serverIds: form.deliveryType === 'SOCKS_PANEL' ? form.serverIds : [],
       // 可售总数：仅 SOCKS_PANEL 且填写了正数时生效，空=不限量（null）
       stock: form.deliveryType === 'SOCKS_PANEL' && Number(form.stock) > 0 ? Number(form.stock) : null,
+      // 端口范围：仅 SOCKS_PANEL 且上下限都填写时生效（校验已在保存前完成），空=默认高位端口
+      portStart: form.deliveryType === 'SOCKS_PANEL' && form.portStart.trim() && form.portEnd.trim() ? Number(form.portStart) : null,
+      portEnd: form.deliveryType === 'SOCKS_PANEL' && form.portStart.trim() && form.portEnd.trim() ? Number(form.portEnd) : null,
     };
     try {
       if (editing) {
@@ -272,6 +299,14 @@ export default function VirtualProductsPage() {
         : <span className="text-xs text-muted-foreground">-</span>,
     },
     {
+      key: 'portRange', header: '端口范围',
+      render: (p: any) => p.deliveryType === 'SOCKS_PANEL'
+        ? (p.portStart != null && p.portEnd != null
+            ? <span className="font-mono text-xs">{p.portStart}-{p.portEnd}</span>
+            : <span className="text-xs text-muted-foreground">默认高位</span>)
+        : <span className="text-xs text-muted-foreground">-</span>,
+    },
+    {
       key: 'stock', header: '剩余码',
       render: (p: any) => {
         const r = remainingOf(p);
@@ -397,6 +432,25 @@ export default function VirtualProductsPage() {
                   <Label>可售数量（可选）</Label>
                   <Input type="number" min={1} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} placeholder="留空 = 不限量" />
                   <p className="text-xs text-muted-foreground">达到后自动售罄：下单拦截 + 商城卡售罄遮罩；已售数 / 总数展示在列表</p>
+                </div>
+                <div className="space-y-2 col-span-2">
+                  <Label>端口范围（可选）</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number" min={1} max={65535}
+                      value={form.portStart}
+                      onChange={(e) => setForm({ ...form, portStart: e.target.value })}
+                      placeholder="下限，如 20000"
+                    />
+                    <span className="text-muted-foreground">—</span>
+                    <Input
+                      type="number" min={1} max={65535}
+                      value={form.portEnd}
+                      onChange={(e) => setForm({ ...form, portEnd: e.target.value })}
+                      placeholder="上限，如 21000"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">创建节点时在该范围内取未占用端口；留空 = 系统默认高位端口（10000-65535）。纯后台配置，不对客户展示。</p>
                 </div>
                 <div className="space-y-2 col-span-2">
                   <Label>绑定服务器（可选多台，激活时随机挑一台；不选 = 所有在线服务器可用）</Label>
