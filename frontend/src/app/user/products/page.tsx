@@ -333,10 +333,20 @@ function OrderCard({ order, copied, onCopy, nameOf, t, locale }: {
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">{nameOf(order)}</span>
             {order.virtualProduct && (
-              <Badge variant={order.virtualProduct.deliveryType === 'AUTO' ? 'success' : 'warning'}>
+              <Badge
+                variant={
+                  order.virtualProduct.deliveryType === 'AUTO'
+                    ? 'success'
+                    : order.virtualProduct.deliveryType === 'SOCKS_PANEL'
+                      ? 'default'
+                      : 'warning'
+                }
+              >
                 {order.virtualProduct.deliveryType === 'AUTO'
                   ? (locale === 'en' ? 'Auto delivery' : '自动发货')
-                  : (locale === 'en' ? 'Manual delivery' : '人工发货')}
+                  : order.virtualProduct.deliveryType === 'SOCKS_PANEL'
+                    ? t('products.deliverySocks')
+                    : (locale === 'en' ? 'Manual delivery' : '人工发货')}
               </Badge>
             )}
           </div>
@@ -368,9 +378,17 @@ function OrderCard({ order, copied, onCopy, nameOf, t, locale }: {
               </pre>
             </div>
           ) : order.virtualProduct?.deliveryType === 'SOCKS_PANEL' ? (
-            <span className="mt-2 inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 ring-1 ring-blue-500/30">
-              {locale === 'en' ? 'SOCKS node provisioning…' : 'SOCKS 节点创建中…'}
-            </span>
+            order.status === 'COMPLETED' ? (
+              <span className="mt-2 inline-flex items-center rounded-full bg-rose-500/10 px-2 py-0.5 text-xs font-medium text-rose-600 ring-1 ring-rose-500/30">
+                {locale === 'en'
+                  ? 'Node deleted / expired, please purchase the product again'
+                  : '节点已删除 / 已失效，如需使用请重新购买'}
+              </span>
+            ) : (
+              <span className="mt-2 inline-flex items-center rounded-full bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 ring-1 ring-blue-500/30">
+                {locale === 'en' ? 'SOCKS node provisioning…' : 'SOCKS 节点创建中…'}
+              </span>
+            )
           ) : (
             <span className="mt-2 inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600 ring-1 ring-amber-500/30">
               {t('myProducts.awaitingDelivery')}
