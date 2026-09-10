@@ -8,6 +8,12 @@ type GeneralSettings = {
   supportEmail: string;
   siteUrl: string;
   cardPurchaseUrl: string;
+  showWechat: boolean;
+  showAlipay: boolean;
+  showCard: boolean;
+  showBalance: boolean;
+  wechatEnabled: boolean;
+  alipayEnabled: boolean;
 };
 
 const SettingsContext = createContext<GeneralSettings>({
@@ -15,6 +21,12 @@ const SettingsContext = createContext<GeneralSettings>({
   supportEmail: '',
   siteUrl: '',
   cardPurchaseUrl: '',
+  showWechat: true,
+  showAlipay: true,
+  showCard: true,
+  showBalance: true,
+  wechatEnabled: false,
+  alipayEnabled: false,
 });
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
@@ -23,6 +35,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     supportEmail: '',
     siteUrl: '',
     cardPurchaseUrl: '',
+    showWechat: true,
+    showAlipay: true,
+    showCard: true,
+    showBalance: true,
+    wechatEnabled: false,
+    alipayEnabled: false,
   });
 
   useEffect(() => {

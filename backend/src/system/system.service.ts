@@ -52,11 +52,23 @@ export class SystemService {
     const s = await this.prisma.systemSetting.findMany({ where: { group: 'general' } });
     const map: Record<string, any> = {};
     for (const row of s) map[row.key] = this.parseValue(row.value, row.type);
+    // 同时读取 payment 组的启用状态，供前端过滤支付方式
+    const p = await this.prisma.systemSetting.findMany({ where: { group: 'payment' } });
+    const pMap: Record<string, any> = {};
+    for (const row of p) pMap[row.key] = this.parseValue(row.value, row.type);
+
     return {
       appName: map.appName || 'NodeShop',
       supportEmail: map.supportEmail || '',
       siteUrl: map.siteUrl || process.env.FRONTEND_URL || process.env.APP_URL || '',
       cardPurchaseUrl: map.cardPurchaseUrl || '',
+      // 前端支付方式显示控制（默认全部显示）
+      showWechat: map.showWechat !== false,
+      showAlipay: map.showAlipay !== false,
+      showCard: map.showCard !== false,
+      showBalance: map.showBalance !== false,
+      wechatEnabled: pMap.wechatEnabled === true,
+      alipayEnabled: pMap.alipayEnabled === true,
     };
   }
 

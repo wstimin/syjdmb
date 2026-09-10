@@ -23,21 +23,22 @@ const TX_LABELS: Record<string, string> = {
 
 const QUICK_AMOUNTS = [50, 100, 200, 500];
 
-const paymentMethods = [
-  { id: 'wechat', label: '微信支付', icon: '💚' },
-  { id: 'alipay', label: '支付宝', icon: '💙' },
-  { id: 'card', label: '卡密兑换', icon: <TicketIcon className="h-5 w-5" /> },
-];
-
 export default function BalancePage() {
   const { user, refreshUser } = useAuth();
-  const { cardPurchaseUrl } = useSettings();
+  const { cardPurchaseUrl, showWechat, showAlipay, showCard } = useSettings();
+
+  const paymentMethods = [
+    { id: 'wechat', label: '微信支付', icon: '💚', show: showWechat },
+    { id: 'alipay', label: '支付宝', icon: '💙', show: showAlipay },
+    { id: 'card', label: '购买卡密 / 兑换', icon: <TicketIcon className="h-5 w-5" />, show: showCard },
+  ].filter((m) => m.show);
   const [amount, setAmount] = useState<string>('100');
   const [creating, setCreating] = useState(false);
   const [payQr, setPayQr] = useState<string | null>(null);
   const [method, setMethod] = useState<string>('');
   const [cardCode, setCardCode] = useState<string>('');
   const [redeeming, setRedeeming] = useState(false);
+  const [showCardPopup, setShowCardPopup] = useState(false);
   const redeemingRef = useRef(false); // Enter/按钮双击防重入（按钮 disabled 挡不住 Enter 提交）
   const pollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -106,12 +107,12 @@ export default function BalancePage() {
   }, [refreshUser]);
 
   const createRecharge = async (m: string) => {
-    setMethod(m);
-    // 卡密兑换不是网关支付：不校验充值金额、不建 RC 单，直接展开卡密输入面板（兑换进余额）
+    // 卡密兑换 → 打开弹窗（不建充值单）
     if (m === 'card') {
-      setPayQr(null);
+      setShowCardPopup(true);
       return;
     }
+    setMethod(m);
     const amt = Number(amount);
     if (!(amt > 0)) {
       toast.error('请输入充值金额（大于 0）');
@@ -245,34 +246,57 @@ export default function BalancePage() {
             </div>
           )}
 
-          {/* 卡密兑换面板：选中「卡密兑换」时展开（不建充值单，兑换直接进余额） */}
-          {method === 'card' && !payQr && (
-            <>
-              <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center">
-                <Input
-                  value={cardCode}
-                  onChange={(e) => setCardCode(e.target.value.toUpperCase())}
-                  placeholder="输入卡密（如 XXXX-XXXX-XXXX-XXXX），不区分大小写"
-                  className="font-mono sm:max-w-sm"
-                  onKeyDown={(e) => e.key === 'Enter' && redeemCard()}
-                />
-                <Button onClick={redeemCard} disabled={!cardCode.trim() || redeeming} className="sm:w-28">
-                  {redeeming && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-                  兑换到余额
-                </Button>
-              </div>
-              {cardPurchaseUrl && (
-                <a
-                  href={cardPurchaseUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+          {/* 卡密兑换弹窗 */}
+          {showCardPopup && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCardPopup(false)}>
+              <div
+                className="relative mx-4 w-full max-w-md rounded-2xl bg-background shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* 顶部：购买卡密 */}
+                {cardPurchaseUrl && (
+                  <a
+                    href={cardPurchaseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-3 border-b border-border px-6 py-4 transition-colors hover:bg-accent/50 rounded-t-2xl"
+                  >
+                    <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <ShoppingCart className="h-5 w-5" />
+                    </span>
+                    <div>
+                      <div className="text-sm font-semibold">购买卡密</div>
+                      <div className="text-xs text-muted-foreground">前往购买页面获取卡密</div>
+                    </div>
+                    <span className="ml-auto text-muted-foreground">→</span>
+                  </a>
+                )}
+                {/* 底部：兑换卡密输入 */}
+                <div className="px-6 py-5">
+                  <div className="mb-3 text-sm font-semibold">兑换卡密</div>
+                  <div className="flex gap-2">
+                    <Input
+                      value={cardCode}
+                      onChange={(e) => setCardCode(e.target.value.toUpperCase())}
+                      placeholder="输入卡密（如 XXXX-XXXX-XXXX-XXXX），不区分大小写"
+                      className="font-mono"
+                      onKeyDown={(e) => e.key === 'Enter' && redeemCard()}
+                    />
+                    <Button onClick={redeemCard} disabled={!cardCode.trim() || redeeming} className="shrink-0">
+                      {redeeming && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                      兑换到余额
+                    </Button>
+                  </div>
+                </div>
+                {/* 关闭按钮 */}
+                <button
+                  onClick={() => setShowCardPopup(false)}
+                  className="absolute right-3 top-3 rounded-full p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
-                  <ShoppingCart className="h-3.5 w-3.5" />
-                  还没有卡密？前往购买
-                </a>
-              )}
-            </>
+                  <XCircle className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
           )}
 
           {payQr && (

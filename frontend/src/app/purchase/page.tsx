@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
   const { t, locale } = useI18n();
-  const { cardPurchaseUrl } = useSettings();
+  const { cardPurchaseUrl, showWechat, showAlipay, showCard, showBalance } = useSettings();
   const router = useRouter();
   const searchParams = useSearchParams();
   const planId = searchParams.get('plan');
@@ -37,6 +37,7 @@ function PurchaseContent() {
   const [relaySocksId, setRelaySocksId] = useState<number | null>(null);
   const [payQr, setPayQr] = useState<string | null>(null);
   const [cardCode, setCardCode] = useState('');
+  const [showCardPopup, setShowCardPopup] = useState(false); // 卡密兑换弹窗
   const [couponCode, setCouponCode] = useState('');
   const [couponInfo, setCouponInfo] = useState<any>(null); // validate 成功返回 {price, discount, chargeAmount}
   const [couponError, setCouponError] = useState('');
@@ -136,20 +137,21 @@ function PurchaseContent() {
     }, 3000);
   };
 
-  const methods = [
-    { id: 'wechat', label: t('purchase.wechat'), icon: '💚' },
-    { id: 'alipay', label: t('purchase.alipay'), icon: '💙' },
-    { id: 'card', label: t('purchase.cardKey'), icon: <TicketIcon className="h-5 w-5" /> },
-    { id: 'balance', label: t('purchase.balance'), icon: <Banknote className="h-5 w-5" /> },
+  const allMethods = [
+    { id: 'wechat', label: t('purchase.wechat'), icon: '💚', show: showWechat },
+    { id: 'alipay', label: t('purchase.alipay'), icon: '💙', show: showAlipay },
+    { id: 'card', label: '购买卡密 / 兑换', icon: <TicketIcon className="h-5 w-5" />, show: showCard },
+    { id: 'balance', label: t('purchase.balance'), icon: <Banknote className="h-5 w-5" />, show: showBalance },
   ];
+  const methods = allMethods.filter((m) => m.show);
 
   const createOrder = async (m: string) => {
-    setMethod(m);
-    // 卡密走「充值余额」，不是订单支付：不建单，直接展开卡密输入面板
+    // 卡密兑换 → 打开弹窗（不建单）
     if (m === 'card') {
-      setProcessing(false);
+      setShowCardPopup(true);
       return;
     }
+    setMethod(m);
     // 中转校验仅网络方案单（虚拟商品单无服务器/中转概念）
     if (!isVirtual) {
       if (relay && relaySocksList.length === 0) {
@@ -520,36 +522,56 @@ function PurchaseContent() {
         </div>
       )}
 
-      {/* Card redemption */}
-      {!order && method === 'card' && !payQr && (
-        <Card className="mt-6 border-border/60">
-          <CardHeader>
-            <CardTitle className="text-lg">{t('purchase.cardRedeem')}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-2">
-              <Input
-                placeholder={t('purchase.cardPlaceholder')}
-                value={cardCode}
-                onChange={(e) => setCardCode(e.target.value)}
-              />
-              <Button onClick={() => redeemCard(cardCode)} disabled={!cardCode || processing}>
-                {t('purchase.redeem')}
-              </Button>
-            </div>
+      {/* 卡密兑换弹窗 */}
+      {showCardPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCardPopup(false)}>
+          <div
+            className="relative mx-4 w-full max-w-md rounded-2xl bg-background shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 顶部：购买卡密 */}
             {cardPurchaseUrl && (
               <a
                 href={cardPurchaseUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+                className="flex items-center gap-3 border-b border-border px-6 py-4 transition-colors hover:bg-accent/50 rounded-t-2xl"
               >
-                <ShoppingCart className="h-3.5 w-3.5" />
-                还没有卡密？前往购买
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <ShoppingCart className="h-5 w-5" />
+                </span>
+                <div>
+                  <div className="text-sm font-semibold">购买卡密</div>
+                  <div className="text-xs text-muted-foreground">前往购买页面获取卡密</div>
+                </div>
+                <span className="ml-auto text-muted-foreground">→</span>
               </a>
             )}
-          </CardContent>
-        </Card>
+            {/* 底部：兑换卡密输入 */}
+            <div className="px-6 py-5">
+              <div className="mb-3 text-sm font-semibold">兑换卡密</div>
+              <div className="flex gap-2">
+                <Input
+                  placeholder={t('purchase.cardPlaceholder')}
+                  value={cardCode}
+                  onChange={(e) => setCardCode(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && cardCode && !processing && redeemCard(cardCode)}
+                />
+                <Button onClick={() => redeemCard(cardCode)} disabled={!cardCode || processing} className="shrink-0">
+                  {processing && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                  {t('purchase.redeem')}
+                </Button>
+              </div>
+            </div>
+            {/* 关闭按钮 */}
+            <button
+              onClick={() => setShowCardPopup(false)}
+              className="absolute right-3 top-3 rounded-full p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <XCircle className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Real QR — WeChat/Alipay — with status polling */}

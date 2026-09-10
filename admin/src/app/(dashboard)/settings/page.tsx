@@ -109,6 +109,11 @@ export default function SettingsPage() {
           supportEmail: s.supportEmail || '',
           siteUrl: s.siteUrl || '',
           cardPurchaseUrl: s.cardPurchaseUrl || '',
+          // 前端支付方式显示控制（默认全部显示）
+          showWechat: s.showWechat === false ? false : true,
+          showAlipay: s.showAlipay === false ? false : true,
+          showCard: s.showCard === false ? false : true,
+          showBalance: s.showBalance === false ? false : true,
           // wechat
           wechatEnabled: s.wechatEnabled === true || s.wechatEnabled === 'true' || false,
           wechatAppId: s.wechatAppId || '',
@@ -148,6 +153,11 @@ export default function SettingsPage() {
         { key: 'supportEmail', value: form.supportEmail, type: 'string', group: 'general' },
         { key: 'siteUrl', value: form.siteUrl, type: 'string', group: 'general' },
         { key: 'cardPurchaseUrl', value: form.cardPurchaseUrl, type: 'string', group: 'general' },
+        // 前端支付方式显示控制
+        { key: 'showWechat', value: form.showWechat, type: 'boolean', group: 'general' },
+        { key: 'showAlipay', value: form.showAlipay, type: 'boolean', group: 'general' },
+        { key: 'showCard', value: form.showCard, type: 'boolean', group: 'general' },
+        { key: 'showBalance', value: form.showBalance, type: 'boolean', group: 'general' },
         // wechat
         { key: 'wechatEnabled', value: form.wechatEnabled, type: 'boolean', group: 'payment' },
         { key: 'wechatAppId', value: form.wechatAppId, type: 'string', group: 'payment' },
@@ -233,6 +243,34 @@ export default function SettingsPage() {
               <Field label="卡密购买链接" hint="外部发卡/购买地址，前台导航栏将显示「购买卡密」入口。留空则不显示">
                 <Input value={form.cardPurchaseUrl} onChange={(e) => set('cardPurchaseUrl', e.target.value)} placeholder="https://your-card-shop.com" />
               </Field>
+
+              {/* 前端支付方式显示控制 */}
+              <div className="space-y-3 border-t border-border pt-4">
+                <Label className="text-sm font-semibold">前端支付方式显示控制</Label>
+                <p className="text-xs text-muted-foreground">控制前台购买/充值页面显示哪些支付方式，关闭后用户端不可见</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Toggle
+                    checked={form.showWechat !== false}
+                    onChange={(v) => set('showWechat', v)}
+                    label="微信支付"
+                  />
+                  <Toggle
+                    checked={form.showAlipay !== false}
+                    onChange={(v) => set('showAlipay', v)}
+                    label="支付宝"
+                  />
+                  <Toggle
+                    checked={form.showCard !== false}
+                    onChange={(v) => set('showCard', v)}
+                    label="卡密兑换"
+                  />
+                  <Toggle
+                    checked={form.showBalance !== false}
+                    onChange={(v) => set('showBalance', v)}
+                    label="余额支付"
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
