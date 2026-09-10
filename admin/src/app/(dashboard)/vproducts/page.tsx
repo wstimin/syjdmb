@@ -41,6 +41,7 @@ export default function VirtualProductsPage() {
     description: '', descriptionEn: '', coverUrl: '',
     deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
     duration: '', serverIds: [] as number[], // SOCKS_PANEL 交付字段
+    stock: '', // SOCKS_PANEL 可售总数（可选，空=不限量）
   });
 
   // SOCKS_PANEL 绑定服务器候选（多选）
@@ -75,6 +76,7 @@ export default function VirtualProductsPage() {
       description: '', descriptionEn: '', coverUrl: '',
       deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
       duration: '', serverIds: [] as number[],
+      stock: '',
     });
     setDialogOpen(true);
   };
@@ -89,6 +91,7 @@ export default function VirtualProductsPage() {
       deliveryType: p.deliveryType, sort: String(p.sort ?? 0), status: p.status,
       duration: p.deliveryType === 'SOCKS_PANEL' ? String(p.duration ?? '') : '',
       serverIds: p.deliveryType === 'SOCKS_PANEL' ? p.serverIds || [] : [],
+      stock: p.deliveryType === 'SOCKS_PANEL' ? String(p.stock ?? '') : '',
     });
     setDialogOpen(true);
   };
@@ -125,6 +128,8 @@ export default function VirtualProductsPage() {
       // SOCKS_PANEL：时长（天）+ 绑定服务器（空数组=全局可用）
       duration: form.deliveryType === 'SOCKS_PANEL' ? Number(form.duration) : null,
       serverIds: form.deliveryType === 'SOCKS_PANEL' ? form.serverIds : [],
+      // 可售总数：仅 SOCKS_PANEL 且填写了正数时生效，空=不限量（null）
+      stock: form.deliveryType === 'SOCKS_PANEL' && Number(form.stock) > 0 ? Number(form.stock) : null,
     };
     try {
       if (editing) {
@@ -244,7 +249,14 @@ export default function VirtualProductsPage() {
           ? <span className="text-xs font-medium text-sky-600">SOCKS 面板</span>
           : <span className="text-xs font-medium text-amber-600">人工发货</span>,
     },
-    { key: 'sold', header: '已售', render: (p: any) => p.sold },
+    {
+      key: 'sold', header: '已售',
+      render: (p: any) => p.deliveryType === 'SOCKS_PANEL'
+        ? (p.stock != null
+            ? <span className="font-mono text-xs">{p.sold} / {p.stock}</span>
+            : <span className="font-mono text-xs">{p.sold} / ∞</span>)
+        : <span className="font-mono text-xs">{p.sold}</span>,
+    },
     {
       key: 'duration', header: '时长',
       render: (p: any) => p.deliveryType === 'SOCKS_PANEL'
@@ -380,6 +392,11 @@ export default function VirtualProductsPage() {
                   <Label>交付时长（天）*</Label>
                   <Input type="number" min={1} value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} placeholder="30" />
                   <p className="text-xs text-muted-foreground">时长制、不限流量；到期停用 → 1 天宽限期 → 自动删除（与现有节点一致）</p>
+                </div>
+                <div className="space-y-2">
+                  <Label>可售数量（可选）</Label>
+                  <Input type="number" min={1} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} placeholder="留空 = 不限量" />
+                  <p className="text-xs text-muted-foreground">达到后自动售罄：下单拦截 + 商城卡售罄遮罩；已售数 / 总数展示在列表</p>
                 </div>
                 <div className="space-y-2 col-span-2">
                   <Label>绑定服务器（可选多台，激活时随机挑一台；不选 = 所有在线服务器可用）</Label>

@@ -26,6 +26,7 @@ export class VirtualProductService {
     sort: true,
     status: true,
     sold: true,
+    stock: true, // 可售总数（null=不限量；商城售罄判定用）
     _count: { select: { keys: { where: { status: 'UNUSED' } } } },
   } as const;
 
