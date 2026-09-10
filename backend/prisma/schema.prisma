@@ -167,6 +167,10 @@ model VirtualProduct {
   sold          Int                  @default(0) // 已售（成功交付时 +1）
   // 可售总数（null=不限量；沿用 Plan.stock 语义：下单拦截 + 交付满额自动 SOLD_OUT）。仅 SOCKS_PANEL 使用
   stock         Int?
+  // 仅 SOCKS_PANEL 使用：交付节点端口范围（都为空=系统默认高位端口 10000-65535）。
+  // 仅建节点时分配端口用，属于后台配置，不对外展示。
+  portStart     Int?
+  portEnd       Int?
   keys          ProductKey[]
   orders        Order[]
   socksNodes    SocksNode[]
