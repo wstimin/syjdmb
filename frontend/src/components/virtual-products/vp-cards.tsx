@@ -22,6 +22,7 @@ export interface VirtualProduct {
   duration?: number | null; // SOCKS_PANEL 交付时长（天）；时长制、不限流量
   status: 'ACTIVE' | 'HIDDEN' | 'SOLD_OUT' | 'ARCHIVED';
   sold: number;
+  stock?: number | null; // 可售总数（null=不限量；达到 sold=stock 自动售罄）
   _count?: { keys?: number }; // 剩余未售交付码数（AUTO 商品）
 }
 
@@ -49,7 +50,10 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
     <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
       {products.map((p, idx) => {
         const remaining = p.deliveryType === 'AUTO' ? Number(p._count?.keys ?? 0) : Infinity;
-        const soldOut = p.status === 'SOLD_OUT' || (p.deliveryType === 'AUTO' && remaining <= 0);
+        const soldOut =
+          p.status === 'SOLD_OUT' ||
+          (p.deliveryType === 'AUTO' && remaining <= 0) ||
+          (p.stock != null && p.sold >= p.stock);
         const isAuto = p.deliveryType === 'AUTO';
         const isSocks = p.deliveryType === 'SOCKS_PANEL';
         return (
@@ -138,12 +142,14 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                 </p>
                 <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
                   <span className="inline-flex items-center gap-1">
-                    {soldOut ? (
+                    {soldOut && p.stock == null ? (
                       <Timer className="h-3.5 w-3.5" />
                     ) : (
                       <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
                     )}
-                    {soldOut ? t('products.soldOut') : `${t('products.sold')} ${p.sold}`}
+                    {soldOut && p.stock == null
+                      ? t('products.soldOut')
+                      : `${t('products.sold')} ${p.sold}${p.stock != null ? ` / ${p.stock}` : ''}`}
                   </span>
                   {isAuto && !soldOut && (
                     <span className="text-muted-foreground/80">
