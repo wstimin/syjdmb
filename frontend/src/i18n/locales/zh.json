@@ -156,7 +156,7 @@
     "sold": "已售",
     "deliveryAuto": "自动发货",
     "deliveryManual": "人工发货",
-    "deliverySocks": "面板交付",
+    "deliverySocks": "自动交付",
     "virtualDesc": "数字商品 · 购买后自动或人工交付",
     "coverFallback": "商品",
     "leftCount": "剩余 {n} 份"
@@ -188,7 +188,7 @@
     "socksSuccess": "支付成功，SOCKS 节点已创建，连接信息可在「我的商品」查看",
     "deliveryNote": "该商品为自动发货，付款后即自动发放交付内容",
     "manualNote": "该商品由人工发货，付款后商家会尽快填写交付内容",
-    "socksNote": "该商品为 SOCKS 面板交付：付款后自动在服务器上创建 SOCKS 节点（时长制、不限流量），连接信息可在「我的商品」查看"
+    "socksNote": "该商品为自动交付：付款后自动在服务器上创建 SOCKS 节点（时长制、不限流量），连接信息可在「我的商品」查看"
   },
   "dashboard": {
     "welcome": "欢迎回来",

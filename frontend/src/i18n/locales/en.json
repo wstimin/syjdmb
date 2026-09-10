@@ -156,7 +156,7 @@
     "sold": "Sold",
     "deliveryAuto": "Auto Delivery",
     "deliveryManual": "Manual Delivery",
-    "deliverySocks": "Panel Delivery",
+    "deliverySocks": "Auto Delivery",
     "virtualDesc": "Digital products · delivered automatically or by staff",
     "coverFallback": "Product",
     "leftCount": "{n} left"
