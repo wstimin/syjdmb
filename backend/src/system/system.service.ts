@@ -56,6 +56,7 @@ export class SystemService {
       appName: map.appName || 'NodeShop',
       supportEmail: map.supportEmail || '',
       siteUrl: map.siteUrl || process.env.FRONTEND_URL || process.env.APP_URL || '',
+      cardPurchaseUrl: map.cardPurchaseUrl || '',
     };
   }
 

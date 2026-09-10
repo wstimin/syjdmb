@@ -24,7 +24,8 @@
   "nav": {
     "scenarios": "使用场景",
     "faq": "常见问题",
-    "official": "返回官网"
+    "official": "返回官网",
+    "buyCard": "购买卡密"
   },
   "footer": {
     "product": "产品",

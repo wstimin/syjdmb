@@ -7,12 +7,14 @@ type GeneralSettings = {
   appName: string;
   supportEmail: string;
   siteUrl: string;
+  cardPurchaseUrl: string;
 };
 
 const SettingsContext = createContext<GeneralSettings>({
   appName: 'NodeShop',
   supportEmail: '',
   siteUrl: '',
+  cardPurchaseUrl: '',
 });
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
@@ -20,6 +22,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     appName: 'NodeShop',
     supportEmail: '',
     siteUrl: '',
+    cardPurchaseUrl: '',
   });
 
   useEffect(() => {

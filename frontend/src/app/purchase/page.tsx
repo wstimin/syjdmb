@@ -5,9 +5,10 @@ import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
 import toast from 'react-hot-toast';
-import { Banknote, Ticket as TicketIcon, Loader2, XCircle } from 'lucide-react';
+import { Banknote, Ticket as TicketIcon, Loader2, XCircle, ShoppingCart } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { useSettings } from '@/lib/settings';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -15,6 +16,7 @@ import { Input } from '@/components/ui/input';
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
   const { t, locale } = useI18n();
+  const { cardPurchaseUrl } = useSettings();
   const router = useRouter();
   const searchParams = useSearchParams();
   const planId = searchParams.get('plan');
@@ -535,6 +537,17 @@ function PurchaseContent() {
                 {t('purchase.redeem')}
               </Button>
             </div>
+            {cardPurchaseUrl && (
+              <a
+                href={cardPurchaseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+              >
+                <ShoppingCart className="h-3.5 w-3.5" />
+                还没有卡密？前往购买
+              </a>
+            )}
           </CardContent>
         </Card>
       )}

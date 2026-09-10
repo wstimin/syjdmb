@@ -3,8 +3,9 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { QRCodeSVG } from 'qrcode.react';
-import { Wallet, Loader2, XCircle, Plus, Minus, Ticket as TicketIcon } from 'lucide-react';
+import { Wallet, Loader2, XCircle, Plus, Minus, Ticket as TicketIcon, ShoppingCart } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
+import { useSettings } from '@/lib/settings';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -30,6 +31,7 @@ const paymentMethods = [
 
 export default function BalancePage() {
   const { user, refreshUser } = useAuth();
+  const { cardPurchaseUrl } = useSettings();
   const [amount, setAmount] = useState<string>('100');
   const [creating, setCreating] = useState(false);
   const [payQr, setPayQr] = useState<string | null>(null);
@@ -245,19 +247,32 @@ export default function BalancePage() {
 
           {/* 卡密兑换面板：选中「卡密兑换」时展开（不建充值单，兑换直接进余额） */}
           {method === 'card' && !payQr && (
-            <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center">
-              <Input
-                value={cardCode}
-                onChange={(e) => setCardCode(e.target.value.toUpperCase())}
-                placeholder="输入卡密（如 XXXX-XXXX-XXXX-XXXX），不区分大小写"
-                className="font-mono sm:max-w-sm"
-                onKeyDown={(e) => e.key === 'Enter' && redeemCard()}
-              />
-              <Button onClick={redeemCard} disabled={!cardCode.trim() || redeeming} className="sm:w-28">
-                {redeeming && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-                兑换到余额
-              </Button>
-            </div>
+            <>
+              <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-center">
+                <Input
+                  value={cardCode}
+                  onChange={(e) => setCardCode(e.target.value.toUpperCase())}
+                  placeholder="输入卡密（如 XXXX-XXXX-XXXX-XXXX），不区分大小写"
+                  className="font-mono sm:max-w-sm"
+                  onKeyDown={(e) => e.key === 'Enter' && redeemCard()}
+                />
+                <Button onClick={redeemCard} disabled={!cardCode.trim() || redeeming} className="sm:w-28">
+                  {redeeming && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
+                  兑换到余额
+                </Button>
+              </div>
+              {cardPurchaseUrl && (
+                <a
+                  href={cardPurchaseUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+                >
+                  <ShoppingCart className="h-3.5 w-3.5" />
+                  还没有卡密？前往购买
+                </a>
+              )}
+            </>
           )}
 
           {payQr && (

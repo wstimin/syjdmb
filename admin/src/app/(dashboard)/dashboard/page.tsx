@@ -128,12 +128,14 @@ export default function DashboardPage() {
 
   const wechatOk = payConfig.wechatEnabled === true || payConfig.wechatEnabled === 'true';
   const alipayOk = payConfig.alipayEnabled === true || payConfig.alipayEnabled === 'true';
+  const cardOk = true; // 卡密兑换始终可用
+  const balanceOk = wechatOk || alipayOk; // 余额支付：有充值渠道才显示
   const payItems = [
-    { name: '微信支付', ok: wechatOk },
-    { name: '支付宝', ok: alipayOk },
-    { name: '卡密兑换', ok: true },
-    { name: '余额支付', ok: true },
-  ];
+    wechatOk && { name: '微信支付', ok: true },
+    alipayOk && { name: '支付宝', ok: true },
+    cardOk && { name: '卡密兑换', ok: true },
+    balanceOk && { name: '余额支付', ok: true },
+  ].filter(Boolean) as { name: string; ok: boolean }[];
 
   const COLORS = ['#6366f1', '#8b5cf6', '#22d3ee', '#f59e0b', '#10b981', '#f43f5e'];
 

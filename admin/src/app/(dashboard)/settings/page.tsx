@@ -108,6 +108,7 @@ export default function SettingsPage() {
           appName: s.appName || 'NodeShop',
           supportEmail: s.supportEmail || '',
           siteUrl: s.siteUrl || '',
+          cardPurchaseUrl: s.cardPurchaseUrl || '',
           // wechat
           wechatEnabled: s.wechatEnabled === true || s.wechatEnabled === 'true' || false,
           wechatAppId: s.wechatAppId || '',
@@ -146,6 +147,7 @@ export default function SettingsPage() {
         { key: 'appName', value: form.appName, type: 'string', group: 'general' },
         { key: 'supportEmail', value: form.supportEmail, type: 'string', group: 'general' },
         { key: 'siteUrl', value: form.siteUrl, type: 'string', group: 'general' },
+        { key: 'cardPurchaseUrl', value: form.cardPurchaseUrl, type: 'string', group: 'general' },
         // wechat
         { key: 'wechatEnabled', value: form.wechatEnabled, type: 'boolean', group: 'payment' },
         { key: 'wechatAppId', value: form.wechatAppId, type: 'string', group: 'payment' },
@@ -227,6 +229,9 @@ export default function SettingsPage() {
               </Field>
               <Field label="站点地址" hint="用于生成支付回调地址与邮件中的链接，填写前端域名（如 https://your-domain.com）。未填写时自动取环境变量 APP_URL">
                 <Input value={form.siteUrl} onChange={(e) => set('siteUrl', e.target.value)} placeholder="https://your-domain.com" />
+              </Field>
+              <Field label="卡密购买链接" hint="外部发卡/购买地址，前台导航栏将显示「购买卡密」入口。留空则不显示">
+                <Input value={form.cardPurchaseUrl} onChange={(e) => set('cardPurchaseUrl', e.target.value)} placeholder="https://your-card-shop.com" />
               </Field>
             </CardContent>
           </Card>

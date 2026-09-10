@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
-import { Menu, X, Languages, LayoutDashboard } from 'lucide-react';
+import { Menu, X, Languages, LayoutDashboard, ShoppingCart } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { useSettings } from '@/lib/settings';
@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 export function Navbar() {
   const { user, logout } = useAuth();
   const { t, locale, toggleLocale } = useI18n();
-  const { appName } = useSettings();
+  const { appName, cardPurchaseUrl } = useSettings();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -58,6 +58,17 @@ export function Navbar() {
               {link.label}
             </Link>
           ))}
+          {cardPurchaseUrl && (
+            <a
+              href={cardPurchaseUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium text-primary hover:bg-primary/10 transition-colors"
+            >
+              <ShoppingCart className="h-3.5 w-3.5" />
+              {t('nav.buyCard')}
+            </a>
+          )}
         </div>
 
         {/* Actions */}
@@ -110,6 +121,17 @@ export function Navbar() {
                 {link.label}
               </Link>
             ))}
+            {cardPurchaseUrl && (
+              <a
+                href={cardPurchaseUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-primary hover:bg-primary/10"
+              >
+                <ShoppingCart className="h-4 w-4" />
+                {t('nav.buyCard')}
+              </a>
+            )}
             <div className="mt-2 border-t pt-3">
               {user ? (
                 <>
