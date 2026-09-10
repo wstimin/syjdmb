@@ -4,11 +4,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Server, Ticket, User, ArrowLeft, Network, Wallet, Store } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
+import { useSettings } from '@/lib/settings';
 import { BrandLogo } from '@/components/layout/brand-logo';
 import { cn } from '@/lib/utils';
 
 export default function UserLayout({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
+  const { appName } = useSettings();
   const pathname = usePathname();
 
   const nav = [
@@ -31,7 +33,7 @@ export default function UserLayout({ children }: { children: React.ReactNode }) 
         </Link>
         <div className="flex items-center gap-2 text-sm font-semibold">
           <BrandLogo size={26} />
-          <span>{t('common.appName')}</span>
+          <span>{appName}</span>
           <span className="hidden text-xs font-normal text-muted-foreground sm:inline">· {t('common.dashboard')}</span>
         </div>
       </div>

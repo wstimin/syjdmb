@@ -296,7 +296,7 @@ export class PaymentService {
       out_trade_no: ref.orderNo,
       total_fee: String(Math.round(Number(ref.amount) * 100)), // 分
       spbill_create_ip: this.getClientIp(),
-      notify_url: config.notifyUrl || process.env.WECHAT_NOTIFY_URL || `${this.getAppUrl()}/api/payments/callback/wechat`,
+      notify_url: config.notifyUrl || process.env.WECHAT_NOTIFY_URL || `${await this.getAppUrl()}/api/payments/callback/wechat`,
       trade_type: 'NATIVE',
     };
 
@@ -377,7 +377,7 @@ export class PaymentService {
       sign_type: 'RSA2',
       timestamp: this.formatAlipayTime(),
       version: '1.0',
-      notify_url: config.notifyUrl || process.env.ALIPAY_NOTIFY_URL || `${this.getAppUrl()}/api/payments/callback/alipay`,
+      notify_url: config.notifyUrl || process.env.ALIPAY_NOTIFY_URL || `${await this.getAppUrl()}/api/payments/callback/alipay`,
       biz_content: bizContent,
     };
 
@@ -891,7 +891,9 @@ export class PaymentService {
     return '127.0.0.1';
   }
 
-  private getAppUrl(): string {
-    return this.configService.get('APP_URL') || 'http://localhost:3001';
+  private async getAppUrl(): Promise<string> {
+    // 优先读后台「站点地址」设置；未配置时 fallback 到环境变量
+    const dbUrl = await this.systemService.getSetting('siteUrl');
+    return (typeof dbUrl === 'string' && dbUrl) || this.configService.get('APP_URL') || 'http://localhost:3001';
   }
 }

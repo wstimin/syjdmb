@@ -3,10 +3,12 @@
 import Link from 'next/link';
 import { Mail, Clock, MapPin } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
+import { useSettings } from '@/lib/settings';
 import { BrandLogo } from '@/components/layout/brand-logo';
 
 export function Footer() {
   const { t } = useI18n();
+  const { appName } = useSettings();
   const year = new Date().getFullYear();
 
   return (
@@ -17,7 +19,7 @@ export function Footer() {
           <div className="space-y-3">
             <div className="flex items-center gap-2.5">
               <BrandLogo size={30} />
-              <span className="text-lg font-bold">{t('common.appName')}</span>
+              <span className="text-lg font-bold">{appName}</span>
             </div>
             <p className="text-sm leading-relaxed text-muted-foreground">{t('home.footerSlogan')}</p>
           </div>
@@ -64,7 +66,7 @@ export function Footer() {
         </div>
 
         <div className="mt-8 border-t pt-6 text-center text-sm text-muted-foreground">
-          © {year} {t('common.appName')} · {t('home.footerSlogan')} · {t('home.rightsReserved')}.
+          © {year} {appName} · {t('home.footerSlogan')} · {t('home.rightsReserved')}.
         </div>
       </div>
     </footer>

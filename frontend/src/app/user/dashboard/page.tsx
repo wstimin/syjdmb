@@ -7,6 +7,7 @@ import toast from 'react-hot-toast';
 import { Wallet, Server, Clock, Activity, Plus, ArrowRight, Package } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { useSettings } from '@/lib/settings';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -35,6 +36,7 @@ const STATUS_LABEL: Record<string, string> = {
 export default function DashboardPage() {
   const { user, loading } = useAuth();
   const { t } = useI18n();
+  const { appName } = useSettings();
   const [stats, setStats] = useState<any>(null);
   const [orders, setOrders] = useState<any[]>([]);
   const [nodes, setNodes] = useState<any[]>([]);
@@ -71,7 +73,7 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-bold">
               {t('dashboard.welcome')}, {user?.username || user?.email.split('@')[0]} 👋
             </h1>
-            <p className="mt-1 text-muted-foreground">{t('common.appName')}</p>
+            <p className="mt-1 text-muted-foreground">{appName}</p>
           </CardContent>
         </Card>
       </motion.div>

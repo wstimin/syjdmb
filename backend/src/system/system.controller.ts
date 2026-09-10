@@ -17,6 +17,14 @@ import { Roles } from '../common/decorators/roles.decorator';
 export class SystemController {
   constructor(private systemService: SystemService) {}
 
+  // 公开端点：前台无需登录即可读取 appName 等基础信息（不暴露密钥）
+  @Get('general')
+  @ApiOperation({ summary: 'Public general settings (appName, siteUrl)' })
+  async getGeneralPublic() {
+    const result = await this.systemService.getGeneralPublic();
+    return { success: true, data: result };
+  }
+
   @Get('settings')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')

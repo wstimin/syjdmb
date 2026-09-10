@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { Menu, X, Languages, LayoutDashboard } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
+import { useSettings } from '@/lib/settings';
 import { Button } from '@/components/ui/button';
 import { BrandLogo } from '@/components/layout/brand-logo';
 import { cn } from '@/lib/utils';
@@ -13,6 +14,7 @@ import { cn } from '@/lib/utils';
 export function Navbar() {
   const { user, logout } = useAuth();
   const { t, locale, toggleLocale } = useI18n();
+  const { appName } = useSettings();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -37,7 +39,7 @@ export function Navbar() {
         {/* Logo */}
         <Link href="/" className="flex items-center gap-2.5">
           <BrandLogo size={34} />
-          <span className="text-lg font-bold tracking-tight">{t('common.appName')}</span>
+          <span className="text-lg font-bold tracking-tight">{appName}</span>
         </Link>
 
         {/* Desktop nav */}

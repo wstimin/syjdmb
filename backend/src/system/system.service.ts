@@ -44,6 +44,21 @@ export class SystemService {
     return this.parseValue(setting.value, setting.type);
   }
 
+  /**
+   * 公开端点：只暴露 general 组（appName/supportEmail/siteUrl），不暴露支付/邮件密钥。
+   * siteUrl 为空时 fallback 到环境变量（APP_URL / FRONTEND_URL），供前端 SSR 使用。
+   */
+  async getGeneralPublic() {
+    const s = await this.prisma.systemSetting.findMany({ where: { group: 'general' } });
+    const map: Record<string, any> = {};
+    for (const row of s) map[row.key] = this.parseValue(row.value, row.type);
+    return {
+      appName: map.appName || 'NodeShop',
+      supportEmail: map.supportEmail || '',
+      siteUrl: map.siteUrl || process.env.FRONTEND_URL || process.env.APP_URL || '',
+    };
+  }
+
   private parseValue(value: string, type: string): any {
     switch (type) {
       case 'number': return Number(value);
