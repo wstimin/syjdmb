@@ -118,7 +118,9 @@ export class SocksPanelService {
       remark,
       listen: '',
       port,
-      protocol: 'socks',
+      // 新版 3-x-ui 面板已把 socks 入站协议名改为 mixed（旧版才叫 socks）；
+      // settings 同构（auth:password + accounts），deliverSocksNode 均以 mixed 创建。
+      protocol: 'mixed',
       expiryTime: 0,
       total: 0,
       settings,
@@ -378,7 +380,8 @@ export class SocksPanelService {
       enable: enabled,
       listen: '',
       port: node.port,
-      protocol: 'socks',
+      // 协议沿用创建时快照：存量 socks 节点保持 socks，新节点（mixed）不被覆盖回旧名
+      protocol: (snap as any)?.protocol || 'mixed',
     };
     const res = await this.serverService.updateInbound(node.serverId, node.inboundId, payload);
     if (!res?.success) return res;
@@ -892,7 +895,7 @@ export class SocksPanelService {
       const found = inbounds.find(
         (i: any) =>
           (typeof i?.tag === 'string' && i.tag === `in-${port}-tcp`) ||
-          (Number(i?.port) === port && i?.protocol === 'socks'),
+          (Number(i?.port) === port && (i?.protocol === 'socks' || i?.protocol === 'mixed')),
       );
       if (!found) {
         throw new Error(`运行配置中未找到 SOCKS 入站 inbound#${inboundId}(port=${port})`);
