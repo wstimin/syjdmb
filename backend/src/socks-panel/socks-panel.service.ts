@@ -519,8 +519,26 @@ export class SocksPanelService {
   /**
    * 过期自动删除：面板删入站（面板卸载失败不阻断本地删除 —— 节点早已被 cron 停用，
    * 本地置 DELETED 即完成「商城消失、只能重新购买商品」的交付，残留由面板自愈兜底）。
+   * 【CAS 防止续费竞态】本地回写先行且带条件：仅当到期仍落后于宽限期（续费没推进到期、
+   * 状态仍是 ACTIVE/EXPIRED）才置 DELETED；命中 0 行说明这毫秒里刚被续费复活 → 放弃
+   * 删除（面板入站由续费激活已恢复，绝不能删掉用户刚续费的节点）。
    */
   private async autoDeleteSocksNode(node: any) {
+    const GRACE_MS = 24 * 3600 * 1000;
+    const claimed = await this.prisma.socksNode.updateMany({
+      where: {
+        id: node.id,
+        status: { in: ['ACTIVE', 'EXPIRED'] },
+        expiryTime: { lte: new Date(Date.now() - GRACE_MS) },
+      },
+      data: { status: 'DELETED' },
+    });
+    if (claimed.count === 0) {
+      this.logger.warn(
+        `SOCKS auto-delete skipped for node #${node.id}: state changed (likely renewed concurrently), keeping it`,
+      );
+      return;
+    }
     if (node.inboundId) {
       try {
         await this.serverService.deleteInbound(node.serverId, node.inboundId);
@@ -530,10 +548,6 @@ export class SocksPanelService {
         );
       }
     }
-    await this.prisma.socksNode.update({
-      where: { id: node.id },
-      data: { status: 'DELETED' },
-    });
     this.logger.log(
       `SOCKS node #${node.id} auto-deleted (expired > 1 day without renewal, repurchase required)`,
     );
