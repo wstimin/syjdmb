@@ -15,6 +15,7 @@ export interface Plan {
   name: string;
   nameEn: string | null;
   description: string | null;
+  descriptionEn: string | null;
   price: string | number;
   originalPrice: string | number | null;
   duration: number;
@@ -57,6 +58,8 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
       {plans.map((plan, idx) => {
         const soldOut = plan.status === 'SOLD_OUT' || (plan.stock != null && (plan.sold ?? 0) >= plan.stock);
         const remaining = plan.stock != null ? Math.max(0, plan.stock - (plan.sold ?? 0)) : null;
+        // 描述：优先英文站文案，其次中文描述（后台当前只维护 description 一个字段）
+        const description = locale === 'en' ? (plan.descriptionEn || plan.description) : plan.description;
         return (
         <motion.div
           key={plan.id}
@@ -94,6 +97,9 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
               </div>
             </CardHeader>
             <CardContent className="flex flex-1 flex-col">
+              {description && (
+                <p className="mb-4 text-sm font-medium leading-relaxed text-muted-foreground">{description}</p>
+              )}
               <ul className="flex-1 space-y-3 text-sm">
                 <li className="flex items-center gap-2">
                   <Check className="h-4 w-4 text-emerald-500" />

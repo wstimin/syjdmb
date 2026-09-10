@@ -73,7 +73,10 @@ export default function PlansPage() {
     setForm({
       name: plan.name, nameEn: plan.nameEn || '', price: String(plan.price),
       originalPrice: plan.originalPrice ? String(plan.originalPrice) : '',
-      duration: String(plan.duration), traffic: String(plan.traffic || 0),
+      duration: String(plan.duration),
+      // 数据库存的是字节（保存时 GB×1024³ 转换），回显输入框必须换算回 GB，否则会显示一串字节数；
+      // 非整 GB 时除法可能有浮点尾数（如 0.0999999），保留 3 位小数再 Trim 掉多余的 0
+      traffic: String(Math.round((Number(plan.traffic || 0)) / 1024 / 1024 / 1024 * 1000) / 1000),
       deviceLimit: String(plan.deviceLimit), description: plan.description || '',
       protocols: plan.protocols.join(','),
       sort: String(plan.sort ?? 0),

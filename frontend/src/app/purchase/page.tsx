@@ -343,6 +343,11 @@ function PurchaseContent() {
             ) : (
               <>
                 <div className="text-lg font-semibold">{plan.name}</div>
+                {plan.description && (
+                  <div className="mt-1 text-sm font-medium text-muted-foreground">
+                    {locale === 'en' ? (plan.descriptionEn || plan.description) : plan.description}
+                  </div>
+                )}
                 <div className="mt-1 text-sm text-muted-foreground">
                   {plan.duration > 0 ? `${t('products.duration')}: ${plan.duration}${t('products.days')}` : t('products.unlimited')}
                   {' · '}
