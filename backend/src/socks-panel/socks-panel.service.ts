@@ -238,6 +238,20 @@ export class SocksPanelService {
       where: { id: product.id },
       data: { sold: { increment: 1 } },
     });
+    // 限量库存：交付后读回 sold/stock，达量则置 SOLD_OUT（仅当仍为 ACTIVE，不覆盖管理员的下架/归档决定）。
+    // 已付款并发交付即使略超上限也照常完成，新购入口由 createOrder 的 sold>=stock 拦截，幂等。
+    if (product.stock != null) {
+      const latest = await this.prisma.virtualProduct.findUnique({
+        where: { id: product.id },
+        select: { sold: true, stock: true },
+      });
+      if (latest && latest.stock != null && latest.sold >= latest.stock) {
+        await this.prisma.virtualProduct.updateMany({
+          where: { id: product.id, status: 'ACTIVE' },
+          data: { status: 'SOLD_OUT' },
+        });
+      }
+    }
 
     this.logger.log(
       `SOCKS node delivered: ${username} socks5://${server.host}:${port} on server ${server.name}, expires ${new Date(expiryTime).toISOString()}`,

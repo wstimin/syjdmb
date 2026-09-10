@@ -167,6 +167,10 @@ export class OrderService {
       });
       if (!product) throw new NotFoundException('虚拟商品不存在');
       if (product.status !== 'ACTIVE') throw new BadRequestException('该商品已下架');
+      // 可售总数拦截：stock=null 不限量；有 stock 且 sold 已达量 → 售罄（沿用 Plan.stock 语义）
+      if (product.stock != null && product.sold >= product.stock) {
+        throw new BadRequestException('该商品已售罄');
+      }
       // AUTO 商品必须有未售交付码，避免「付了钱没货发」
       if (product.deliveryType === 'AUTO') {
         const available = await this.prisma.productKey.count({
