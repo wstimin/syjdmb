@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Wallet, Server, Clock, Activity, Plus, ArrowRight, Package } from 'lucide-react';
+import { Server, Clock, Activity, Plus, ArrowRight, Package } from 'lucide-react';
 import { api, useAuth, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { useSettings } from '@/lib/settings';
@@ -86,7 +86,12 @@ export default function DashboardPage() {
               <p className="text-sm text-muted-foreground">{t('dashboard.balance')}</p>
               <p className="mt-1 text-2xl font-bold text-primary">¥{Number(user?.balance || 0)}</p>
             </div>
-            <Wallet className="h-8 w-8 text-muted-foreground/50" />
+            <Link href="/user/balance">
+              <Button variant="gradient" size="sm" className="gap-1">
+                <Plus className="h-4 w-4" />
+                充值
+              </Button>
+            </Link>
           </CardContent>
         </Card>
         <Card>

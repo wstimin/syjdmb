@@ -11,6 +11,7 @@ import { RedisService } from '../common/redis/redis.service';
 import { InboundService } from '../inbound/inbound.service';
 import { ServerService } from '../server/server.service';
 import { CouponService } from '../coupon/coupon.service';
+import { SystemService } from '../system/system.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -23,7 +24,14 @@ export class OrderService {
     private serverService: ServerService,
     private redis: RedisService,
     private couponService: CouponService,
+    private systemService: SystemService,
   ) {}
+
+  // 未支付/支付未成功订单的超时时间（分钟）——后台「订单超时关闭（分钟）」配置，默认 15
+  private async getOrderExpireMs(): Promise<number> {
+    const minutes = Number(await this.systemService.getSetting('orderExpireMinutes').catch(() => null)) || 15;
+    return minutes * 60 * 1000;
+  }
 
   // ==========================================
   // Create Order
@@ -1345,19 +1353,22 @@ export class OrderService {
   }
 
   /**
-   * 清理「已发起支付但一直未付款/未完成」的 PENDING 订单（每小时跑一次）：
-   * - 网关二维码/支付链接有时间窗（微信约 2h、支付宝约 30m），窗口过后不会再扣款；
-   *   48h 远超正常回调延迟，也给人工对账留了时间。
+   * 清理「已发起支付但一直未付款/未完成」的 PENDING 订单（每 2 分钟扫一次）：
+   * - 后台可配置超时分钟数（orderExpireMinutes，默认 15 = 15 分钟）；订单未支付
+   *   或支付未成功（未收到回调确认）超过该时间即置 EXPIRED 关闭。
    * - BALANCE 单也要清理：余额支付失败（如余额不足）会留下 PENDING BALANCE 单，
    *   前端不会再自动重试，不清理会一直占着优惠券名额。
    * - 置 EXPIRED 并释放占用的优惠券名额 —— 否则每次「扫码不付就关页」都会白占
    *   一个券名额（usedCount + 每人限用次数），限量券可能被非付款用户耗尽。
    * - 说明：EXPIRED 为终态，若极端情况下日后真有延迟回调到达，
    *   handlePaymentSuccess 会按终态拒绝（防"取消后收款"的既有安全约束），需管理员核对。
+   * - 注意：支付渠道二维码有效期（微信约 2h、支付宝约 30m）长于默认 15 分钟，
+   *   超时之后到达的回调会被 EXPIRED 终态拒收，可走后台「人工确认收款」入账。
    */
-  @Cron('0 * * * *')
+  @Cron('*/2 * * * *')
   async expireStaleGatewayOrders() {
-    const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    const expireMs = await this.getOrderExpireMs();
+    const cutoff = new Date(Date.now() - expireMs);
     const stale = await this.prisma.order.findMany({
       where: {
         status: 'PENDING',

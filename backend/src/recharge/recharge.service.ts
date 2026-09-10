@@ -1,18 +1,24 @@
 import {
   Injectable,
+  Logger,
   BadRequestException,
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { PaymentService } from '../payment/payment.service';
+import { SystemService } from '../system/system.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
 export class RechargeService {
+  private readonly logger = new Logger(RechargeService.name);
+
   constructor(
     private prisma: PrismaService,
     private paymentService: PaymentService,
+    private systemService: SystemService,
   ) {}
 
   // ==========================================
@@ -38,6 +44,7 @@ export class RechargeService {
       orderNo: recharge.orderNo,
       amount: recharge.amount,
       status: recharge.status,
+      createdAt: recharge.createdAt,
     };
   }
 
@@ -78,6 +85,7 @@ export class RechargeService {
       status: recharge.status,
       paid: recharge.status === 'PAID',
       amount: recharge.amount,
+      createdAt: recharge.createdAt,
     };
   }
 
@@ -161,6 +169,36 @@ export class RechargeService {
       this.prisma.recharge.count({ where }),
     ]);
     return { list, total, page, limit, totalPages: Math.ceil(total / limit) };
+  }
+
+  // ==========================================
+  // 超时自动关闭（每 2 分钟扫一次）
+  // ==========================================
+
+  /**
+   * 清理「已发起充值支付但一直未付款/未完成」的 PENDING 充值单：
+   * - 超时分钟数跟随后台订单超时配置 orderExpireMinutes（默认 15），与商品单一致。
+   * - 用户拉起充值二维码不付款 / 支付未获回调确认，单子永久 PENDING；
+   *   这里 CAS 置 EXPIRED（幂等），与商品单 expireStaleGatewayOrders 同一套收敛约束。
+   * - EXPIRED 为终态：迟到回调会被拒收，需走后台「人工确认收款」入账。
+   */
+  @Cron('*/2 * * * *')
+  async expireStaleRecharges() {
+    const minutes =
+      Number(await this.systemService.getSetting('orderExpireMinutes').catch(() => null)) || 15;
+    const cutoff = new Date(Date.now() - minutes * 60 * 1000);
+    const stale = await this.prisma.recharge.findMany({
+      where: { status: 'PENDING', createdAt: { lt: cutoff } },
+      select: { id: true },
+      take: 200,
+    });
+    for (const r of stale) {
+      await this.prisma.recharge.updateMany({
+        where: { id: r.id, status: 'PENDING' },
+        data: { status: 'EXPIRED' },
+      });
+    }
+    if (stale.length) this.logger.log(`Expired ${stale.length} stale PENDING recharges`);
   }
 
   private generateOrderNo(): string {

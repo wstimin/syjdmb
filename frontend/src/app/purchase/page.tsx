@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, Suspense } from 'react';
+import { useEffect, useState, useRef, useCallback, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { QRCodeSVG } from 'qrcode.react';
@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 function PurchaseContent() {
   const { user, refreshUser } = useAuth();
   const { t, locale } = useI18n();
-  const { cardPurchaseUrl, showWechat, showAlipay, showCard, showBalance } = useSettings();
+  const { cardPurchaseUrl, showWechat, showAlipay, showCard, showBalance, orderExpireMinutes } = useSettings();
   const router = useRouter();
   const searchParams = useSearchParams();
   const planId = searchParams.get('plan');
@@ -36,6 +36,8 @@ function PurchaseContent() {
   const [relaySocksList, setRelaySocksList] = useState<any[]>([]);
   const [relaySocksId, setRelaySocksId] = useState<number | null>(null);
   const [payQr, setPayQr] = useState<string | null>(null);
+  const [payExpireAt, setPayExpireAt] = useState<number | null>(null); // 支付窗口截止时间戳（ms）
+  const [payRemaining, setPayRemaining] = useState<number | null>(null); // 剩余秒数（倒计时）
   const [cardCode, setCardCode] = useState('');
   const [showCardPopup, setShowCardPopup] = useState(false); // 卡密兑换弹窗
   const [couponCode, setCouponCode] = useState('');
@@ -82,6 +84,32 @@ function PurchaseContent() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
 
+  // 支付窗口到期复位（倒计时归零 / 轮询收到 EXPIRED 共用）→ 回到支付方式选择，可重新下单
+  const handleOrderExpired = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    setPayQr(null);
+    setOrder(null);
+    setPayExpireAt(null);
+    setPayRemaining(null);
+  }, []);
+
+  // 支付窗口倒计时：每 1s 刷新剩余秒数，归零即按超时复位
+  useEffect(() => {
+    if (payExpireAt == null) return;
+    const tick = () => {
+      const rem = Math.max(0, Math.ceil((payExpireAt - Date.now()) / 1000));
+      setPayRemaining(rem);
+      if (rem <= 0) {
+        clearInterval(interval);
+        handleOrderExpired();
+        toast.error('订单已超时关闭，请重新下单');
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [payExpireAt, handleOrderExpired]);
+
   // 勾选中转时，加载用户自己的 SOCKS 台账供选择（选已有的代理，不再手填）
   useEffect(() => {
     if (!relay) { setRelaySocksList([]); setRelaySocksId(null); return; }
@@ -107,6 +135,13 @@ function PurchaseContent() {
       try {
         const res = await api.get(`/payments/status/${orderNo}`);
         const d = res.data.data;
+        // 超时关闭（后台配置时间内未支付/支付未成功）：复位表单，可重新下单
+        if (d.status === 'EXPIRED' || d.status === 'CANCELLED') {
+          clearInterval(pollRef.current!);
+          handleOrderExpired();
+          toast.error('订单已超时关闭，请重新下单');
+          return;
+        }
         // 节点创建完成才跳转；仅收到支付（PAID/PROCESSING）说明节点还在建，继续轮询
         if (d.status === 'COMPLETED') {
           clearInterval(pollRef.current!);
@@ -215,6 +250,8 @@ function PurchaseContent() {
       if (!qr) {
         throw new Error('支付网关未返回二维码内容，请确认支付已配置');
       }
+      // 支付窗口：订单创建时间 + 后台配置超时分钟数（未支付/未支付成功到点自动关闭）
+      setPayExpireAt(new Date(newOrder.createdAt).getTime() + (orderExpireMinutes || 15) * 60 * 1000);
       setPayQr(qr);
       setProcessing(false);
       // Start polling for payment confirmation
@@ -226,6 +263,8 @@ function PurchaseContent() {
       setMethod('');
       setOrder(null);
       setPayQr(null);
+      setPayExpireAt(null);
+      setPayRemaining(null);
     }
   };
 
@@ -233,6 +272,8 @@ function PurchaseContent() {
     if (pollRef.current) clearInterval(pollRef.current);
     setPayQr(null);
     setOrder(null);
+    setPayExpireAt(null);
+    setPayRemaining(null);
   };
 
   // 优惠券校验（实时显示优惠金额，不下单不占用名额）
@@ -598,6 +639,15 @@ function PurchaseContent() {
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 <span>等待支付确认中...</span>
               </div>
+              {payRemaining != null && payRemaining > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  支付窗口剩余{' '}
+                  <span className="font-mono font-semibold text-primary">
+                    {Math.floor(payRemaining / 60)}:{String(payRemaining % 60).padStart(2, '0')}
+                  </span>
+                  ，超时订单将自动关闭，请尽快完成支付
+                </p>
+              )}
               <button
                 onClick={cancelPayment}
                 className="mt-5 inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-muted-foreground hover:text-destructive"

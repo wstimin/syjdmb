@@ -62,6 +62,7 @@ export class SystemService {
       supportEmail: map.supportEmail || '',
       siteUrl: map.siteUrl || process.env.FRONTEND_URL || process.env.APP_URL || '',
       cardPurchaseUrl: map.cardPurchaseUrl || '',
+      orderExpireMinutes: Number(map.orderExpireMinutes) || 15,
       // 前端支付方式显示控制（默认全部显示）
       showWechat: map.showWechat !== false,
       showAlipay: map.showAlipay !== false,

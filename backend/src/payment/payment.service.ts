@@ -232,10 +232,11 @@ export class PaymentService {
     return {
       orderNo: order.orderNo,
       orderId: order.id,
-      status: order.status, // PENDING / PAID / COMPLETED / PROCESSING / CANCELLED
+      status: order.status, // PENDING / PAID / COMPLETED / PROCESSING / CANCELLED / EXPIRED
       paid: order.status === 'COMPLETED' || order.status === 'PAID' || order.status === 'PROCESSING',
       amount: order.payAmount ?? order.amount, // 实付（优惠后）
       originalAmount: order.amount, // 原价
+      createdAt: order.createdAt,
     };
   }
 
@@ -243,19 +244,45 @@ export class PaymentService {
   // WeChat Pay (Native QR Code) - 真实下单
   // ==========================================
 
-  /** 网关单 48h 超时护栏（配套 order 的 expireStaleGatewayOrders）：
-   *  订单 PENDING 超过 48h 由定时任务置 EXPIRED；任务还没跑到的窗口内，
-   *  这里直接拦截，避免前端轮询/重试给「僵尸订单」无限生成新支付二维码。
+  /** 未支付超时分钟数（后台 orderExpireMinutes 配置，默认 15） */
+  private async getOrderExpireMs(): Promise<number> {
+    const minutes =
+      Number(await this.systemService.getSetting('orderExpireMinutes').catch(() => null)) || 15;
+    return minutes * 60 * 1000;
+  }
+
+  /** 网关单超时护栏（配套 expireStaleGatewayOrders / expireStaleRecharges）：
+   *  订单/充值单 PENDING 超过配置分钟数由定时任务置 EXPIRED；任务还没跑到的窗口内，
+   *  这里直接拦截，避免前端轮询/重试给「僵尸单」无限生成新支付二维码。
    *  顺手把状态收敛成 EXPIRED（幂等），下一拍定时任务不会再找到它。 */
   private async assertOrderWithinPaymentWindow(ref: { id: number; type: 'order' | 'recharge' }) {
-    if (ref.type !== 'order') return;
+    const expireMs = await this.getOrderExpireMs();
+    if (ref.type === 'recharge') {
+      const recharge = await this.prisma.recharge.findUnique({
+        where: { id: ref.id },
+        select: { createdAt: true, status: true },
+      });
+      if (!recharge) throw new NotFoundException('充值单不存在');
+      if (recharge.status !== 'PENDING') throw new BadRequestException('充值订单已处理，请刷新页面后再试');
+      if (Date.now() - recharge.createdAt.getTime() > expireMs) {
+        // CAS 收敛：与商品单一致，避免「读时 PENDING → 恰好支付成功 → 绝对写回 EXPIRED」拍死已收款的单
+        await this.prisma.recharge.updateMany({
+          where: { id: ref.id, status: 'PENDING' },
+          data: { status: 'EXPIRED' },
+        });
+        throw new BadRequestException(
+          `充值订单已超过 ${Math.round(expireMs / 60000)} 分钟未支付，已自动取消，请重新发起`,
+        );
+      }
+      return;
+    }
     const order = await this.prisma.order.findUnique({
       where: { id: ref.id },
       select: { createdAt: true, status: true, couponId: true },
     });
     if (!order) throw new NotFoundException('Order not found');
     if (order.status !== 'PENDING') throw new BadRequestException('订单已处理，请刷新页面后再试');
-    if (Date.now() - order.createdAt.getTime() > 48 * 60 * 60 * 1000) {
+    if (Date.now() - order.createdAt.getTime() > expireMs) {
       // 【复核⑧⑨】CAS 收敛：用 updateMany(status=PENDING→EXPIRED) 原子抢占，绝不用
       // 读后的绝对 update —— 否则「读时 PENDING → 用户恰好此刻支付成功（PAID）→ 写回
       // EXPIRED」会把已收款的单拍死，回调再来就被终态拒收（钱卡死等人工对账）。
@@ -269,7 +296,9 @@ export class PaymentService {
       if (claimed.count > 0 && order.couponId) {
         await this.couponService.releaseCoupon(order.couponId);
       }
-      throw new BadRequestException('订单已超过 48 小时未支付，已自动取消，请重新下单');
+      throw new BadRequestException(
+        `订单已超过 ${Math.round(expireMs / 60000)} 分钟未支付，已自动取消，请重新下单`,
+      );
     }
   }
 

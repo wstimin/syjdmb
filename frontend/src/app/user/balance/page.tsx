@@ -25,7 +25,7 @@ const QUICK_AMOUNTS = [50, 100, 200, 500];
 
 export default function BalancePage() {
   const { user, refreshUser } = useAuth();
-  const { cardPurchaseUrl, showWechat, showAlipay, showCard } = useSettings();
+  const { cardPurchaseUrl, showWechat, showAlipay, showCard, orderExpireMinutes } = useSettings();
 
   const paymentMethods = [
     { id: 'wechat', label: '微信支付', icon: '💚', show: showWechat },
@@ -36,6 +36,8 @@ export default function BalancePage() {
   const [creating, setCreating] = useState(false);
   const [payQr, setPayQr] = useState<string | null>(null);
   const [method, setMethod] = useState<string>('');
+  const [payExpireAt, setPayExpireAt] = useState<number | null>(null); // 支付窗口截止时间戳（ms）
+  const [payRemaining, setPayRemaining] = useState<number | null>(null); // 剩余秒数（倒计时）
   const [cardCode, setCardCode] = useState<string>('');
   const [redeeming, setRedeeming] = useState(false);
   const [showCardPopup, setShowCardPopup] = useState(false);
@@ -75,6 +77,31 @@ export default function BalancePage() {
     };
   }, []);
 
+  // 支付窗口到期复位（倒计时归零 / 轮询收到 EXPIRED 共用）
+  const handleRechargeExpired = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    setPayQr(null);
+    setPayExpireAt(null);
+    setPayRemaining(null);
+  }, []);
+
+  // 支付窗口倒计时：每 1s 刷新剩余秒数，归零即按超时复位
+  useEffect(() => {
+    if (payExpireAt == null) return;
+    const tick = () => {
+      const rem = Math.max(0, Math.ceil((payExpireAt - Date.now()) / 1000));
+      setPayRemaining(rem);
+      if (rem <= 0) {
+        clearInterval(interval);
+        handleRechargeExpired();
+        toast.error('充值订单已超时关闭，请重新发起');
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [payExpireAt, handleRechargeExpired]);
+
   const startPolling = useCallback((orderNo: string) => {
     if (pollRef.current) clearInterval(pollRef.current);
     let paid = false;
@@ -84,6 +111,12 @@ export default function BalancePage() {
       try {
         const res = await api.get(`/recharges/status/${orderNo}`);
         const d = res.data.data;
+        if (d.status === 'EXPIRED' || d.status === 'CANCELLED') {
+          clearInterval(pollRef.current!);
+          handleRechargeExpired();
+          toast.error('充值订单已超时关闭，请重新发起');
+          return;
+        }
         if (d.paid) {
           clearInterval(pollRef.current!);
           if (!paid) {
@@ -91,6 +124,7 @@ export default function BalancePage() {
             toast.success(`充值成功！余额已到账`);
             await refreshUser();
             setPayQr(null);
+            setPayExpireAt(null);
             setTrigger((v) => v + 1);
           }
           return;
@@ -104,7 +138,7 @@ export default function BalancePage() {
         // 网络抖动忽略
       }
     }, 3000);
-  }, [refreshUser]);
+  }, [refreshUser, handleRechargeExpired]);
 
   const createRecharge = async (m: string) => {
     // 卡密兑换 → 打开弹窗（不建充值单）
@@ -125,25 +159,30 @@ export default function BalancePage() {
     setCreating(true);
     try {
       const recharge = await api.post('/recharges', { amount: amt });
-      const { orderNo } = recharge.data.data;
+      const { orderNo, createdAt } = recharge.data.data;
       const payRes = await api.post(`/recharges/${orderNo}/payment`, { method: m });
       const qr = payRes.data.data?.qrContent;
       if (!qr) {
         throw new Error('支付方式未正确配置，请联系客服确认（微信/支付宝）');
       }
+      // 支付窗口：充值单创建时间 + 后台配置超时分钟数
+      setPayExpireAt(new Date(createdAt).getTime() + (orderExpireMinutes || 15) * 60 * 1000);
       setPayQr(qr);
       startPolling(orderNo);
     } catch (err: any) {
       toast.error(getErrorMessage(err));
+      setPayExpireAt(null);
     } finally {
       setCreating(false);
     }
   };
 
   const cancelRecharge = async () => {
-    // 取消支付展示态；若尚未支付，后台 RC 单保持 PENDING，稍后可再次拉起或由用户忽略
+    // 取消支付展示态；若尚未支付，后台 RC 单保持 PENDING，超时后由定时任务置 EXPIRED
     if (pollRef.current) clearInterval(pollRef.current);
     setPayQr(null);
+    setPayExpireAt(null);
+    setPayRemaining(null);
   };
 
   // 卡密兑换 → 余额入账（后端 POST /payments/card/redeem：原子占卡 + 递增入账 + 记流水）
@@ -170,6 +209,11 @@ export default function BalancePage() {
     }
   };
 
+  // 滚动到充值区（余额总览卡「立即充值」按钮）
+  const scrollToRecharge = () => {
+    document.getElementById('recharge-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   const fmtMoney = (n: any) => Number(n).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   // 流水金额展示：按类型定号（PURCHASE 恒为支出；REFUND 是退款=钱退回，记正数显示绿色 +；其余看数值正负）
@@ -194,12 +238,22 @@ export default function BalancePage() {
               <div className="mt-1 text-3xl font-bold text-primary">¥ {fmtMoney(user.balance)}</div>
             </div>
           </div>
-          <Link2Glance />
+          <div className="flex shrink-0 flex-col items-end gap-2">
+              <Button variant="gradient" onClick={scrollToRecharge}>
+                <Plus className="mr-1 h-4 w-4" />
+                立即充值
+              </Button>
+              <span className="hidden text-xs text-muted-foreground sm:block">
+                充值记录与消费记录
+                <br />
+                都会在这里以明细展示
+              </span>
+            </div>
         </CardContent>
       </Card>
 
       {/* 充值 */}
-      <Card>
+      <Card id="recharge-section" className="scroll-mt-20">
         <CardHeader>
           <CardTitle className="text-lg">余额充值</CardTitle>
           <CardDescription>选择金额 → 选择支付方式 → 扫码付款，到账后余额自动更新</CardDescription>
@@ -313,6 +367,15 @@ export default function BalancePage() {
                 <Loader2 className="h-4 w-4 animate-spin text-primary" />
                 等待支付确认中...
               </div>
+              {payRemaining != null && payRemaining > 0 && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  支付窗口剩余{' '}
+                  <span className="font-mono font-semibold text-primary">
+                    {Math.floor(payRemaining / 60)}:{String(payRemaining % 60).padStart(2, '0')}
+                  </span>
+                  ，超时订单将自动关闭，请尽快完成支付
+                </p>
+              )}
               <button
                 onClick={cancelRecharge}
                 className="mt-4 inline-flex items-center gap-1.5 rounded-md text-sm font-medium text-muted-foreground hover:text-destructive"
@@ -392,16 +455,6 @@ export default function BalancePage() {
           )}
         </CardContent>
       </Card>
-    </div>
-  );
-}
-
-function Link2Glance() {
-  return (
-    <div className="hidden text-right text-xs text-muted-foreground sm:block">
-      充值记录与消费记录
-      <br />
-      都会在这里以明细展示
     </div>
   );
 }

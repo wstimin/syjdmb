@@ -114,6 +114,8 @@ export default function SettingsPage() {
           showAlipay: s.showAlipay === false ? false : true,
           showCard: s.showCard === false ? false : true,
           showBalance: s.showBalance === false ? false : true,
+          // 订单超时（分钟）
+          orderExpireMinutes: parseInt(s.orderExpireMinutes, 10) || 15,
           // wechat
           wechatEnabled: s.wechatEnabled === true || s.wechatEnabled === 'true' || false,
           wechatAppId: s.wechatAppId || '',
@@ -158,6 +160,8 @@ export default function SettingsPage() {
         { key: 'showAlipay', value: form.showAlipay, type: 'boolean', group: 'general' },
         { key: 'showCard', value: form.showCard, type: 'boolean', group: 'general' },
         { key: 'showBalance', value: form.showBalance, type: 'boolean', group: 'general' },
+        // 订单超时（分钟）
+        { key: 'orderExpireMinutes', value: form.orderExpireMinutes, type: 'number', group: 'general' },
         // wechat
         { key: 'wechatEnabled', value: form.wechatEnabled, type: 'boolean', group: 'payment' },
         { key: 'wechatAppId', value: form.wechatAppId, type: 'string', group: 'payment' },
@@ -242,6 +246,16 @@ export default function SettingsPage() {
               </Field>
               <Field label="卡密购买链接" hint="外部发卡/购买地址，前台导航栏将显示「购买卡密」入口。留空则不显示">
                 <Input value={form.cardPurchaseUrl} onChange={(e) => set('cardPurchaseUrl', e.target.value)} placeholder="https://your-card-shop.com" />
+              </Field>
+
+              <Field label="订单超时关闭（分钟）" hint="未支付或支付未成功的订单/充值单将在该时间后自动置为已超时并关闭（默认 15 分钟）。注意：支付渠道二维码有效期通常长于此时长，超时后到达的支付回调会被拒收，需走「人工确认收款」入账，请按实际回调速度合理设置">
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={form.orderExpireMinutes}
+                  onChange={(e) => set('orderExpireMinutes', parseInt(e.target.value, 10) || 15)}
+                />
               </Field>
 
               {/* 前端支付方式显示控制 */}

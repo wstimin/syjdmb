@@ -8,6 +8,7 @@ type GeneralSettings = {
   supportEmail: string;
   siteUrl: string;
   cardPurchaseUrl: string;
+  orderExpireMinutes: number;
   showWechat: boolean;
   showAlipay: boolean;
   showCard: boolean;
@@ -21,6 +22,7 @@ const SettingsContext = createContext<GeneralSettings>({
   supportEmail: '',
   siteUrl: '',
   cardPurchaseUrl: '',
+  orderExpireMinutes: 15,
   showWechat: true,
   showAlipay: true,
   showCard: true,
@@ -35,6 +37,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     supportEmail: '',
     siteUrl: '',
     cardPurchaseUrl: '',
+    orderExpireMinutes: 15,
     showWechat: true,
     showAlipay: true,
     showCard: true,
