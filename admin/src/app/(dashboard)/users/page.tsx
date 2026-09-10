@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import Pagination from '@/components/shared/pagination';
+import { ROLE_LABELS, ROLE_OPTIONS } from '@/lib/roles';
 
 const EMPTY_CREATE_FORM = {
   email: '',
@@ -104,9 +105,9 @@ export default function UsersPage() {
     try {
       await api.post(`/users/${id}/balance`, {
         amount: Number(balanceAmount),
-        description: 'Admin adjustment',
+        description: '管理后台调整余额',
       });
-      toast.success('余额已调整 / Balance adjusted');
+      toast.success('余额已调整');
       setEditUser(null);
       setBalanceAmount('');
       fetchUsers();
@@ -189,9 +190,9 @@ export default function UsersPage() {
           onChange={(e) => updateRole(u, e.target.value)}
           className="rounded-md border bg-background px-2 py-1 text-xs"
         >
-          <option value="USER">USER</option>
-          <option value="ADMIN">ADMIN</option>
-          <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+          {ROLE_OPTIONS.map((r) => (
+            <option key={r.value} value={r.value}>{r.label}</option>
+          ))}
         </select>
       ),
     },
@@ -289,9 +290,9 @@ export default function UsersPage() {
                   onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
                   className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
                 >
-                  <option value="USER">USER</option>
-                  <option value="ADMIN">ADMIN</option>
-                  <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                  {ROLE_OPTIONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
                 </select>
               </div>
               <div className="space-y-2">
@@ -348,7 +349,7 @@ export default function UsersPage() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between"><span className="text-muted-foreground">ID</span><span>{detailUser.id}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">用户名</span><span>{detailUser.username || '—'}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">角色</span><span>{detailUser.role}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">角色</span><span>{ROLE_LABELS[detailUser.role] || detailUser.role}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">状态</span><span><StatusBadge status={detailUser.status} /></span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">余额</span><span className="text-primary font-medium">¥{Number(detailUser.balance).toFixed(2)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">冻结余额</span><span>¥{Number(detailUser.balanceFrozen).toFixed(2)}</span></div>

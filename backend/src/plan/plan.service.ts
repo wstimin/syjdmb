@@ -30,14 +30,14 @@ export class PlanService {
 
   async findById(id: number) {
     const plan = await this.prisma.plan.findUnique({ where: { id } });
-    if (!plan) throw new NotFoundException('Plan not found');
+    if (!plan) throw new NotFoundException('方案不存在');
     return plan;
   }
 
   // 套餐可用的服务器列表（购买页选择服务器用）
   async getPlanServers(planId: number) {
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
-    if (!plan) throw new NotFoundException('Plan not found');
+    if (!plan) throw new NotFoundException('方案不存在');
 
     const ids = (plan.serverIds || []) as number[];
     if (ids.length === 0) return [];
@@ -69,7 +69,7 @@ export class PlanService {
 
   async update(id: number, data: any) {
     const plan = await this.prisma.plan.findUnique({ where: { id } });
-    if (!plan) throw new NotFoundException('Plan not found');
+    if (!plan) throw new NotFoundException('方案不存在');
 
     // 编辑库存时不得低于已售数量（否则已完成的订单会超出库存）
     if (data.stock != null && data.stock < plan.sold) {
@@ -94,13 +94,13 @@ export class PlanService {
 
   async remove(id: number) {
     const plan = await this.prisma.plan.findUnique({ where: { id } });
-    if (!plan) throw new NotFoundException('Plan not found');
+    if (!plan) throw new NotFoundException('方案不存在');
 
     const hasOrders = await this.prisma.order.count({
       where: { planId: id, status: { in: ['PAID', 'COMPLETED'] } },
     });
     if (hasOrders > 0) {
-      throw new BadRequestException('Cannot delete plan with existing orders');
+      throw new BadRequestException('该方案已有订单，无法删除');
     }
 
     await this.prisma.plan.delete({ where: { id } });

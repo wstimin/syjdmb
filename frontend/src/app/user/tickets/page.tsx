@@ -35,13 +35,13 @@ export default function TicketsPage() {
 
   const createTicket = async () => {
     if (!subject || !message) {
-      toast.error('Subject and message required');
+      toast.error('请填写标题与内容');
       return;
     }
     setSubmitting(true);
     try {
       await api.post('/tickets', { subject, message });
-      toast.success('Ticket created');
+      toast.success('工单已提交');
       setDialogOpen(false);
       setSubject(''); setMessage('');
       fetchTickets();

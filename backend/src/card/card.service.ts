@@ -22,10 +22,10 @@ export class CardService {
   }) {
     const { amount, count, prefix = '' } = params;
     if (count <= 0 || count > 1000) {
-      throw new BadRequestException('Count must be between 1 and 1000');
+      throw new BadRequestException('数量需在 1 到 1000 之间');
     }
     if (amount <= 0) {
-      throw new BadRequestException('Amount must be positive');
+      throw new BadRequestException('金额必须大于 0');
     }
 
     const batchId = params.batch || `B${Date.now().toString(36).toUpperCase()}`;
@@ -115,8 +115,8 @@ export class CardService {
 
   async cancelCard(id: number) {
     const card = await this.prisma.card.findUnique({ where: { id } });
-    if (!card) throw new NotFoundException('Card not found');
-    if (card.status === 'USED') throw new BadRequestException('Cannot cancel a used card');
+    if (!card) throw new NotFoundException('卡密不存在');
+    if (card.status === 'USED') throw new BadRequestException('已使用的卡密不能作废');
 
     return this.prisma.card.update({
       where: { id },

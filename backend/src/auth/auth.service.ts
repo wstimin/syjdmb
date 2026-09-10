@@ -68,7 +68,7 @@ export class AuthService {
       where: { email },
     });
     if (existing) {
-      throw new ConflictException('Email already registered');
+      throw new ConflictException('该邮箱已注册');
     }
 
     // Validate referral code
@@ -78,7 +78,7 @@ export class AuthService {
         where: { referralCode: dto.referralCode },
       });
       if (!referrer) {
-        throw new BadRequestException('Invalid referral code');
+        throw new BadRequestException('邀请码无效');
       }
       referrerId = referrer.id;
     }
@@ -102,7 +102,7 @@ export class AuthService {
     } catch (e: any) {
       // 并发注册撞唯一键：转成友好错误而不是 500
       if (e && e.code === 'P2002') {
-        throw new ConflictException('Email already registered');
+        throw new ConflictException('该邮箱已注册');
       }
       throw e;
     }
@@ -133,7 +133,7 @@ export class AuthService {
     // 账号不存在或被禁用：统一报「凭据无效」，
     // 不透露「这个邮箱注册过没有 / 账号是什么状态」——防账号枚举与状态探测
     if (!user || user.status !== 'ACTIVE') {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('账号或邮箱密码错误');
     }
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
@@ -157,7 +157,7 @@ export class AuthService {
         if (e instanceof TooManyRequestsException) throw e;
         this.logger.warn(`登录失败计数异常: ${(e as Error).message}`);
       }
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('账号或邮箱密码错误');
     }
 
     // 登录成功：清空该账号的失败计数与锁定
@@ -180,14 +180,14 @@ export class AuthService {
       // Check if token is blacklisted
       const isBlacklisted = await this.redis.get(`bl:${refreshToken}`);
       if (isBlacklisted) {
-        throw new UnauthorizedException('Token revoked');
+        throw new UnauthorizedException('登录状态已失效，请重新登录');
       }
 
       // 密码重置后旧令牌立即失效：签发于重置时间之前的刷新令牌一律拒绝。
       // 重置密码会写入 auth:pwr:<userId> 时间戳（8 天有效，覆盖 refresh 最长 7 天）。
       const passwordResetAt = await this.redis.get(`auth:pwr:${payload.sub}`).catch(() => null);
       if (passwordResetAt && Number(payload.iat || 0) < Number(passwordResetAt)) {
-        throw new UnauthorizedException('Token revoked');
+        throw new UnauthorizedException('登录状态已失效，请重新登录');
       }
 
       const user = await this.prisma.user.findUnique({
@@ -195,7 +195,7 @@ export class AuthService {
       });
 
       if (!user || user.status !== 'ACTIVE') {
-        throw new UnauthorizedException('User not found or inactive');
+        throw new UnauthorizedException('用户不存在或已停用');
       }
 
       // Blacklist old refresh token
@@ -203,7 +203,7 @@ export class AuthService {
 
       return this.generateTokens(user);
     } catch {
-      throw new UnauthorizedException('Invalid refresh token');
+      throw new UnauthorizedException('登录状态已失效，请重新登录');
     }
   }
 

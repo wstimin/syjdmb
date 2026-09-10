@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
 import { BrandLogo } from '@/components/layout/brand-logo';
 import { APP_VERSION } from '@/lib/version';
+import { ROLE_LABELS } from '@/lib/roles';
 
 const navItems = [
   { href: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -64,18 +65,33 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="absolute bottom-0 w-full border-t p-4">
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="truncate text-sm font-medium">{user?.email}</div>
-              <div className="text-xs text-muted-foreground">{user?.role}</div>
+          {/* 当前账号卡片 */}
+          <div className="flex items-center gap-3 rounded-xl bg-muted/60 px-3 py-2.5">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/60 text-sm font-bold text-primary-foreground">
+              {(user?.username || user?.email || 'A').charAt(0).toUpperCase()}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium">
+                {user?.username || user?.email}
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {user?.role ? (ROLE_LABELS[user.role] || user.role) : '—'}
+              </span>
             </div>
-            <button onClick={logout} className="rounded-md p-2 text-muted-foreground hover:bg-accent hover:text-foreground">
+            <button
+              onClick={logout}
+              title="退出登录"
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+            >
               <LogOut className="h-4 w-4" />
             </button>
           </div>
-          <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5">
-            <span className="text-[11px] text-muted-foreground/60">NodeShop v{APP_VERSION}</span>
-            <span className="text-[11px] text-muted-foreground/60">管理后台</span>
+          <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground/60">
+            <span className="flex items-center gap-1">
+              <BrandLogo size={14} />
+              NodeShop v{APP_VERSION}
+            </span>
+            <span>管理后台</span>
           </div>
         </div>
       </aside>

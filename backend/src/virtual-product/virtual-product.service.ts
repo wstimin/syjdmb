@@ -41,7 +41,7 @@ export class VirtualProductService {
       select: this.publicSelect,
     });
     if (!product || product.status !== 'ACTIVE') {
-      throw new NotFoundException('Virtual product not found');
+      throw new NotFoundException('虚拟商品不存在');
     }
     return product;
   }
@@ -69,7 +69,7 @@ export class VirtualProductService {
       where: { id },
       select: { id: true },
     });
-    if (!product) throw new NotFoundException('Virtual product not found');
+    if (!product) throw new NotFoundException('虚拟商品不存在');
     return this.prisma.virtualProduct.update({ where: { id }, data });
   }
 
@@ -78,7 +78,7 @@ export class VirtualProductService {
       where: { id },
       select: { id: true, name: true },
     });
-    if (!product) throw new NotFoundException('Virtual product not found');
+    if (!product) throw new NotFoundException('虚拟商品不存在');
 
     // 有成交订单的商品不允许物理删除（保留订单里的商品名快照能力），引导改为 ARCHIVED 下架
     const hasOrders = await this.prisma.order.count({
@@ -98,7 +98,7 @@ export class VirtualProductService {
       where: { id: productId },
       select: { id: true, deliveryType: true },
     });
-    if (!product) throw new NotFoundException('Virtual product not found');
+    if (!product) throw new NotFoundException('虚拟商品不存在');
 
     const where: any = { productId };
     if (status && (status === 'UNUSED' || status === 'SOLD')) where.status = status;
@@ -124,7 +124,7 @@ export class VirtualProductService {
       where: { id: productId },
       select: { id: true, deliveryType: true },
     });
-    if (!product) throw new NotFoundException('Virtual product not found');
+    if (!product) throw new NotFoundException('虚拟商品不存在');
 
     // 每行一个码；去空行、去首尾空白；行内多段（账号/密码/链接）作为完整交付内容保留
     const codes = String(text || '')

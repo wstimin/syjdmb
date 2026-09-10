@@ -152,13 +152,13 @@ export class ServerService {
         },
       },
     });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
     return server;
   }
 
   async update(id: number, data: any) {
     const server = await this.prisma.server.findUnique({ where: { id } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     // 如果连接信息变了，清除旧 session 缓存
     if (data.host || data.port || data.username || data.password || data.protocol) {
@@ -173,14 +173,14 @@ export class ServerService {
 
   async remove(id: number) {
     const server = await this.prisma.server.findUnique({ where: { id } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     // 检查是否有活跃节点
     const activeInbounds = await this.prisma.inbound.count({
       where: { serverId: id, status: 'ACTIVE' },
     });
     if (activeInbounds > 0) {
-      throw new BadRequestException('Cannot delete server with active inbounds');
+      throw new BadRequestException('该服务器下存在活跃节点，无法删除');
     }
 
     await this.prisma.server.delete({ where: { id } });
@@ -198,7 +198,7 @@ export class ServerService {
 
   async login(serverId: number): Promise<string> {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     // 有 API Token 时直接返回，不需要登录
     // 文档："Bearer-token callers can skip this"（CSRF 中间件对 Bearer 短路）
@@ -270,13 +270,13 @@ export class ServerService {
     } catch {
       const raw = await response.text().catch(() => '');
       throw new BadRequestException(
-        `XUI login failed: invalid response from ${loginUrl} — HTTP ${response.status}` +
+        `XUI 面板登录失败：${loginUrl} 响应异常（HTTP ${response.status}）` +
           (raw ? `, body: ${JSON.stringify(raw.slice(0, 200))}` : ''),
       );
     }
 
     if (!body.success) {
-      throw new BadRequestException(`XUI login failed: ${body.msg || 'unknown error'}`);
+      throw new BadRequestException(`XUI 面板登录失败：${body.msg || '未知错误'}`);
     }
 
     // 登录可能轮换会话 cookie；有新的用新的，否则沿用 CSRF 阶段拿到的
@@ -287,7 +287,7 @@ export class ServerService {
     if (loginSession) sessionCookie = loginSession;
 
     if (!sessionCookie) {
-      throw new BadRequestException('XUI login succeeded but no session cookie received');
+      throw new BadRequestException('XUI 面板登录成功但未获取到会话 Cookie');
     }
 
     // 缓存 session + CSRF token（1小时 TTL，与 session 同步）
@@ -310,7 +310,7 @@ export class ServerService {
     timeoutMs = ServerService.PANEL_TIMEOUT_MS,
   ): Promise<XuiResponse> {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     // apiPath 默认 /panel/api；填了面板子路径（webBasePath）也会自动补全 /panel/api
     const apiBase = this.normalizeApiPath(server.apiPath);
@@ -365,7 +365,7 @@ export class ServerService {
       // 管理端「测试」按钮直接显示，几秒钟就能判断是"打到了错误的地址/代理"还是"面板没起来"
       const rawBody = await response.text().catch(() => '');
       throw new BadRequestException(
-        `XUI API request failed: invalid JSON from ${apiUrl} — HTTP ${response.status}` +
+        `XUI API 请求失败：${apiUrl} 返回非 JSON（HTTP ${response.status}）` +
           (rawBody ? `, body: ${JSON.stringify(rawBody.slice(0, 200))}` : ''),
       );
     }
@@ -399,12 +399,12 @@ export class ServerService {
    */
   async testConnection(serverId: number) {
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
     const authMode = server.apiToken ? 'apiToken (Bearer)' : 'cookie + csrf';
     const started = Date.now();
     const res = await this.xuiRequest(serverId, 'GET', '/inbounds/list');
     if (!res || res.success !== true) {
-      throw new BadRequestException(`面板 API 响应异常: ${res?.msg || 'unknown'}`);
+      throw new BadRequestException(`面板 API 响应异常：${res?.msg || '未知错误'}`);
     }
     const list = Array.isArray(res.obj) ? res.obj : [];
     return {
@@ -816,7 +816,7 @@ export class ServerService {
     }
 
     const server = await this.prisma.server.findUnique({ where: { id: serverId } });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     const apiBase = this.normalizeApiPath(server.apiPath);
     const apiUrl = `${this.panelBaseUrl(server)}${apiBase}/xray/update`;
@@ -877,7 +877,7 @@ export class ServerService {
     } catch {
       const raw = await response.text().catch(() => '');
       throw new BadRequestException(
-        `XUI API request failed: invalid JSON from ${apiUrl} — HTTP ${response.status}` +
+        `XUI API 请求失败：${apiUrl} 返回非 JSON（HTTP ${response.status}）` +
           (raw ? `, body: ${JSON.stringify(raw.slice(0, 200))}` : ''),
       );
     }
@@ -1090,7 +1090,7 @@ export class ServerService {
   async getNewX25519Key(serverId: number): Promise<{ privateKey: string; publicKey: string }> {
     const res = await this.xuiRequest(serverId, 'GET', '/server/getNewX25519Cert');
     if (!res.obj || !res.obj.privateKey) {
-      throw new BadRequestException(`Failed to generate X25519 keypair: ${res.msg || 'unknown error'}`);
+      throw new BadRequestException(`生成 X25519 密钥失败：${res.msg || '未知错误'}`);
     }
     return {
       privateKey: res.obj.privateKey,
@@ -1205,7 +1205,7 @@ export class ServerService {
     });
 
     if (servers.length === 0) {
-      throw new BadRequestException('No active servers available');
+      throw new BadRequestException('暂无可用服务器');
     }
 
     const totalWeight = servers.reduce((sum, s) => sum + s.weight, 0);

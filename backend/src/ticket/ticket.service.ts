@@ -15,7 +15,7 @@ export class TicketService {
 
   async createTicket(userId: number, data: { subject: string; message: string; priority?: string }) {
     if (!data.subject || !data.message) {
-      throw new BadRequestException('Subject and message are required');
+      throw new BadRequestException('请填写标题与内容');
     }
 
     const ticket = await this.prisma.ticket.create({
@@ -41,8 +41,8 @@ export class TicketService {
     const ticket = await this.prisma.ticket.findFirst({
       where: { id: ticketId, userId },
     });
-    if (!ticket) throw new NotFoundException('Ticket not found');
-    if (ticket.status === 'CLOSED') throw new BadRequestException('Ticket is closed');
+    if (!ticket) throw new NotFoundException('工单不存在');
+    if (ticket.status === 'CLOSED') throw new BadRequestException('工单已关闭');
 
     const message = await this.prisma.ticketMessage.create({
       data: {
@@ -106,7 +106,7 @@ export class TicketService {
 
   async adminReply(ticketId: number, data: { message: string }) {
     const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
-    if (!ticket) throw new NotFoundException('Ticket not found');
+    if (!ticket) throw new NotFoundException('工单不存在');
 
     const message = await this.prisma.ticketMessage.create({
       data: {
@@ -126,7 +126,7 @@ export class TicketService {
 
   async close(ticketId: number) {
     const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
-    if (!ticket) throw new NotFoundException('Ticket not found');
+    if (!ticket) throw new NotFoundException('工单不存在');
 
     return this.prisma.ticket.update({
       where: { id: ticketId },
@@ -136,7 +136,7 @@ export class TicketService {
 
   async reopen(ticketId: number) {
     const ticket = await this.prisma.ticket.findUnique({ where: { id: ticketId } });
-    if (!ticket) throw new NotFoundException('Ticket not found');
+    if (!ticket) throw new NotFoundException('工单不存在');
 
     return this.prisma.ticket.update({
       where: { id: ticketId },
@@ -163,7 +163,7 @@ export class TicketService {
         messages: { orderBy: { createdAt: 'asc' } },
       },
     });
-    if (!ticket) throw new NotFoundException('Ticket not found');
+    if (!ticket) throw new NotFoundException('工单不存在');
     return ticket;
   }
 }

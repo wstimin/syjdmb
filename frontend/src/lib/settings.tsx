@@ -6,6 +6,7 @@ import { api } from '@/lib/api';
 type GeneralSettings = {
   appName: string;
   supportEmail: string;
+  contactHours: string;
   siteUrl: string;
   cardPurchaseUrl: string;
   orderExpireMinutes: number;
@@ -20,6 +21,7 @@ type GeneralSettings = {
 const SettingsContext = createContext<GeneralSettings>({
   appName: 'NodeShop',
   supportEmail: '',
+  contactHours: '',
   siteUrl: '',
   cardPurchaseUrl: '',
   orderExpireMinutes: 15,
@@ -35,6 +37,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<GeneralSettings>({
     appName: 'NodeShop',
     supportEmail: '',
+    contactHours: '',
     siteUrl: '',
     cardPurchaseUrl: '',
     orderExpireMinutes: 15,

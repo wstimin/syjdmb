@@ -67,9 +67,9 @@ export class PaymentService {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
-    if (!order) throw new NotFoundException('Order not found');
-    if (order.userId !== userId) throw new BadRequestException('Not your order');
-    if (order.status !== 'PENDING') throw new BadRequestException('Order already processed');
+    if (!order) throw new NotFoundException('订单不存在');
+    if (order.userId !== userId) throw new BadRequestException('不是你的订单');
+    if (order.status !== 'PENDING') throw new BadRequestException('订单已处理');
 
     switch (method) {
       case 'wechat':
@@ -92,7 +92,7 @@ export class PaymentService {
       case 'balance':
         return this.payWithBalance(order);
       default:
-        throw new BadRequestException(`Unsupported payment method: ${method}`);
+        throw new BadRequestException(`不支持的支付方式：${method}`);
     }
   }
 
@@ -111,7 +111,7 @@ export class PaymentService {
       case 'alipay':
         return this.createAlipayPayment(ref);
       default:
-        throw new BadRequestException(`Unsupported payment method: ${method}`);
+        throw new BadRequestException(`不支持的支付方式：${method}`);
     }
   }
 
@@ -182,7 +182,7 @@ export class PaymentService {
     // 杜绝「同一张卡并发双兑、余额充两次」的 TOCTOU 漏洞。
     return this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUnique({ where: { id: userId } });
-      if (!user) throw new NotFoundException('User not found');
+      if (!user) throw new NotFoundException('用户不存在');
 
       const claimed = await tx.card.updateMany({
         where: { id: card.id, status: 'UNUSED' },
@@ -226,8 +226,8 @@ export class PaymentService {
 
   async getOrderStatus(orderNo: string, userId: number): Promise<any> {
     const order = await this.prisma.order.findUnique({ where: { orderNo } });
-    if (!order) throw new NotFoundException('Order not found');
-    if (order.userId !== userId) throw new BadRequestException('Not your order');
+    if (!order) throw new NotFoundException('订单不存在');
+    if (order.userId !== userId) throw new BadRequestException('不是你的订单');
 
     return {
       orderNo: order.orderNo,
@@ -280,7 +280,7 @@ export class PaymentService {
       where: { id: ref.id },
       select: { createdAt: true, status: true, couponId: true },
     });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
     if (order.status !== 'PENDING') throw new BadRequestException('订单已处理，请刷新页面后再试');
     if (Date.now() - order.createdAt.getTime() > expireMs) {
       // 【复核⑧⑨】CAS 收敛：用 updateMany(status=PENDING→EXPIRED) 原子抢占，绝不用
@@ -579,26 +579,26 @@ export class PaymentService {
 
     // 基础入参校验（不信任外部传入）
     if (!orderNo || typeof orderNo !== 'string') {
-      throw new BadRequestException('Missing orderNo');
+      throw new BadRequestException('缺少订单号');
     }
     if (!tradeNo || typeof tradeNo !== 'string') {
-      throw new BadRequestException('Missing tradeNo');
+      throw new BadRequestException('缺少交易号');
     }
     const normalizedMethod = String(payMethod || '').toUpperCase();
     if (!['WECHAT', 'ALIPAY', 'OFFLINE', 'BALANCE'].includes(normalizedMethod)) {
-      throw new BadRequestException(`Unsupported payMethod: ${payMethod}`);
+      throw new BadRequestException(`不支持的支付方式：${payMethod}`);
     }
     // PayMethod 枚举不包含 OFFLINE（人工确认不是真实支付渠道）。
     // 先归一：OFFLINE → null 落库（该列可空），避免 Prisma 运行时枚举校验直接拒写。
     const storedMethod = normalizedMethod === 'OFFLINE' ? null : (normalizedMethod as any);
     if (!(Number(amount) > 0)) {
-      throw new BadRequestException('Invalid payment amount');
+      throw new BadRequestException('支付金额无效，请重新发起');
     }
 
     const order = await this.prisma.order.findUnique({
       where: { orderNo },
     });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
 
     // 终态处理：已完成直接返回；已取消/已失败/已退款/已过期一律拒绝恢复
     // （防"取消后又收款""退款后又收款"类绕过）
@@ -607,14 +607,14 @@ export class PaymentService {
     }
     if (['CANCELLED', 'FAILED', 'REFUNDED', 'EXPIRED'].includes(order.status)) {
       this.logger.warn(`Payment callback for terminal order ${orderNo} (${order.status}) rejected`);
-      throw new BadRequestException(`Order is ${order.status.toLowerCase()}`);
+      throw new BadRequestException(`订单状态为 ${order.status}，无法入账`);
     }
 
     // Verify amount matches（允许用户多付，不允许少付）。实付以 payAmount（优惠后）为准
     const chargeAmount = Number(order.payAmount ?? order.amount);
     if (chargeAmount > amount) {
       this.logger.warn(`Payment amount mismatch for ${orderNo}: expected ${chargeAmount} got ${amount}`);
-      throw new BadRequestException('Payment amount mismatch');
+      throw new BadRequestException('支付金额与订单不一致');
     }
 
     // 认领 + 流水同一事务：确保「订单已收款(PAID)」与「PURCHASE 流水落库」原子，
@@ -640,7 +640,7 @@ export class PaymentService {
         if (cur && ['PAID', 'PROCESSING', 'COMPLETED'].includes(cur.status)) {
           return { alreadyPaid: true };
         }
-        throw new ConflictException('Order state changed, please retry');
+        throw new ConflictException('订单状态已变更，请重试');
       }
 
       // 网关支付不改动余额，但流水 balance 字段对外语义是「交易后余额」：
@@ -649,7 +649,7 @@ export class PaymentService {
         where: { id: order.userId },
         select: { balance: true },
       });
-      if (!userBal) throw new NotFoundException('User not found');
+      if (!userBal) throw new NotFoundException('用户不存在');
 
       // Record transaction（金额记实付：优惠券后金额）
       await tx.transaction.create({
@@ -733,23 +733,23 @@ export class PaymentService {
     const { orderNo, tradeNo, amount, payMethod } = options;
 
     if (!orderNo || typeof orderNo !== 'string') {
-      throw new BadRequestException('Missing orderNo');
+      throw new BadRequestException('缺少订单号');
     }
     if (!tradeNo || typeof tradeNo !== 'string') {
-      throw new BadRequestException('Missing tradeNo');
+      throw new BadRequestException('缺少交易号');
     }
     const normalizedMethod = String(payMethod || '').toUpperCase();
     if (!['WECHAT', 'ALIPAY', 'OFFLINE'].includes(normalizedMethod)) {
-      throw new BadRequestException(`Unsupported payMethod: ${payMethod}`);
+      throw new BadRequestException(`不支持的支付方式：${payMethod}`);
     }
     // 同上：OFLLINE 归一为 null 落库，避免写入 PayMethod 枚举外值被 Prisma 拒绝
     const storedMethod = normalizedMethod === 'OFFLINE' ? null : (normalizedMethod as any);
     if (!(Number(amount) > 0)) {
-      throw new BadRequestException('Invalid payment amount');
+      throw new BadRequestException('支付金额无效，请重新发起');
     }
 
     const recharge = await this.prisma.recharge.findUnique({ where: { orderNo } });
-    if (!recharge) throw new NotFoundException('Recharge order not found');
+    if (!recharge) throw new NotFoundException('充值订单不存在');
 
     // 终态：已入账直接幂等返回；已取消/已过期拒绝复活（防「取消后又收款」绕过）
     if (recharge.status === 'PAID') {
@@ -757,13 +757,13 @@ export class PaymentService {
     }
     if (['CANCELLED', 'EXPIRED'].includes(recharge.status)) {
       this.logger.warn(`Recharge callback for terminal order ${orderNo} (${recharge.status}) rejected`);
-      throw new BadRequestException(`Recharge order is ${recharge.status.toLowerCase()}`);
+      throw new BadRequestException(`充值订单状态为 ${recharge.status}，无法入账`);
     }
 
     // 金额校验：允许多付，不允许少付
     if (Number(recharge.amount) > amount) {
       this.logger.warn(`Recharge amount mismatch for ${orderNo}: expected ${recharge.amount} got ${amount}`);
-      throw new BadRequestException('Recharge payment amount mismatch');
+      throw new BadRequestException('充值金额与充值单不一致');
     }
 
     // 认领 + 入账必须在同一事务：否则「先标记 PAID、后加余额」之间崩溃会让充值单
@@ -780,7 +780,7 @@ export class PaymentService {
           select: { status: true },
         });
         if (cur && cur.status === 'PAID') return { alreadyPaid: true };
-        throw new ConflictException('Recharge state changed, please retry');
+        throw new ConflictException('充值订单状态已变更，请重试');
       }
 
       // 原子递增余额，绝不用「读→算→写绝对数」：并发充值 / 余额支付会互相覆盖，丢失一次入账

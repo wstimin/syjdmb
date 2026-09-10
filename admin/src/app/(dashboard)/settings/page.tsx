@@ -107,6 +107,7 @@ export default function SettingsPage() {
           // general
           appName: s.appName || 'NodeShop',
           supportEmail: s.supportEmail || '',
+          contactHours: s.contactHours || '',
           siteUrl: s.siteUrl || '',
           cardPurchaseUrl: s.cardPurchaseUrl || '',
           // 前端支付方式显示控制（默认全部显示）
@@ -153,6 +154,7 @@ export default function SettingsPage() {
         // general
         { key: 'appName', value: form.appName, type: 'string', group: 'general' },
         { key: 'supportEmail', value: form.supportEmail, type: 'string', group: 'general' },
+        { key: 'contactHours', value: form.contactHours, type: 'string', group: 'general' },
         { key: 'siteUrl', value: form.siteUrl, type: 'string', group: 'general' },
         { key: 'cardPurchaseUrl', value: form.cardPurchaseUrl, type: 'string', group: 'general' },
         // 前端支付方式显示控制
@@ -240,6 +242,9 @@ export default function SettingsPage() {
               </Field>
               <Field label="客服邮箱">
                 <Input type="email" value={form.supportEmail} onChange={(e) => set('supportEmail', e.target.value)} />
+              </Field>
+              <Field label="营业时间" hint="前台页脚「联系方式」区展示的在线服务时间，留空则显示默认值（周一至周日 9:00 - 21:00）">
+                <Input value={form.contactHours} onChange={(e) => set('contactHours', e.target.value)} placeholder="周一至周日 9:00 - 21:00" />
               </Field>
               <Field label="站点地址" hint="用于生成支付回调地址与邮件中的链接，填写前端域名（如 https://your-domain.com）。未填写时自动取环境变量 APP_URL">
                 <Input value={form.siteUrl} onChange={(e) => set('siteUrl', e.target.value)} placeholder="https://your-domain.com" />

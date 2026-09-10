@@ -40,7 +40,7 @@ export default function SocksPage() {
 
   const addProxy = async () => {
     if (!host || !port) {
-      toast.error('Host and port required');
+      toast.error('请填写地址与端口');
       return;
     }
     try {
@@ -63,7 +63,7 @@ export default function SocksPage() {
   const deleteProxy = async (id: number) => {
     try {
       await api.delete(`/socks/${id}`);
-      toast.success('Deleted');
+      toast.success('已删除');
       fetchProxies();
     } catch (err: any) {
       toast.error(getErrorMessage(err));

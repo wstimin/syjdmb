@@ -8,8 +8,12 @@ import { BrandLogo } from '@/components/layout/brand-logo';
 
 export function Footer() {
   const { t } = useI18n();
-  const { appName } = useSettings();
+  const { appName, supportEmail, contactHours } = useSettings();
   const year = new Date().getFullYear();
+
+  // 联系方式优先取后台设置（后台「系统设置 → 客服邮箱 / 营业时间」），未配置时回退到文案默认值
+  const contactEmail = supportEmail || t('footer.contactEmail');
+  const hours = contactHours || t('footer.hours');
 
   return (
     <footer className="border-t bg-muted/40">
@@ -49,13 +53,13 @@ export function Footer() {
             <ul className="space-y-2 text-sm text-muted-foreground">
               <li className="flex items-center gap-2">
                 <Mail className="h-4 w-4 shrink-0" />
-                <a href={`mailto:${t('footer.contactEmail')}`} className="hover:text-foreground">
-                  {t('footer.contactEmail')}
+                <a href={`mailto:${contactEmail}`} className="hover:text-foreground">
+                  {contactEmail}
                 </a>
               </li>
               <li className="flex items-center gap-2">
                 <Clock className="h-4 w-4 shrink-0" />
-                <span>{t('footer.hours')}</span>
+                <span>{hours}</span>
               </li>
               <li className="flex items-center gap-2">
                 <MapPin className="h-4 w-4 shrink-0" />

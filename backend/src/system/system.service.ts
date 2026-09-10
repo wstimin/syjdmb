@@ -60,6 +60,7 @@ export class SystemService {
     return {
       appName: map.appName || 'NodeShop',
       supportEmail: map.supportEmail || '',
+      contactHours: map.contactHours || '',
       siteUrl: map.siteUrl || process.env.FRONTEND_URL || process.env.APP_URL || '',
       cardPurchaseUrl: map.cardPurchaseUrl || '',
       orderExpireMinutes: Number(map.orderExpireMinutes) || 15,

@@ -69,7 +69,7 @@ export class UserService {
         },
       },
     });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('用户不存在');
     return user;
   }
 
@@ -102,10 +102,10 @@ export class UserService {
 
   async changePassword(userId: number, oldPassword: string, newPassword: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('用户不存在');
 
     const isMatch = await bcrypt.compare(oldPassword, user.password);
-    if (!isMatch) throw new BadRequestException('Old password is incorrect');
+    if (!isMatch) throw new BadRequestException('旧密码错误');
 
     const hashed = await bcrypt.hash(newPassword, 12);
     await this.prisma.user.update({
@@ -117,7 +117,7 @@ export class UserService {
 
   async adminUpdateUser(userId: number, data: any) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('用户不存在');
 
     if (data.password) {
       data.password = await bcrypt.hash(data.password, 12);
@@ -201,10 +201,10 @@ export class UserService {
 
   async adjustBalance(userId: number, amount: number, description: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('用户不存在');
 
     const newBalance = Number(user.balance) + amount;
-    if (newBalance < 0) throw new BadRequestException('Insufficient balance');
+    if (newBalance < 0) throw new BadRequestException('余额不足');
 
     await this.prisma.$transaction([
       this.prisma.user.update({

@@ -37,7 +37,7 @@ export default function ProfilePage() {
 
   const changePassword = async () => {
     if (!oldPassword || !newPassword) {
-      toast.error('Please fill all fields');
+      toast.error('请填写所有字段');
       return;
     }
     setSavingPassword(true);
@@ -46,7 +46,7 @@ export default function ProfilePage() {
         oldPassword,
         newPassword,
       });
-      toast.success('Password changed');
+      toast.success('密码已修改');
       setOldPassword(''); setNewPassword('');
     } catch (err: any) {
       toast.error(getErrorMessage(err));

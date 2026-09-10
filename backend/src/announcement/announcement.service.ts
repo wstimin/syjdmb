@@ -52,7 +52,7 @@ export class AnnouncementService {
 
   async findById(id: number) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
-    if (!announcement) throw new NotFoundException('Announcement not found');
+    if (!announcement) throw new NotFoundException('公告不存在');
     return announcement;
   }
 
@@ -62,13 +62,13 @@ export class AnnouncementService {
 
   async update(id: number, data: any) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
-    if (!announcement) throw new NotFoundException('Announcement not found');
+    if (!announcement) throw new NotFoundException('公告不存在');
     return this.prisma.announcement.update({ where: { id }, data });
   }
 
   async remove(id: number) {
     const announcement = await this.prisma.announcement.findUnique({ where: { id } });
-    if (!announcement) throw new NotFoundException('Announcement not found');
+    if (!announcement) throw new NotFoundException('公告不存在');
     await this.prisma.announcement.delete({ where: { id } });
     return { message: 'Announcement deleted' };
   }

@@ -52,11 +52,11 @@ export class InboundService {
     const server = await this.prisma.server.findUnique({
       where: { id: serverId },
     });
-    if (!server) throw new NotFoundException('Server not found');
+    if (!server) throw new NotFoundException('服务器不存在');
 
     // Generate unique user email for XUI
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) throw new NotFoundException('用户不存在');
     const email = `${user.id}-${uuidv4().slice(0, 8)}@node`;
 
     // 客户端限额（3.6.0 面板客户端 totalGB 字段按【字节】解释，0=不限；
@@ -206,7 +206,7 @@ export class InboundService {
           if (xuiInboundId) break;
           response = {
             ...response,
-            msg: response?.msg || 'Inbound added, but failed to locate created inbound id',
+            msg: response?.msg || '入站已创建，但未能定位到节点 ID',
           };
           break;
         }
@@ -225,7 +225,7 @@ export class InboundService {
         // add 已成功但没定位到 id（承载端口已建好入站）—— 尽力回收该空入站，
         // 否则每笔失败订单都会在面板累积一个游离空闲入站
         await this.cleanupOrphanInbound(serverId, inboundData);
-        throw new BadRequestException(response?.msg || 'Failed to obtain XUI inbound id');
+        throw new BadRequestException(response?.msg || '未能获取 XUI 节点 ID');
       }
 
       // 3.6.0 原生一致性验证：add 后回读确认 reality + minClientVer=1.0.0 真实落库。
@@ -313,7 +313,7 @@ export class InboundService {
           try {
             await this.serverService.deleteInbound(serverId, xuiInboundId);
           } catch {}
-          throw new BadRequestException(`Failed to add XUI client: ${clientRes?.msg}`);
+          throw new BadRequestException(`添加 XUI 客户端失败：${clientRes?.msg}`);
         }
         this.logger.warn(
           `clients/add 报错（${clientRes?.msg}）但客户端可检索，按已注册继续`,
@@ -523,7 +523,7 @@ export class InboundService {
       return inbound;
     } catch (error) {
       this.logger.error(`Failed to create inbound: ${error.message}`);
-      throw new BadRequestException(`Failed to create inbound: ${error.message}`);
+      throw new BadRequestException(`创建节点失败：${error.message}`);
     }
   }
 
@@ -957,7 +957,7 @@ export class InboundService {
         break;
       }
       default:
-        throw new BadRequestException(`Unsupported protocol for link: ${inbound.protocol}`);
+        throw new BadRequestException(`不支持的协议（无法生成链接）：${inbound.protocol}`);
     }
 
     qrData = url;
@@ -1056,7 +1056,7 @@ export class InboundService {
       where,
       include: { server: true },
     });
-    if (!inbound) throw new NotFoundException('Inbound not found');
+    if (!inbound) throw new NotFoundException('节点不存在');
 
     return this.enrichInboundForResponse(inbound);
   }
@@ -1604,7 +1604,7 @@ export class InboundService {
 
   async suspend(id: number) {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
-    if (!inbound) throw new NotFoundException('Inbound not found');
+    if (!inbound) throw new NotFoundException('节点不存在');
 
     // Suspend in XUI — 用原生 bulkDisable（update/{email} 是全量替换，只传 enable 会清字段）。
     // 面板停用失败必须抛错、不置本地 SUSPENDED：否则商城显示已暂停、面板实际仍启用，用户继续可用。
@@ -1622,7 +1622,7 @@ export class InboundService {
 
   async resume(id: number) {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
-    if (!inbound) throw new NotFoundException('Inbound not found');
+    if (!inbound) throw new NotFoundException('节点不存在');
 
     // Resume in XUI — 用原生 bulkEnable。同理，面板启用失败必须抛错，
     // 否则本地已回 ACTIVE、面板实际仍停用，用户连不上却显示活跃。
@@ -1729,7 +1729,7 @@ export class InboundService {
 
   async delete(id: number) {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
-    if (!inbound) throw new NotFoundException('Inbound not found');
+    if (!inbound) throw new NotFoundException('节点不存在');
 
     // 该节点是中转节点 → 先移除它的路由规则及其专属出站
     // 【delete-swallow 对抗复核】卸载失败不能吞掉继续删：面板模板会残留 dead 规则与孤儿

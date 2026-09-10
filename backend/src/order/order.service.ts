@@ -63,7 +63,7 @@ export class OrderService {
       const product = await this.prisma.virtualProduct.findUnique({
         where: { id: virtualProductId },
       });
-      if (!product) throw new NotFoundException('Virtual product not found');
+      if (!product) throw new NotFoundException('虚拟商品不存在');
       if (product.status !== 'ACTIVE') throw new BadRequestException('该商品已下架');
       // AUTO 商品必须有未售交付码，避免「付了钱没货发」
       if (product.deliveryType === 'AUTO') {
@@ -95,11 +95,11 @@ export class OrderService {
 
     if (!planId) throw new BadRequestException('缺少商品参数（网络方案或虚拟商品）');
     const plan = await this.prisma.plan.findUnique({ where: { id: planId } });
-    if (!plan) throw new NotFoundException('Plan not found');
+    if (!plan) throw new NotFoundException('方案不存在');
     // 已售罄不影响老用户续费（续费不消耗库存，下方续费分支处理）；其余非在售状态一律拦截
     const isRenewal = !!params.renewalOfInboundId;
     if (plan.status !== 'ACTIVE' && !(plan.status === 'SOLD_OUT' && isRenewal)) {
-      throw new BadRequestException('Plan is not available');
+      throw new BadRequestException('该方案不可用');
     }
 
     const orderNo = this.generateOrderNo();
@@ -355,9 +355,9 @@ export class OrderService {
         where: { id: orderId },
         include: { plan: true, virtualProduct: true },
       });
-      if (!order) throw new NotFoundException('Order not found');
-      if (order.status !== 'PENDING') throw new ConflictException('Order already processed');
-      if (order.userId !== userId) throw new BadRequestException('Not your order');
+      if (!order) throw new NotFoundException('订单不存在');
+      if (order.status !== 'PENDING') throw new ConflictException('订单已处理');
+      if (order.userId !== userId) throw new BadRequestException('不是你的订单');
       // 【对抗复核 F2/F13：跨渠道双重扣款】网关支付（WECHAT/ALIPAY）的二维码已生成、
       // 支付窗口开着时，这张单不能被余额再付一遍。若允许，用户扫码付了真钱、又点「余额支付」，
       // 余额 CAS 抢先把它标成 PAID/BALANCE 后，网关回调到达只会拿到 alreadyPaid——
@@ -369,12 +369,12 @@ export class OrderService {
       }
 
       const user = await tx.user.findUnique({ where: { id: userId } });
-      if (!user) throw new NotFoundException('User not found');
+      if (!user) throw new NotFoundException('用户不存在');
 
       // 实付金额：优惠券后金额（payAmount）；amount 恒为原价
       const amount = Number(order.payAmount ?? order.amount);
       if (Number(user.balance) < amount) {
-        throw new BadRequestException('Insufficient balance');
+        throw new BadRequestException('余额不足');
       }
 
       // 原子条件扣款：余额 ≥ 金额才允许扣（并发余额变动也不会互相覆盖，
@@ -386,7 +386,7 @@ export class OrderService {
           data: { balance: { decrement: amount } },
         });
       } catch (e: any) {
-        if (e && e.code === 'P2025') throw new BadRequestException('Insufficient balance');
+        if (e && e.code === 'P2025') throw new BadRequestException('余额不足');
         throw e;
       }
 
@@ -421,7 +421,7 @@ export class OrderService {
         },
         data: { status: 'PAID', paidAt: new Date(), payMethod: 'BALANCE' },
       });
-      if (claimed.count === 0) throw new ConflictException('Order already processed');
+      if (claimed.count === 0) throw new ConflictException('订单已处理');
 
       return { success: true, order };
     });
@@ -481,7 +481,7 @@ export class OrderService {
         select: { userId: true },
       });
       if (!ownerCheck || ownerCheck.userId !== requestedUserId) {
-        throw new NotFoundException('Order not found');
+        throw new NotFoundException('订单不存在');
       }
     }
 
@@ -502,7 +502,7 @@ export class OrderService {
       // 订单已在别处被认领，或已是终态（COMPLETED/CANCELLED/FAILED）：
       // COMPLETED 且有节点 → 把存量幂等返回
       const later = await this.prisma.order.findUnique({ where: { id: orderId } });
-      if (!later) throw new NotFoundException('Order not found');
+      if (!later) throw new NotFoundException('订单不存在');
       if (later.status === 'COMPLETED') {
         // 虚拟商品单已完成（AUTO 已发码 / MANUAL 已完结整单）→ 幂等返回
         if (later.virtualProductId) return { order: later };
@@ -511,14 +511,14 @@ export class OrderService {
         });
         if (existing) return { inbound: existing, order: later };
       }
-      throw new ConflictException('Order cannot be activated');
+      throw new ConflictException('订单无法开通');
     }
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: { plan: true, virtualProduct: { select: { id: true, deliveryType: true } } },
     });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
 
     // 虚拟商品单：不建节点、不续费，走交付（AUTO=自动发码 / MANUAL=人工发货）
     if (order.virtualProductId) {
@@ -1501,7 +1501,7 @@ export class OrderService {
         user: { select: { email: true, username: true } },
       },
     });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
     return order;
   }
 
@@ -1512,7 +1512,7 @@ export class OrderService {
   async adminActivate(id: number) {
     // Mark as paid then activate
     const order = await this.prisma.order.findUnique({ where: { id } });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
 
     if (order.status === 'PENDING') {
       await this.prisma.order.update({
@@ -1539,7 +1539,7 @@ export class OrderService {
       where: { id: orderId },
       include: { virtualProduct: { select: { id: true, deliveryType: true } } },
     });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
     if (!order.virtualProductId) {
       throw new BadRequestException('该订单不是虚拟商品订单，无需发货');
     }
@@ -1572,9 +1572,9 @@ export class OrderService {
 
   async cancel(id: number, reason = '') {
     const order = await this.prisma.order.findUnique({ where: { id } });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
     if (!['PENDING', 'FAILED'].includes(order.status)) {
-      throw new ConflictException('Order cannot be cancelled');
+      throw new ConflictException('订单无法取消');
     }
     // 已生成支付二维码/发起网关支付的单不能取消：网关通知延迟到达时，
     // 若订单已取消，钱收了节点却没开通（孤儿单）。等支付结果或超时后再处理。
@@ -1613,7 +1613,7 @@ export class OrderService {
   /** 用户取消自己的未支付订单（仅 PENDING/FAILED，且必须属于当前用户）。 */
   async cancelSelf(id: number, userId: number) {
     const order = await this.prisma.order.findFirst({ where: { id, userId } });
-    if (!order) throw new NotFoundException('Order not found');
+    if (!order) throw new NotFoundException('订单不存在');
     if (!['PENDING', 'FAILED'].includes(order.status)) {
       throw new ConflictException('该订单已支付或处理中，无法取消');
     }

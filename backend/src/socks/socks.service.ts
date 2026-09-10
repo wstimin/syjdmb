@@ -29,7 +29,7 @@ export class SocksService {
     remark?: string;
   }) {
     if (!params.host || !params.port) {
-      throw new BadRequestException('Host and port are required');
+      throw new BadRequestException('请填写地址与端口');
     }
 
     const proxy = await this.prisma.socksProxy.create({
@@ -156,7 +156,7 @@ export class SocksService {
     if (userId) where.userId = userId;
 
     const proxy = await this.prisma.socksProxy.findFirst({ where });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
     return proxy;
   }
 
@@ -194,7 +194,7 @@ export class SocksService {
 
   async update(id: number, userId: number, data: any) {
     const proxy = await this.prisma.socksProxy.findFirst({ where: { id, userId } });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
 
     return this.prisma.socksProxy.update({
       where: { id },
@@ -211,7 +211,7 @@ export class SocksService {
   /** 后台编辑：host/port/凭据/备注，可换归属用户（ownerUserId）。 */
   async updateAdmin(id: number, data: any) {
     const proxy = await this.prisma.socksProxy.findUnique({ where: { id } });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
 
     const patch: any = {};
     if (data.host !== undefined) {
@@ -243,7 +243,7 @@ export class SocksService {
     if (userId) where.userId = userId;
 
     const proxy = await this.prisma.socksProxy.findFirst({ where });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
 
     await this.prisma.socksProxy.delete({ where: { id } });
     return { success: true, id };
@@ -256,7 +256,7 @@ export class SocksService {
 
   async changeStatus(id: number, status: 'ACTIVE' | 'INACTIVE') {
     const proxy = await this.prisma.socksProxy.findUnique({ where: { id } });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
     return this.prisma.socksProxy.update({ where: { id }, data: { status } });
   }
 
@@ -266,7 +266,7 @@ export class SocksService {
 
   async listGrants(id: number) {
     const proxy = await this.prisma.socksProxy.findUnique({ where: { id } });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
     return this.prisma.socksGrant.findMany({
       where: { socksProxyId: id },
       include: { user: { select: { id: true, email: true, username: true } } },
@@ -276,7 +276,7 @@ export class SocksService {
 
   async addGrant(id: number, grantUserId: number) {
     const proxy = await this.prisma.socksProxy.findUnique({ where: { id } });
-    if (!proxy) throw new NotFoundException('SOCKS proxy not found');
+    if (!proxy) throw new NotFoundException('SOCKS 代理不存在');
     const u = await this.prisma.user.findUnique({ where: { id: Number(grantUserId) } });
     if (!u) throw new BadRequestException('授权用户不存在');
     if (Number(grantUserId) === proxy.userId) {

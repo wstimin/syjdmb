@@ -15,7 +15,7 @@ export const api = axios.create({
 export function getErrorMessage(err: any): string {
   const data = err?.response?.data;
   if (data?.message) return Array.isArray(data.message) ? data.message.join(', ') : data.message;
-  return err?.message || 'Something went wrong';
+  return err?.message || '请求失败，请稍后重试';
 }
 
 interface User {
