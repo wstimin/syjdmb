@@ -11,6 +11,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
 import { BrandLogo } from '@/components/layout/brand-logo';
+import { APP_VERSION } from '@/lib/version';
 
 const navItems = [
   { href: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -42,7 +43,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           <BrandLogo size={36} />
           <div>
             <div className="font-bold leading-tight">NodeShop</div>
-            <div className="text-xs text-muted-foreground">管理后台</div>
+            <div className="text-xs text-muted-foreground">管理后台 · v{APP_VERSION}</div>
           </div>
         </div>
         <nav className="space-y-1 p-4">
@@ -72,6 +73,10 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
               <LogOut className="h-4 w-4" />
             </button>
           </div>
+          <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5">
+            <span className="text-[11px] text-muted-foreground/60">NodeShop v{APP_VERSION}</span>
+            <span className="text-[11px] text-muted-foreground/60">管理后台</span>
+          </div>
         </div>
       </aside>
 
@@ -82,6 +87,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           <Link href="/dashboard" className="flex items-center gap-2">
             <BrandLogo size={32} />
             <span className="font-bold">NodeShop</span>
+            <span className="rounded-full border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">v{APP_VERSION}</span>
           </Link>
           <button onClick={logout} className="rounded-md p-2 text-muted-foreground hover:bg-accent">
             <LogOut className="h-4 w-4" />
