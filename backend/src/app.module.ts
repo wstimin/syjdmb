@@ -16,6 +16,7 @@ import { CouponModule } from './coupon/coupon.module';
 import { EmailModule } from './email/email.module';
 import { RefundsModule } from './refunds/refunds.module';
 import { SocksModule } from './socks/socks.module';
+import { SocksPanelModule } from './socks-panel/socks-panel.module';
 import { TicketModule } from './ticket/ticket.module';
 import { AnnouncementModule } from './announcement/announcement.module';
 import { SystemModule } from './system/system.module';
@@ -54,6 +55,7 @@ import { LoggerMiddleware } from './common/middleware/logger.middleware';
     EmailModule,
     RefundsModule,
     SocksModule,
+    SocksPanelModule,
     TicketModule,
     AnnouncementModule,
     SystemModule,

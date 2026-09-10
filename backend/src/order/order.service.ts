@@ -12,6 +12,7 @@ import { InboundService } from '../inbound/inbound.service';
 import { ServerService } from '../server/server.service';
 import { CouponService } from '../coupon/coupon.service';
 import { SystemService } from '../system/system.service';
+import { SocksPanelService } from '../socks-panel/socks-panel.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -25,6 +26,7 @@ export class OrderService {
     private redis: RedisService,
     private couponService: CouponService,
     private systemService: SystemService,
+    private socksPanelService: SocksPanelService,
   ) {}
 
   // 未支付/支付未成功订单的超时时间（分钟）——后台「订单超时关闭（分钟）」配置，默认 15
@@ -52,12 +54,112 @@ export class OrderService {
     relaySocksUser?: string;
     relaySocksPass?: string;
     renewalOfInboundId?: number; // 续费单：对已有节点续期/续流量（激活时走 bulkAdjust，不建新节点）
+    renewalOfSocksNodeId?: number; // SOCKS 续费单：对已交付的 SOCKS 节点续时长（仅 EXPIRY，时长制）
     renewType?: 'EXPIRY' | 'TRAFFIC'; // 续费类型：EXPIRY=到期续费（顺延/开新周期）；TRAFFIC=流量续费（额度叠加）；不传=旧版叠加行为
     couponCode?: string;      // 优惠券码（下单即占名额，取消时释放）
   }) {
     const { userId, planId, virtualProductId } = params;
 
-    // ---- 虚拟商品单：无 plan，付款后走交付（AUTO 自动发码 / MANUAL 人工发货）----
+    // ---- SOCKS_PANEL 续费单：renewalOfSocksNodeId + virtualProductId，仅 EXPIRY（时长制）----
+    // 与 Inbound 节点续费对照：首购走「交付新建」，续费走「在原到期日上 +duration 顺延」，
+    // 购买对象是同一类 SOCKS 商品（可换商品，时长以该商品为准）。SOCKS 时长制不限流量，
+    // 没有流量可续 → TRAFFIC/null 一律拒绝。
+    const renewalOfSocksNodeId = params.renewalOfSocksNodeId;
+    if (renewalOfSocksNodeId) {
+      if (params.renewType && params.renewType !== 'EXPIRY') {
+        throw new BadRequestException('SOCKS 节点为时长制（不限流量），仅支持「到期续费」');
+      }
+      if (planId) throw new BadRequestException('SOCKS 续费选择 SOCKS 商品即可，无需网络方案');
+      if (!params.virtualProductId) throw new BadRequestException('缺少续费商品参数');
+
+      const DAY_MS = 24 * 3600 * 1000;
+
+      // 目标节点必须属于当前用户且未软删除；管理员暂停不允许续费（不复活管理停用节点）
+      const node = await this.prisma.socksNode.findFirst({
+        where: { id: renewalOfSocksNodeId, userId, status: { not: 'DELETED' } },
+      });
+      if (!node) throw new NotFoundException('目标 SOCKS 节点不存在');
+      if (node.status === 'SUSPENDED') {
+        throw new BadRequestException('该节点已被管理员暂停，暂无法续费，请联系客服');
+      }
+      if (!node.expiryTime) {
+        // 时长制节点必有到期时间；防御性拒绝
+        throw new BadRequestException('该节点没有到期时间，无需续费');
+      }
+      // 【过期宽限期】与 Inbound 一致：越过 1 天的节点已被 cron 自动删除，只能重新购买
+      if (new Date(node.expiryTime).getTime() + DAY_MS < Date.now()) {
+        throw new BadRequestException('该节点已过期超过一天，过期节点仅保留一天续费宽限期，之后将被自动删除；请重新购买商品');
+      }
+
+      // 续费商品：任意在售 SOCKS_PANEL 商品（与 Inbound 续费可换套餐同语义）
+      const product = await this.prisma.virtualProduct.findUnique({
+        where: { id: params.virtualProductId },
+      });
+      if (!product) throw new NotFoundException('虚拟商品不存在');
+      if (product.status !== 'ACTIVE') throw new BadRequestException('该商品已下架');
+      if (product.deliveryType !== 'SOCKS_PANEL') {
+        throw new BadRequestException('该商品不是 SOCKS 交付商品，无法续费 SOCKS 节点');
+      }
+      if (!product.duration || Number(product.duration) <= 0) {
+        throw new BadRequestException('该商品未配置交付时长，无法续费');
+      }
+      // 【严格周期锚】新到期 = 原到期 + 商品时长（不因续费时刻顺延）；
+      // 极端兜底：原到期日落后超过一个完整周期 → 顺延后仍在过去，无可交付，拒绝补续
+      const oldExpiryMs = new Date(node.expiryTime).getTime();
+      if (oldExpiryMs + Number(product.duration) * DAY_MS <= Date.now()) {
+        throw new BadRequestException('该节点已过期超过一个完整周期，无法通过续费恢复，请重新购买商品');
+      }
+
+      const orderNo = this.generateOrderNo();
+
+      // 【续费批处理 对抗复核】同节点同类型已存在未完成续费单（未支付/已付未激活/激活中）→
+      // 拒绝再下单：用户重复付款后到期会被激活两次（白付第二笔）；已 EXPIRED/CANCELLED
+      // 的单不拦（终态可重新下单）。
+      const dup = await this.prisma.order.findFirst({
+        where: {
+          userId,
+          renewalOfSocksNodeId,
+          renewType: 'EXPIRY',
+          status: { in: ['PENDING', 'PAID', 'PROCESSING'] },
+        },
+        select: { id: true },
+      });
+      if (dup) {
+        throw new BadRequestException('该 SOCKS 节点已有一笔未完成的续费订单，请先完成支付或取消后再试');
+      }
+
+      // 所有续费校验都通过后占优惠券名额
+      const couponOrderData = await this.claimCouponData(params.couponCode, userId, {
+        price: Number(product.price),
+      } as any);
+
+      return this.createOrderRow({
+        orderNo,
+        userId,
+        planId: null,
+        virtualProductId: product.id,
+        amount: product.price,
+        ...couponOrderData,
+        status: 'PENDING',
+        payMethod: (params.payMethod ? String(params.payMethod).toUpperCase() : null) as any,
+        renewalOfSocksNodeId,
+        renewType: 'EXPIRY' as any,
+      }).catch((e: any) => {
+        // DB 级兜底：上面 findFirst 预检挡串行重复，但两个并发请求可同时通过预检 →
+        // 后到的 INSERT 命中部分唯一索引 Order_renewal_socks_dup_key 抛 P2002 → 转成与
+        // 预检一致的友好报错（不重复释放优惠券：createOrderRow 落库失败时已自行 releaseCoupon）。
+        const target = e?.meta?.target;
+        const isDup = Array.isArray(target)
+          ? target.includes('Order_renewal_socks_dup_key')
+          : String(target ?? '').includes('Order_renewal_socks_dup_key');
+        if (e?.code === 'P2002' && isDup) {
+          throw new BadRequestException('该 SOCKS 节点已有一笔未完成的续费订单，请先完成支付或取消后再试');
+        }
+        throw e;
+      });
+    }
+
+    // ---- 虚拟商品单：无 plan，付款后走交付（AUTO 自动发码 / MANUAL 人工发货 / SOCKS_PANEL 面板交付）----
     if (virtualProductId) {
       if (planId) throw new BadRequestException('网络方案与虚拟商品不能同时下单');
       const product = await this.prisma.virtualProduct.findUnique({
@@ -71,6 +173,21 @@ export class OrderService {
           where: { productId: virtualProductId, status: 'UNUSED' },
         });
         if (available === 0) throw new BadRequestException('该商品库存不足或已售罄');
+      }
+      // SOCKS_PANEL 商品：下单前 fail-fast 校验交付配置（时长 + 至少一台可用服务器），
+      // 避免「付了钱面板交付必然失败」。首购走「交付新建」（激活时才挑具体服务器）。
+      if (product.deliveryType === 'SOCKS_PANEL') {
+        if (!product.duration || Number(product.duration) <= 0) {
+          throw new BadRequestException('该商品未配置交付时长，暂无法购买');
+        }
+        const boundIds = (product.serverIds || []) as number[];
+        const availableCount =
+          boundIds.length > 0
+            ? await this.prisma.server.count({ where: { id: { in: boundIds }, status: 'ACTIVE' } })
+            : await this.prisma.server.count({ where: { status: 'ACTIVE' } });
+        if (availableCount === 0) {
+          throw new BadRequestException('该商品暂无可用服务器');
+        }
       }
 
       const orderNo = this.generateOrderNo();
@@ -520,8 +637,17 @@ export class OrderService {
     });
     if (!order) throw new NotFoundException('订单不存在');
 
-    // 虚拟商品单：不建节点、不续费，走交付（AUTO=自动发码 / MANUAL=人工发货）
+    // 虚拟商品单：不建节点、不续费，走交付。SOCKS_PANEL 与其他交付彻底分叉：
+    // - AUTO=自动发码 / MANUAL=人工发货（既有 activateVirtualDelivery，不动）
+    // - SOCKS_PANEL=面板交付 SOCKS 节点（独立 SocksPanelService，全新路径，
+    //   首购 deliverSocksNode / 续费 activateSocksRenewal，不碰 clients/* 生命周期原语）
     if (order.virtualProductId) {
+      if (order.virtualProduct?.deliveryType === 'SOCKS_PANEL') {
+        if (order.renewalOfSocksNodeId) {
+          return this.socksPanelService.activateSocksRenewal(order);
+        }
+        return this.socksPanelService.deliverSocksNode(order);
+      }
       return this.activateVirtualDelivery(order);
     }
 

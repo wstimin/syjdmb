@@ -20,6 +20,9 @@ export class VirtualProductService {
     originalPrice: true,
     coverUrl: true,
     deliveryType: true,
+    // SOCKS_PANEL 交付字段：时长（天）+ 绑定服务器（空数组=全局，激活时加权随机挑）
+    duration: true,
+    serverIds: true,
     sort: true,
     status: true,
     sold: true,
