@@ -8,7 +8,12 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { RedisService } from '../common/redis/redis.service';
 import { ServerService } from '../server/server.service';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, v5 as uuidv5 } from 'uuid';
+
+// 一键导入出站的确定性 uuid：基于节点 uuid 派生（同一节点 ↔ 同一出站条目），
+// 幂等 + 用户从「我的 SOCKS」删除后可重新导入（同 uuid 重建）。
+const SOCKS_IMPORT_NS = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'; // uuid DNS namespace
+const SOCKS_IMPORT_TAG = 'socks-panel-import:';
 
 // 面板交付 SOCKS 节点（SOCKS_PANEL 虚拟商品）
 // ------------------------------------------------------------------
@@ -558,15 +563,93 @@ export class SocksPanelService {
   // ==========================================
 
   async getMySocksNodes(userId: number) {
-    return this.prisma.socksNode.findMany({
-      where: { userId, status: { not: 'DELETED' } },
-      include: {
-        virtualProduct: { select: { id: true, name: true, nameEn: true, deliveryType: true } },
-        server: { select: { id: true, name: true, host: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 200,
+    const [nodes, proxies] = await Promise.all([
+      this.prisma.socksNode.findMany({
+        where: { userId, status: { not: 'DELETED' } },
+        include: {
+          virtualProduct: { select: { id: true, name: true, nameEn: true, deliveryType: true } },
+          server: { select: { id: true, name: true, host: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      }),
+      // 出站池 join：标记每个节点是否已导入到 SocksProxy 台账（供前端按钮状态）
+      this.prisma.socksProxy.findMany({
+        where: { userId, status: { not: 'DELETED' } },
+        select: { host: true, port: true },
+      }),
+    ]);
+    const outboundKeys = new Set(proxies.map((p) => `${p.host}:${p.port}`));
+    return nodes.map((n) => ({ ...n, importedToOutbound: outboundKeys.has(`${n.host}:${n.port}`) }));
+  }
+
+  // ==========================================
+  // 一键导入到 SOCKS 出站池（薄桥，纯新增）
+  // ==========================================
+
+  /**
+   * 把已购 SOCKS 节点导入到用户的 SocksProxy 台账（买节点「勾选中转」时的出口池）。
+   * 两端既有模块零改动：order.service 的 relaySocksId 取值、inbound/server、socks.service
+   * 的 addSocks/delete、schema 全部不动；本端点只用 prisma 直接建台账行。
+   *
+   * 幂等双保险：
+   *  (a) 同 (userId, host, port) 的记录已存在（含用户手动加过同地址的情况）→ 直接返回既有条目；
+   *  (b) 否则用 v5(确定性 uuid from node.uuid) upsert —— SocksProxy.uuid 唯一约束兜底并发
+   *      双击，不会建重复行；用户从「我的 SOCKS」删除后重导，同一确定性 uuid 重建。
+   * 生命周期语义：导入 = 快照，与节点生命周期完全解耦 —— 节点过期/自动删除不清理台账行
+   * （与现货 SOCKS「无存活校验」一致），用户可在「我的 SOCKS」手动删除。
+   * 台账行字段 mirror addSocks；不设 serverId/inboundId，避开任何面板联动语义。
+   */
+  async importAsOutbound(nodeId: number, userId: number) {
+    const node = await this.prisma.socksNode.findUnique({
+      where: { id: nodeId },
+      include: { virtualProduct: { select: { name: true } } },
     });
+    if (!node || node.userId !== userId) {
+      throw new NotFoundException('SOCKS 节点不存在');
+    }
+    if (node.status !== 'ACTIVE') {
+      const reason =
+        node.status === 'EXPIRED'
+          ? '节点已过期，无法导入出站'
+          : node.status === 'SUSPENDED'
+            ? '节点已被暂停，无法导入出站'
+            : '节点已删除，无法导入出站';
+      throw new BadRequestException(reason);
+    }
+    if (!node.host || !node.port) {
+      throw new BadRequestException('节点缺少连接信息，无法导入出站');
+    }
+
+    // (a) 同 host:port 已存在 → 幂等返回（含手动添加的同地址条目）
+    const existing = await this.prisma.socksProxy.findFirst({
+      where: { userId, host: node.host, port: node.port },
+    });
+    if (existing) {
+      return { alreadyImported: true, socksProxy: existing };
+    }
+
+    // (b) 确定性 uuid upsert：并发双击也只会落一行
+    const outboundUuid = uuidv5(SOCKS_IMPORT_TAG + node.uuid, SOCKS_IMPORT_NS);
+    const remark = node.virtualProduct
+      ? `购买节点 · ${node.virtualProduct.name}`
+      : `购买节点 #${node.uuid.slice(0, 8)}`;
+    const socksProxy = await this.prisma.socksProxy.upsert({
+      where: { uuid: outboundUuid },
+      create: {
+        uuid: outboundUuid,
+        userId,
+        host: node.host,
+        port: node.port,
+        username: node.username || null,
+        password: node.password || null,
+        remark,
+        status: 'ACTIVE',
+      },
+      update: { remark }, // 已存在的行只会是本端点建的同一节点条目（同 uuid），remark 重写无害
+    });
+
+    return { alreadyImported: false, socksProxy };
   }
 
   // ==========================================

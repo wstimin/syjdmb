@@ -29,6 +29,15 @@ export class SocksPanelController {
     return { success: true, data: await this.socksPanelService.getMySocksNodes(userId) };
   }
 
+  // 一键导入到 SOCKS 出站池（薄桥：把已购节点的 host/port/账号密码写入用户 SocksProxy 台账）
+  @Post(':id/import-outbound')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Import a purchased SOCKS node into the user SOCKS outbound pool' })
+  async importOutbound(@Param('id', ParseIntPipe) id: number, @CurrentUser('id') userId: number) {
+    return { success: true, data: await this.socksPanelService.importAsOutbound(id, userId) };
+  }
+
   // ---- Admin ----
   @Get('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
