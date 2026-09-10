@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Mail, Lock } from 'lucide-react';
+import { Mail, Lock, Loader2, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import { BrandLogo } from '@/components/layout/brand-logo';
 import { useAuth, getErrorMessage } from '@/lib/api';
@@ -21,11 +21,13 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
     if (!email || !password) {
-      toast.error(t('auth.invalidEmail'));
+      setError(t('auth.invalidEmail'));
       return;
     }
     setLoading(true);
@@ -34,7 +36,22 @@ export default function LoginPage() {
       toast.success(t('auth.loginSuccess'));
       router.push('/user/dashboard');
     } catch (err: any) {
-      toast.error(getErrorMessage(err));
+      // 区分失败原因：401 = 账号/邮箱或密码错误；429 = 登录太频繁或账号被临时锁定；
+      // 无 response = 网络不通。明确提示，不再"点了没反应"。
+      const status = err?.response?.status;
+      let msg: string;
+      if (status === 401) {
+        msg = t('auth.loginFailed');
+      } else if (status === 429) {
+        // 后端该提示已带具体锁定分钟数（中英双语），直接透传
+        msg = getErrorMessage(err);
+      } else if (!err?.response) {
+        msg = t('auth.loginNetworkError');
+      } else {
+        msg = getErrorMessage(err);
+      }
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -66,7 +83,10 @@ export default function LoginPage() {
                     placeholder="user@example.com"
                     className="pl-10"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      if (error) setError('');
+                    }}
                     required
                   />
                 </div>
@@ -81,11 +101,24 @@ export default function LoginPage() {
                     placeholder="••••••••"
                     className="pl-10"
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (error) setError('');
+                    }}
                     required
                   />
                 </div>
               </div>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+                >
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
 
               <div className="flex justify-end">
                 <Link href="/forgot-password" className="text-sm font-medium text-muted-foreground hover:text-primary">
@@ -94,7 +127,14 @@ export default function LoginPage() {
               </div>
 
               <Button type="submit" variant="gradient" className="w-full" size="lg" disabled={loading}>
-                {loading ? t('common.loading') : t('auth.loginBtn')}
+                {loading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t('common.loading')}
+                  </>
+                ) : (
+                  t('auth.loginBtn')
+                )}
               </Button>
             </form>
 

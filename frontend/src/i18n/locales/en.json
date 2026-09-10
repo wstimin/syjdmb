@@ -127,7 +127,9 @@
     "invalidPassword": "Password must be at least 6 characters",
     "passwordMismatch": "Passwords do not match",
     "loginSuccess": "Logged in successfully",
-    "registerSuccess": "Registered successfully"
+    "registerSuccess": "Registered successfully",
+    "loginFailed": "Email or password is incorrect, please try again",
+    "loginNetworkError": "Network error, please check your connection and try again"
   },
   "products": {
     "title": "Mall",
