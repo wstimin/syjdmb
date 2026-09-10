@@ -23,6 +23,7 @@ const VP_STATUSES = [
 const DELIVERY_TYPES = [
   { id: 'AUTO', label: '自动发货（上传交付码，付款后自动发放）' },
   { id: 'MANUAL', label: '人工发货（付款后在订单里手动填交付内容）' },
+  { id: 'SOCKS_PANEL', label: 'SOCKS 面板交付（付款后在 XUI 面板建 socks 入站，时长制不限流量）' },
 ];
 
 export default function VirtualProductsPage() {
@@ -39,7 +40,11 @@ export default function VirtualProductsPage() {
     name: '', nameEn: '', price: '', originalPrice: '',
     description: '', descriptionEn: '', coverUrl: '',
     deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
+    duration: '', serverIds: [] as number[], // SOCKS_PANEL 交付字段
   });
+
+  // SOCKS_PANEL 绑定服务器候选（多选）
+  const [servers, setServers] = useState<any[]>([]);
 
   // ---- 交付码库弹窗 ----
   const [keysTarget, setKeysTarget] = useState<any | null>(null); // 商品对象
@@ -57,6 +62,11 @@ export default function VirtualProductsPage() {
   };
 
   useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => {
+    api.get('/servers')
+      .then((res) => setServers(Array.isArray(res.data.data) ? res.data.data : []))
+      .catch(() => {});
+  }, []);
 
   const openCreate = () => {
     setEditing(null);
@@ -64,6 +74,7 @@ export default function VirtualProductsPage() {
       name: '', nameEn: '', price: '', originalPrice: '',
       description: '', descriptionEn: '', coverUrl: '',
       deliveryType: 'AUTO', sort: '0', status: 'ACTIVE',
+      duration: '', serverIds: [] as number[],
     });
     setDialogOpen(true);
   };
@@ -76,13 +87,28 @@ export default function VirtualProductsPage() {
       description: p.description || '', descriptionEn: p.descriptionEn || '',
       coverUrl: p.coverUrl || '',
       deliveryType: p.deliveryType, sort: String(p.sort ?? 0), status: p.status,
+      duration: p.deliveryType === 'SOCKS_PANEL' ? String(p.duration ?? '') : '',
+      serverIds: p.deliveryType === 'SOCKS_PANEL' ? p.serverIds || [] : [],
     });
     setDialogOpen(true);
+  };
+
+  const toggleServer = (id: number) => {
+    setForm((f) => ({
+      ...f,
+      serverIds: f.serverIds.includes(id)
+        ? f.serverIds.filter((x) => x !== id)
+        : [...f.serverIds, id],
+    }));
   };
 
   const save = async () => {
     if (!form.name || !form.price) {
       toast.error('名称和价格必填');
+      return;
+    }
+    if (form.deliveryType === 'SOCKS_PANEL' && !(Number(form.duration) > 0)) {
+      toast.error('SOCKS 面板交付需要填写交付时长（天）');
       return;
     }
     const payload = {
@@ -96,6 +122,9 @@ export default function VirtualProductsPage() {
       deliveryType: form.deliveryType,
       sort: Number(form.sort) || 0,
       status: form.status,
+      // SOCKS_PANEL：时长（天）+ 绑定服务器（空数组=全局可用）
+      duration: form.deliveryType === 'SOCKS_PANEL' ? Number(form.duration) : null,
+      serverIds: form.deliveryType === 'SOCKS_PANEL' ? form.serverIds : [],
     };
     try {
       if (editing) {
@@ -211,9 +240,25 @@ export default function VirtualProductsPage() {
       key: 'deliveryType', header: '交付方式',
       render: (p: any) => p.deliveryType === 'AUTO'
         ? <span className="text-xs font-medium text-violet-600">自动发货</span>
-        : <span className="text-xs font-medium text-amber-600">人工发货</span>,
+        : p.deliveryType === 'SOCKS_PANEL'
+          ? <span className="text-xs font-medium text-sky-600">SOCKS 面板</span>
+          : <span className="text-xs font-medium text-amber-600">人工发货</span>,
     },
     { key: 'sold', header: '已售', render: (p: any) => p.sold },
+    {
+      key: 'duration', header: '时长',
+      render: (p: any) => p.deliveryType === 'SOCKS_PANEL'
+        ? <span className="font-mono text-xs">{p.duration} 天</span>
+        : <span className="text-xs text-muted-foreground">-</span>,
+    },
+    {
+      key: 'serverIds', header: '绑定服务器',
+      render: (p: any) => p.deliveryType === 'SOCKS_PANEL'
+        ? (Array.isArray(p.serverIds) && p.serverIds.length > 0
+            ? <span className="text-sm">{p.serverIds.length} 台</span>
+            : <span className="text-muted-foreground text-xs">全局可用</span>)
+        : <span className="text-xs text-muted-foreground">-</span>,
+    },
     {
       key: 'stock', header: '剩余码',
       render: (p: any) => {
@@ -257,7 +302,7 @@ export default function VirtualProductsPage() {
 
   return (
     <div>
-      <PageHeader title="NP店铺" subtitle="NP 店铺数字商品：自动发货（交付码）或人工发货">
+      <PageHeader title="NP店铺" subtitle="NP 店铺数字商品：自动发货（交付码）、人工发货，或 SOCKS 面板交付（XUI 建 socks 入站）">
         <div className="flex items-center gap-2">
           <Input
             className="max-w-xs"
@@ -273,6 +318,7 @@ export default function VirtualProductsPage() {
         <StatCard title="商品总数" value={products.length} />
         <StatCard title="自动发货（AUTO）" value={products.filter((p) => p.deliveryType === 'AUTO').length} color="#8b5cf6" />
         <StatCard title="人工发货（MANUAL）" value={products.filter((p) => p.deliveryType === 'MANUAL').length} color="#d97706" />
+        <StatCard title="SOCKS 面板（面板交付）" value={products.filter((p) => p.deliveryType === 'SOCKS_PANEL').length} color="#0284c7" />
       </div>
 
       <Card>
@@ -328,6 +374,43 @@ export default function VirtualProductsPage() {
                 ))}
               </select>
             </div>
+            {form.deliveryType === 'SOCKS_PANEL' && (
+              <>
+                <div className="space-y-2">
+                  <Label>交付时长（天）*</Label>
+                  <Input type="number" min={1} value={form.duration} onChange={(e) => setForm({ ...form, duration: e.target.value })} placeholder="30" />
+                  <p className="text-xs text-muted-foreground">时长制、不限流量；到期停用 → 1 天宽限期 → 自动删除（与现有节点一致）</p>
+                </div>
+                <div className="space-y-2 col-span-2">
+                  <Label>绑定服务器（可选多台，激活时随机挑一台；不选 = 所有在线服务器可用）</Label>
+                  {servers.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      还没有可用服务器，请先到「服务器管理」添加并连接 XUI 面板。
+                    </p>
+                  ) : (
+                    <div className="flex max-h-44 flex-wrap gap-2 overflow-auto rounded-md border border-input p-3">
+                      {servers.map((s: any) => {
+                        const checked = form.serverIds.includes(s.id);
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => toggleServer(s.id)}
+                            className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                              checked
+                                ? 'border-primary bg-primary/10 font-medium text-primary'
+                                : 'border-input text-foreground hover:bg-accent'
+                            }`}
+                          >
+                            {s.flag || ''} {s.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             <div className="space-y-2">
               <Label>状态</Label>
               <select

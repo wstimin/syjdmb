@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Toaster } from 'react-hot-toast';
 import {
   LayoutDashboard, Users, Package, ShoppingCart, Server, Wifi,
-  Network, Ticket as TicketIcon, Megaphone, Settings, LogOut, CreditCard, DollarSign, Tag, Undo2, Globe,
+  Network, Cable, Ticket as TicketIcon, Megaphone, Settings, LogOut, CreditCard, DollarSign, Tag, Undo2, Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
@@ -27,6 +27,7 @@ const navItems = [
   { href: '/servers', label: '服务器管理', icon: Server },
   { href: '/inbounds', label: '节点管理', icon: Wifi },
   { href: '/socks', label: 'SOCKS管理', icon: Network },
+  { href: '/socks-panel', label: 'SOCKS面板', icon: Cable },
   { href: '/tickets', label: '工单管理', icon: TicketIcon },
   { href: '/announcements', label: '公告管理', icon: Megaphone },
   { href: '/settings', label: '系统设置', icon: Settings },
