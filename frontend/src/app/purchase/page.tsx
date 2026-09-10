@@ -146,6 +146,12 @@ function PurchaseContent() {
         if (d.status === 'COMPLETED') {
           clearInterval(pollRef.current!);
           if (isVirtual) {
+            // SOCKS_PANEL：节点已创建，连接信息在「我的商品」（不是订单交付内容）
+            if (product?.deliveryType === 'SOCKS_PANEL') {
+              toast.success(t('purchase.socksSuccess'));
+              setTimeout(() => router.push('/user/products'), 1500);
+              return;
+            }
             // 虚拟商品单：AUTO 已自动发货 / MANUAL 等待管理员发货，转「我的订单」查看交付内容
             const auto = product?.deliveryType === 'AUTO';
             toast.success(auto ? t('purchase.autoSuccess') : t('purchase.manualSuccess'));
@@ -227,11 +233,19 @@ function PurchaseContent() {
         if (data?.activationFailed) {
           // 扣款成功、激活失败（如面板瞬时故障）：订单已是 PAID/PROCESSING，
           // 后台会每分钟自动重试建节点，用户无需重新下单
-          toast.error('支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的网络」查看');
-          setTimeout(() => router.push('/user/nodes'), 1500);
+          toast.error(isVirtual
+            ? '支付成功，但商品交付暂时失败，系统将自动重试，稍后可在「我的订单」查看'
+            : '支付成功，但节点创建暂时失败，系统将自动重试，稍后可在「我的网络」查看');
+          setTimeout(() => router.push(isVirtual ? '/user/orders' : '/user/nodes'), 1500);
           return;
         }
         if (isVirtual) {
+          // SOCKS_PANEL：节点已创建，连接信息在「我的商品」
+          if (product?.deliveryType === 'SOCKS_PANEL') {
+            toast.success(t('purchase.socksSuccess'));
+            setTimeout(() => router.push('/user/products'), 1500);
+            return;
+          }
           // 虚拟商品单（余额直付 → 即时激活交付）：
           // AUTO 已自动发码 / MANUAL 已完结等待管理员发货
           const auto = product?.deliveryType === 'AUTO';
@@ -332,12 +346,16 @@ function PurchaseContent() {
                 <div className="mt-2 inline-flex rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
                   {product?.deliveryType === 'AUTO'
                     ? t('products.deliveryAuto')
-                    : t('products.deliveryManual')}
+                    : product?.deliveryType === 'SOCKS_PANEL'
+                      ? t('products.deliverySocks')
+                      : t('products.deliveryManual')}
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   {product?.deliveryType === 'AUTO'
                     ? t('purchase.deliveryNote')
-                    : t('purchase.manualNote')}
+                    : product?.deliveryType === 'SOCKS_PANEL'
+                      ? t('purchase.socksNote')
+                      : t('purchase.manualNote')}
                 </p>
               </>
             ) : (

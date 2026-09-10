@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Store, Zap, Timer, CheckCircle2, Truck } from 'lucide-react';
+import { Store, Zap, Timer, CheckCircle2, Truck, Cable } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,8 @@ export interface VirtualProduct {
   price: string | number;
   originalPrice: string | number | null;
   coverUrl: string | null;
-  deliveryType: 'AUTO' | 'MANUAL';
+  deliveryType: 'AUTO' | 'MANUAL' | 'SOCKS_PANEL';
+  duration?: number | null; // SOCKS_PANEL 交付时长（天）；时长制、不限流量
   status: 'ACTIVE' | 'HIDDEN' | 'SOLD_OUT' | 'ARCHIVED';
   sold: number;
   _count?: { keys?: number }; // 剩余未售交付码数（AUTO 商品）
@@ -50,6 +51,7 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
         const remaining = p.deliveryType === 'AUTO' ? Number(p._count?.keys ?? 0) : Infinity;
         const soldOut = p.status === 'SOLD_OUT' || (p.deliveryType === 'AUTO' && remaining <= 0);
         const isAuto = p.deliveryType === 'AUTO';
+        const isSocks = p.deliveryType === 'SOCKS_PANEL';
         return (
           <motion.div
             key={p.id}
@@ -103,8 +105,13 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                   <CardTitle className="text-xl">
                     {locale === 'en' && p.nameEn ? p.nameEn : p.name}
                   </CardTitle>
-                  <Badge variant={isAuto ? 'success' : 'outline'} className="shrink-0">
-                    {isAuto ? (
+                  <Badge variant={isSocks ? 'default' : isAuto ? 'success' : 'outline'} className="shrink-0">
+                    {isSocks ? (
+                      <>
+                        <Cable className="mr-1 h-3 w-3" />
+                        {t('products.deliverySocks')}
+                      </>
+                    ) : isAuto ? (
                       <>
                         <Zap className="mr-1 h-3 w-3" />
                         {t('products.deliveryAuto')}
@@ -141,6 +148,11 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                   {isAuto && !soldOut && (
                     <span className="text-muted-foreground/80">
                       {t('products.leftCount').replace('{n}', String(remaining))}
+                    </span>
+                  )}
+                  {isSocks && !soldOut && (
+                    <span className="text-muted-foreground/80">
+                      {t('products.duration')} {p.duration} {t('products.days')}
                     </span>
                   )}
                 </div>

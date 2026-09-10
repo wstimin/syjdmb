@@ -156,6 +156,7 @@
     "sold": "Sold",
     "deliveryAuto": "Auto Delivery",
     "deliveryManual": "Manual Delivery",
+    "deliverySocks": "Panel Delivery",
     "virtualDesc": "Digital products · delivered automatically or by staff",
     "coverFallback": "Product",
     "leftCount": "{n} left"
@@ -184,8 +185,10 @@
     "product": "NP Product",
     "autoSuccess": "Payment successful — delivery sent automatically. View it in My Orders.",
     "manualSuccess": "Payment successful — awaiting delivery. You can view it in My Orders once shipped.",
+    "socksSuccess": "Payment successful — your SOCKS node is ready. View connection info in My Products.",
     "deliveryNote": "This product is delivered automatically right after payment.",
-    "manualNote": "This product is shipped manually; the seller will fill in the delivery content after payment."
+    "manualNote": "This product is shipped manually; the seller will fill in the delivery content after payment.",
+    "socksNote": "This product is delivered as a SOCKS node: after payment a node is automatically provisioned on a server (duration-based, unlimited traffic). Connection info appears in My Products."
   },
   "dashboard": {
     "welcome": "Welcome back",
@@ -258,6 +261,13 @@
     "buyAgain": "Buy Again",
     "awaitingDelivery": "Awaiting delivery · The seller will fill in the delivery content shortly",
     "gone": "Product unavailable",
-    "viewOrders": "View Orders"
+    "viewOrders": "View Orders",
+    "socksBadge": "SOCKS Node",
+    "socksExpiresAt": "Expires",
+    "socksCopy": "Copy connection",
+    "socksCopied": "Copied",
+    "socksRenew": "Renew",
+    "socksGraceNote": "This node has expired — you can still renew within a 1-day grace period. After that it will be deleted automatically and can only be repurchased.",
+    "socksRenewed": "Renewal applied — node is back online."
   }
 }
