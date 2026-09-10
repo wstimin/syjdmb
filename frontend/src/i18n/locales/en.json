@@ -268,6 +268,11 @@
     "socksCopied": "Copied",
     "socksRenew": "Renew",
     "socksGraceNote": "This node has expired — you can still renew within a 1-day grace period. After that it will be deleted automatically and can only be repurchased.",
-    "socksRenewed": "Renewal applied — node is back online."
+    "socksRenewed": "Renewal applied — node is back online.",
+    "socksImportToOutbound": "Import to outbound",
+    "socksImportedToOutbound": "Imported to outbound",
+    "socksImporting": "Importing…",
+    "socksImportSuccess": "Imported to outbound pool — selectable as a relay exit when buying nodes",
+    "socksImportFail": "Import failed"
   }
 }

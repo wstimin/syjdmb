@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Package, Copy, ShoppingCart, ArrowRight, Cable, CalendarClock, RefreshCcw } from 'lucide-react';
+import { Package, Copy, ShoppingCart, ArrowRight, Cable, CalendarClock, RefreshCcw, PlugZap, Check } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent } from '@/components/ui/card';
@@ -47,6 +47,7 @@ type SocksNodeItem = {
   createdAt: string;
   remark: string | null;
   status: 'ACTIVE' | 'EXPIRED' | 'SUSPENDED' | 'DELETED';
+  importedToOutbound?: boolean; // 已导入到 SOCKS 出站池（后端 /socks-panel/mine 计算）
   virtualProduct: { id: number; name: string; nameEn: string | null; deliveryType: string } | null;
   server: { id: number; name: string; host: string } | null;
 };
@@ -69,6 +70,7 @@ export default function MyProductsPage() {
   const [socks, setSocks] = useState<SocksNodeItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [importingId, setImportingId] = useState<number | null>(null);
   const [renewTarget, setRenewTarget] = useState<SocksNodeItem | null>(null);
 
   useEffect(() => {
@@ -93,6 +95,21 @@ export default function MyProductsPage() {
       toast.success('已复制');
       setTimeout(() => setCopiedId(null), 2000);
     }).catch(() => toast.error('复制失败 / Copy failed'));
+  };
+
+  // 一键导入到 SOCKS 出站池：后端建台账行（幂等），刷新节点列表更新「已导入出站」状态
+  const handleImport = async (node: SocksNodeItem) => {
+    setImportingId(node.id);
+    try {
+      await api.post(`/socks-panel/${node.id}/import-outbound`);
+      toast.success(t('myProducts.socksImportSuccess'));
+      const r = await api.get('/socks-panel/mine');
+      setSocks(r.data.data || []);
+    } catch (e) {
+      toast.error(getErrorMessage(e) || t('myProducts.socksImportFail'));
+    } finally {
+      setImportingId(null);
+    }
   };
 
   const nameOf = (p: PurchasedProduct) =>
@@ -164,6 +181,8 @@ export default function MyProductsPage() {
                   onRenew={() => setRenewTarget(m.socks)}
                   canRenew={m.socks.status === 'ACTIVE' || m.socks.status === 'EXPIRED'}
                   expiredNow={expiredNow(m.socks)}
+                  importing={importingId === m.socks.id}
+                  onImport={() => handleImport(m.socks)}
                   t={t}
                 />
               ) : (
@@ -188,7 +207,7 @@ export default function MyProductsPage() {
 }
 
 // ---------- SOCKS 面板节点卡 ----------
-function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNow, t }: {
+function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNow, importing, onImport, t }: {
   socks: SocksNodeItem;
   locale: string;
   copied: boolean;
@@ -196,6 +215,8 @@ function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNo
   onRenew: () => void;
   canRenew: boolean;
   expiredNow: boolean;
+  importing: boolean;
+  onImport: () => void;
   t: (k: string) => string;
 }) {
   const name = socks.virtualProduct
@@ -203,6 +224,8 @@ function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNo
     : t('myProducts.gone');
   const serverName = socks.server?.name || `#${socks.serverId}`;
   const sockLabel = locale === 'en' ? 'SOCKS Node' : 'SOCKS 节点';
+  // 仅 ACTIVE 且未导入过时可导入；导入为快照（节点过期/删除不影响已导入条目）
+  const canImport = socks.status === 'ACTIVE' && !socks.importedToOutbound;
   return (
     <Card className="border-border/60">
       <CardContent className="p-4">
@@ -237,15 +260,33 @@ function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNo
 
             {/* 连接串 */}
             <div className="mt-2.5 rounded-md border px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-medium text-muted-foreground">socks5://…</span>
-                <button
-                  onClick={onCopy}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-primary underline hover:text-primary/80"
-                >
-                  <Copy className="h-3 w-3" />
-                  {copied ? (locale === 'en' ? 'Copied' : '已复制') : t('myProducts.socksCopy')}
-                </button>
+                <div className="flex items-center gap-3">
+                  {canImport && (
+                    <button
+                      onClick={onImport}
+                      disabled={importing}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-primary underline hover:text-primary/80 disabled:cursor-not-allowed disabled:text-primary/50"
+                    >
+                      <PlugZap className="h-3 w-3" />
+                      {importing ? t('myProducts.socksImporting') : t('myProducts.socksImportToOutbound')}
+                    </button>
+                  )}
+                  {socks.importedToOutbound && (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                      <Check className="h-3 w-3" />
+                      {t('myProducts.socksImportedToOutbound')}
+                    </span>
+                  )}
+                  <button
+                    onClick={onCopy}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary underline hover:text-primary/80"
+                  >
+                    <Copy className="h-3 w-3" />
+                    {copied ? (locale === 'en' ? 'Copied' : '已复制') : t('myProducts.socksCopy')}
+                  </button>
+                </div>
               </div>
               <pre className="mt-1 truncate whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
                 {socks.connectionUrl}

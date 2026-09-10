@@ -268,6 +268,11 @@
     "socksCopied": "已复制",
     "socksRenew": "续费",
     "socksGraceNote": "节点已到期，保留 1 天续费宽限期；超过未续费将被自动删除，只能重新购买",
-    "socksRenewed": "续费成功，节点已恢复"
+    "socksRenewed": "续费成功，节点已恢复",
+    "socksImportToOutbound": "导入到出站",
+    "socksImportedToOutbound": "已导入出站",
+    "socksImporting": "导入中…",
+    "socksImportSuccess": "已导入出站池，购买节点时可选作中转出口",
+    "socksImportFail": "导入失败"
   }
 }
