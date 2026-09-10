@@ -250,30 +250,39 @@ export default function BalancePage() {
           {showCardPopup && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowCardPopup(false)}>
               <div
-                className="relative mx-4 w-full max-w-md rounded-2xl bg-background shadow-2xl"
+                className="relative mx-4 w-full max-w-md overflow-hidden rounded-2xl bg-background shadow-2xl"
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* 顶部：购买卡密 — 高亮跳转卡片 */}
+                {/* 关闭按钮 */}
+                <button
+                  onClick={() => setShowCardPopup(false)}
+                  className="absolute right-3 top-3 z-10 rounded-full bg-background/80 p-1.5 text-muted-foreground backdrop-blur-sm hover:bg-accent hover:text-foreground"
+                >
+                  <XCircle className="h-5 w-5" />
+                </button>
+
+                {/* 购买卡密 — 高亮跳转卡片（占满弹窗宽度） */}
                 {cardPurchaseUrl && (
                   <a
                     href={cardPurchaseUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center gap-3 rounded-t-2xl border-b border-primary/20 bg-gradient-to-r from-primary/10 via-primary/5 to-primary/10 px-6 py-5 transition-all hover:from-primary/20 hover:via-primary/10 hover:to-primary/20"
+                    className="flex items-center gap-4 bg-gradient-to-r from-primary via-primary to-primary/80 px-6 py-6 text-primary-foreground transition-all hover:brightness-110"
                   >
-                    <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/20 text-primary shadow-sm">
-                      <ShoppingCart className="h-6 w-6" />
+                    <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/20 shadow-inner">
+                      <ShoppingCart className="h-7 w-7" />
                     </span>
-                    <div className="min-w-0">
-                      <div className="text-base font-bold text-primary">购买卡密</div>
-                      <div className="text-xs text-primary/70">前往购买页面获取卡密</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-lg font-bold">购买卡密</div>
+                      <div className="text-sm text-white/80">前往购买页面获取卡密</div>
                     </div>
-                    <span className="ml-auto shrink-0 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-sm">
-                      跳转 →
+                    <span className="shrink-0 rounded-full bg-white/25 px-4 py-1.5 text-sm font-semibold backdrop-blur-sm">
+                      前往 →
                     </span>
                   </a>
                 )}
-                {/* 底部：兑换卡密输入 */}
+
+                {/* 兑换卡密 — 白底区域，与上方高亮形成对比 */}
                 <div className="px-6 py-5">
                   <div className="mb-3 text-sm font-semibold">兑换卡密</div>
                   <div className="flex gap-2">
@@ -290,13 +299,6 @@ export default function BalancePage() {
                     </Button>
                   </div>
                 </div>
-                {/* 关闭按钮 */}
-                <button
-                  onClick={() => setShowCardPopup(false)}
-                  className="absolute right-3 top-3 rounded-full p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <XCircle className="h-5 w-5" />
-                </button>
               </div>
             </div>
           )}
