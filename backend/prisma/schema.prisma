@@ -165,6 +165,8 @@ model VirtualProduct {
   sort          Int                  @default(0)
   status        VirtualProductStatus @default(ACTIVE)
   sold          Int                  @default(0) // 已售（成功交付时 +1）
+  // 可售总数（null=不限量；沿用 Plan.stock 语义：下单拦截 + 交付满额自动 SOLD_OUT）。仅 SOCKS_PANEL 使用
+  stock         Int?
   keys          ProductKey[]
   orders        Order[]
   socksNodes    SocksNode[]
