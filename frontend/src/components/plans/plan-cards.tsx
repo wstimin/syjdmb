@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Check, Star, Zap, Timer, CheckCircle2 } from 'lucide-react';
+import { Check, Star, Zap } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
@@ -118,22 +118,14 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
                   {t('products.protocols')}: {plan.protocols.join(' / ')}
                 </li>
               </ul>
-              <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="inline-flex items-center gap-1">
-                  {soldOut ? (
-                    <Timer className="h-3.5 w-3.5" />
-                  ) : (
-                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                  )}
-                  {soldOut ? t('products.soldOut') : `${t('products.sold')} ${plan.sold ?? 0}`}
-                </span>
-                {/* 限量方案显示剩余份数；不限量不显示 */}
-                {remaining != null && !soldOut && (
+              {/* 限量方案显示剩余份数；不限量不显示（已售数量不再对前端展示） */}
+              {remaining != null && !soldOut && (
+                <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
                   <span className="text-muted-foreground/80">
                     {t('products.leftCount').replace('{n}', String(remaining))}
                   </span>
-                )}
-              </div>
+                </div>
+              )}
               <Button
                 className="mt-6 w-full"
                 variant={plan.isFeatured ? 'gradient' : 'default'}

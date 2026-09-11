@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { Store, Zap, Timer, CheckCircle2, Truck, Cable } from 'lucide-react';
+import { Store, Zap, Truck, Cable } from 'lucide-react';
 import { useAuth } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@/components/ui/button';
@@ -140,28 +140,20 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                 <p className="line-clamp-2 flex-1 text-sm text-muted-foreground">
                   {p.description || t('products.virtualDesc')}
                 </p>
-                <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
-                  <span className="inline-flex items-center gap-1">
-                    {soldOut && p.stock == null ? (
-                      <Timer className="h-3.5 w-3.5" />
-                    ) : (
-                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                {!soldOut && (isAuto || isSocks) && (
+                  <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
+                    {isAuto && (
+                      <span className="text-muted-foreground/80">
+                        {t('products.leftCount').replace('{n}', String(remaining))}
+                      </span>
                     )}
-                    {soldOut && p.stock == null
-                      ? t('products.soldOut')
-                      : `${t('products.sold')} ${p.sold}${p.stock != null ? ` / ${p.stock}` : ''}`}
-                  </span>
-                  {isAuto && !soldOut && (
-                    <span className="text-muted-foreground/80">
-                      {t('products.leftCount').replace('{n}', String(remaining))}
-                    </span>
-                  )}
-                  {isSocks && !soldOut && (
-                    <span className="text-muted-foreground/80">
-                      {t('products.duration')} {p.duration} {t('products.days')}
-                    </span>
-                  )}
-                </div>
+                    {isSocks && (
+                      <span className="text-muted-foreground/80">
+                        {t('products.duration')} {p.duration} {t('products.days')}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <Button
                   className="mt-5 w-full"
                   variant="default"
