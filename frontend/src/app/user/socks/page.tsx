@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Server, Plus, Trash2, Copy, Check } from 'lucide-react';
+import { Server, Plus, Trash2, Copy, Check, Pencil } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { copyToClipboard } from '@/lib/utils';
@@ -28,6 +28,14 @@ export default function SocksPage() {
   const [password, setPassword] = useState('');
   const [remark, setRemark] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  // 编辑状态（仅归属台账可编辑）
+  const [editTarget, setEditTarget] = useState<any | null>(null);
+  const [eHost, setEHost] = useState('');
+  const [ePort, setEPort] = useState('');
+  const [eUsername, setEUsername] = useState('');
+  const [ePassword, setEPassword] = useState('');
+  const [eRemark, setERemark] = useState('');
 
   const fetchProxies = () => {
     api.get('/socks/mine')
@@ -64,6 +72,38 @@ export default function SocksPage() {
     try {
       await api.delete(`/socks/${id}`);
       toast.success('已删除');
+      fetchProxies();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
+  // 打开编辑弹窗（预填当前值）
+  const startEdit = (p: any) => {
+    setEditTarget(p);
+    setEHost(p.host || '');
+    setEPort(String(p.port ?? ''));
+    setEUsername(p.username || '');
+    setEPassword(p.password || '');
+    setERemark(p.remark || '');
+  };
+
+  const saveEdit = async () => {
+    if (!editTarget) return;
+    if (!eHost.trim() || !ePort.trim()) {
+      toast.error('请填写地址与端口');
+      return;
+    }
+    try {
+      await api.put(`/socks/${editTarget.id}`, {
+        host: eHost.trim(),
+        port: Number(ePort),
+        username: eUsername.trim() || null,
+        password: ePassword || null,
+        remark: eRemark.trim() || null,
+      });
+      toast.success('已保存');
+      setEditTarget(null);
       fetchProxies();
     } catch (err: any) {
       toast.error(getErrorMessage(err));
@@ -136,6 +176,44 @@ export default function SocksPage() {
         </Dialog>
       </div>
 
+      {/* 编辑归属 SOCKS 台账 */}
+      <Dialog open={!!editTarget} onOpenChange={(o) => !o && setEditTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>修改 SOCKS 台账</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Host *</Label>
+                <Input value={eHost} onChange={(e) => setEHost(e.target.value)} placeholder="1.2.3.4" />
+              </div>
+              <div className="space-y-2">
+                <Label>Port *</Label>
+                <Input value={ePort} onChange={(e) => setEPort(e.target.value)} placeholder="1080" type="number" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>User</Label>
+                <Input value={eUsername} onChange={(e) => setEUsername(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Password</Label>
+                <Input value={ePassword} onChange={(e) => setEPassword(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>备注 / Remark</Label>
+              <Input value={eRemark} onChange={(e) => setERemark(e.target.value)} />
+            </div>
+            <Button className="w-full" variant="gradient" onClick={saveEdit}>
+              保存
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {proxies.length === 0 ? (
         <div className="py-20 text-center">
           <Server className="mx-auto h-16 w-16 text-muted-foreground/30" />
@@ -165,9 +243,14 @@ export default function SocksPage() {
                       {copied === String(p.id) ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     </Button>
                     {p.owned && (
-                      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => deleteProxy(p.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
+                      <>
+                        <Button size="sm" variant="outline" onClick={() => startEdit(p)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button size="sm" variant="ghost" className="text-destructive" onClick={() => deleteProxy(p.id)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
                     )}
                   </div>
                 </CardContent>
