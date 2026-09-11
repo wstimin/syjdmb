@@ -2,8 +2,10 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Param,
+  Body,
   Query,
   UseGuards,
   ParseIntPipe,
@@ -36,6 +38,19 @@ export class SocksPanelController {
   @ApiOperation({ summary: 'Import a purchased SOCKS node into the user SOCKS outbound pool' })
   async importOutbound(@Param('id', ParseIntPipe) id: number, @CurrentUser('id') userId: number) {
     return { success: true, data: await this.socksPanelService.importAsOutbound(id, userId) };
+  }
+
+  // 用户修改自己的 SOCKS 节点（备注 / 用户名 / 密码）
+  @Patch(':id')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update own SOCKS node (remark / credentials)' })
+  async updateUserNode(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser('id') userId: number,
+    @Body() body: { remark?: string; username?: string; password?: string },
+  ) {
+    return { success: true, data: await this.socksPanelService.userUpdateNode(id, userId, body) };
   }
 
   // ---- Admin ----

@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Package, Copy, ShoppingCart, ArrowRight, Cable, CalendarClock, RefreshCcw, PlugZap, Check } from 'lucide-react';
+import { Package, Copy, ShoppingCart, ArrowRight, Cable, CalendarClock, RefreshCcw, PlugZap, Check, Pencil } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { useI18n } from '@/lib/i18n';
 import { Card, CardContent } from '@/components/ui/card';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import RenewSocksDialog from '@/components/renew-socks-dialog';
+import EditSocksDialog from '@/components/edit-socks-dialog';
 
 type PurchasedProduct = {
   id: number;
@@ -73,6 +74,7 @@ export default function MyProductsPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [importingId, setImportingId] = useState<number | null>(null);
   const [renewTarget, setRenewTarget] = useState<SocksNodeItem | null>(null);
+  const [editTarget, setEditTarget] = useState<SocksNodeItem | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -180,6 +182,7 @@ export default function MyProductsPage() {
                   copied={copiedId === m.socks.id}
                   onCopy={() => copyText(m.socks.connectionUrl || '', m.socks.id)}
                   onRenew={() => setRenewTarget(m.socks)}
+                  onEdit={() => setEditTarget(m.socks)}
                   canRenew={m.socks.status === 'ACTIVE' || m.socks.status === 'EXPIRED'}
                   expiredNow={expiredNow(m.socks)}
                   importing={importingId === m.socks.id}
@@ -203,17 +206,28 @@ export default function MyProductsPage() {
           api.get('/socks-panel/mine').then((r) => setSocks(r.data.data || [])).catch(() => {});
         }}
       />
+
+      <EditSocksDialog
+        socks={editTarget}
+        open={!!editTarget}
+        onClose={() => setEditTarget(null)}
+        onDone={() => {
+          // 修改成功后刷新节点列表（备注/账号/连接串已更新）
+          api.get('/socks-panel/mine').then((r) => setSocks(r.data.data || [])).catch(() => {});
+        }}
+      />
     </div>
   );
 }
 
 // ---------- SOCKS 面板节点卡 ----------
-function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNow, importing, onImport, t }: {
+function SocksCard({ socks, locale, copied, onCopy, onRenew, onEdit, canRenew, expiredNow, importing, onImport, t }: {
   socks: SocksNodeItem;
   locale: string;
   copied: boolean;
   onCopy: () => void;
   onRenew: () => void;
+  onEdit: () => void;
   canRenew: boolean;
   expiredNow: boolean;
   importing: boolean;
@@ -243,6 +257,7 @@ function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNo
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span className="font-mono">{serverName} · :{socks.port}</span>
               <span>{socks.orderNo}</span>
+              {socks.remark && socks.remark !== socks.orderNo ? <span className="text-foreground/80">「{socks.remark}」</span> : null}
             </div>
 
             {/* 到期时间：过期高亮 + 宽限期提示（续费按钮旁） */}
@@ -297,6 +312,16 @@ function SocksCard({ socks, locale, copied, onCopy, onRenew, canRenew, expiredNo
 
           <div className="flex flex-col items-end gap-2">
             <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onEdit}
+                disabled={socks.status === 'SUSPENDED' || expiredNow}
+                title={socks.status === 'SUSPENDED' || expiredNow ? '该节点已暂停或已过期，如需修改请先续费' : '修改备注 / 账号密码'}
+              >
+                <Pencil className="mr-1 h-3 w-3" />
+                {t('myProducts.socksEdit')}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"

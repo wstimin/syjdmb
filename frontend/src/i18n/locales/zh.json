@@ -267,6 +267,7 @@
     "socksCopy": "复制连接串",
     "socksCopied": "已复制",
     "socksRenew": "续费",
+    "socksEdit": "修改",
     "socksGraceNote": "节点已到期，保留 1 天续费宽限期；超过未续费将被自动删除，只能重新购买",
     "socksRenewed": "续费成功，节点已恢复",
     "socksImportToOutbound": "导入到出站",

@@ -616,6 +616,92 @@ export class SocksPanelService {
     return nodes.map((n) => ({ ...n, importedToOutbound: outboundKeys.has(`${n.host}:${n.port}`) }));
   }
 
+  /**
+   * 用户修改自己的 SOCKS 节点：备注（remark）和/或认证信息（username/password）。
+   * - 仅改 remark → 直接更新 DB。
+   * - 改 username/password → 基于 panelSnapshot 全量替换面板入站 + 重启 Xray + 更新 DB。
+   *   面板更新失败则抛错、DB 不变（绝不出现面板和 DB 认知不一致）。
+   */
+  async userUpdateNode(
+    id: number,
+    userId: number,
+    dto: { remark?: string; username?: string; password?: string },
+  ) {
+    const node = await this.prisma.socksNode.findFirst({
+      where: { id, userId, status: { not: 'DELETED' } },
+    });
+    if (!node) throw new NotFoundException('SOCKS 节点不存在或已删除');
+
+    const newRemark = dto.remark?.trim() || null;
+    const newUsername = dto.username?.trim() || null;
+    const newPassword = dto.password?.trim() || null;
+    const credsChanged = newUsername !== null || newPassword !== null;
+
+    // —— 仅改备注：直接更新 DB ——
+    if (!credsChanged) {
+      return this.prisma.socksNode.update({
+        where: { id },
+        data: { remark: newRemark },
+      });
+    }
+
+    // —— 改认证信息：先更新面板入站，成功后再落库 ——
+    if (!node.serverId || !node.inboundId) {
+      throw new BadRequestException('该节点缺少服务器/面板入站信息，无法在线修改认证');
+    }
+
+    const finalUser = newUsername || node.username || '';
+    const finalPass = newPassword || node.password || '';
+    if (!finalUser || !finalPass) {
+      throw new BadRequestException('用户名和密码不能为空');
+    }
+
+    // 基于 panelSnapshot 重建完整 payload（全量替换，同 setSocksInboundEnabled 模式）
+    const snap =
+      node.panelSnapshot && typeof node.panelSnapshot === 'object' ? node.panelSnapshot : {};
+    const payload = {
+      ...(snap as any),
+      enable: true,
+      listen: '',
+      port: node.port,
+      protocol: (snap as any)?.protocol || 'mixed',
+    };
+    // 修改 settings.accounts[0] 的 user/pass
+    if (payload.settings && Array.isArray(payload.settings.accounts) && payload.settings.accounts.length > 0) {
+      payload.settings.accounts[0] = {
+        ...payload.settings.accounts[0],
+        user: finalUser,
+        pass: finalPass,
+      };
+    }
+
+    // 面板全量替换入站
+    const res = await this.serverService.updateInbound(node.serverId, node.inboundId, payload);
+    if (!res?.success) {
+      throw new BadRequestException(`面板入站更新失败：${res?.msg || 'unknown'}`);
+    }
+
+    // 重启 Xray 使新认证生效
+    const restart = await this.serverService.restartXrayService(node.serverId);
+    if (!restart?.success) {
+      this.logger.warn(
+        `SOCKS node #${id} credential update: Xray restart failed (${restart?.msg}), credentials saved to DB but panel may need manual restart`,
+      );
+    }
+
+    // 更新 DB
+    const connectionUrl = `socks5://${finalUser}:${finalPass}@${node.host}:${node.port}`;
+    return this.prisma.socksNode.update({
+      where: { id },
+      data: {
+        remark: newRemark, // 前端表单始终带当前备注；留空 = 清除备注
+        username: finalUser,
+        password: finalPass,
+        connectionUrl,
+      },
+    });
+  }
+
   // ==========================================
   // 一键导入到 SOCKS 出站池（薄桥，纯新增）
   // ==========================================

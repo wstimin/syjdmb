@@ -267,6 +267,7 @@
     "socksCopy": "Copy connection",
     "socksCopied": "Copied",
     "socksRenew": "Renew",
+    "socksEdit": "Edit",
     "socksGraceNote": "This node has expired — you can still renew within a 1-day grace period. After that it will be deleted automatically and can only be repurchased.",
     "socksRenewed": "Renewal applied — node is back online.",
     "socksImportToOutbound": "Import to outbound",
