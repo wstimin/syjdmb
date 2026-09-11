@@ -97,6 +97,40 @@ export class InboundController {
     return { success: true, data: result };
   }
 
+  // 【手动建节点】管理员直接为用户创建节点（试用/赠送，无订单不占库存；remark=null）
+  @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Create a node and assign to a user（手动赠送，无订单、不占库存）' })
+  async adminCreate(
+    @Body()
+    body: {
+      userId: number;
+      serverId: number;
+      protocol?: string;
+      durationDays: number;
+      trafficGb?: number; // 前端传 GB，后端转 bytes（0/缺省 = 不限）
+      speedLimit?: number; // Mbps；缺省 = 不限
+      deviceLimit?: number; // 0/缺省 = 不限设备数
+    },
+  ) {
+    const trafficBytes =
+      body.trafficGb != null && Number(body.trafficGb) > 0
+        ? BigInt(Math.round(Number(body.trafficGb) * 1024 * 1024 * 1024))
+        : undefined;
+    const result = await this.inboundService.adminCreate({
+      userId: body.userId,
+      serverId: body.serverId,
+      protocol: body.protocol,
+      durationDays: body.durationDays,
+      trafficBytes,
+      speedLimit: body.speedLimit,
+      deviceLimit: body.deviceLimit,
+    });
+    return { success: true, data: result };
+  }
+
   @Post(':id/suspend')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')

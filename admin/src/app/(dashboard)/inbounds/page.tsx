@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Search, Play, Pause, Trash2, Download, Link2 } from 'lucide-react';
+import { Search, Play, Pause, Trash2, Download, Link2, Plus } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { PageHeader, DataTable, StatusBadge } from '@/components/shared/data-table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import Pagination from '@/components/shared/pagination';
 import { StatCard } from '@/components/shared/stat-card';
@@ -27,6 +28,24 @@ export default function InboundsPage() {
   const [relayTarget, setRelayTarget] = useState<any | null>(null);
   const [socksList, setSocksList] = useState<any[]>([]);
   const [relayBusy, setRelayBusy] = useState(false);
+
+  // ---- 新建节点状态 ----
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [servers, setServers] = useState<any[]>([]);
+  const [createForm, setCreateForm] = useState({
+    userId: null as number | null,
+    selectedLabel: '',
+    serverId: '',
+    protocol: 'vless',
+    durationDays: 30,
+    trafficGb: 0,
+    speedLimit: '',
+    deviceLimit: 0,
+  });
+  const [userQuery, setUserQuery] = useState('');
+  const [userResults, setUserResults] = useState<any[]>([]);
+  const [userSearching, setUserSearching] = useState(false);
 
   const fetchData = (q = search, p = page, l = limit) => {
     setLoading(true);
@@ -126,6 +145,55 @@ export default function InboundsPage() {
     );
   };
 
+  // ---- 新建节点逻辑 ----
+
+  const openCreate = () => {
+    setCreateForm({
+      userId: null, selectedLabel: '', serverId: '', protocol: 'vless',
+      durationDays: 30, trafficGb: 0, speedLimit: '', deviceLimit: 0,
+    });
+    setUserQuery('');
+    setUserResults([]);
+    setCreateOpen(true);
+    api.get('/servers')
+      .then((res) => setServers(res.data.data || []))
+      .catch(() => setServers([]));
+  };
+
+  const searchUser = () => {
+    if (!userQuery.trim()) { setUserResults([]); return; }
+    setUserSearching(true);
+    api.get('/users', { params: { search: userQuery.trim(), limit: 8 } })
+      .then((res) => setUserResults(res.data.data.users || []))
+      .catch(() => setUserResults([]))
+      .finally(() => setUserSearching(false));
+  };
+
+  const submitCreate = async () => {
+    if (!createForm.userId) { toast.error('请先选择用户'); return; }
+    if (!createForm.serverId) { toast.error('请选择服务器'); return; }
+    if (!createForm.durationDays || createForm.durationDays <= 0) { toast.error('时长必须大于 0'); return; }
+    setCreateBusy(true);
+    try {
+      await api.post('/inbounds', {
+        userId: createForm.userId,
+        serverId: Number(createForm.serverId),
+        protocol: createForm.protocol,
+        durationDays: createForm.durationDays,
+        trafficGb: Number(createForm.trafficGb) || 0,
+        speedLimit: createForm.speedLimit !== '' ? Number(createForm.speedLimit) : undefined,
+        deviceLimit: Number(createForm.deviceLimit) || 0,
+      });
+      toast.success('节点创建成功，已绑定给用户');
+      setCreateOpen(false);
+      fetchData();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setCreateBusy(false);
+    }
+  };
+
   if (loading) return <div className="space-y-4"><Skeleton className="h-64 w-full" /></div>;
 
   const columns = [
@@ -181,6 +249,7 @@ export default function InboundsPage() {
             <option value="SUSPENDED">已暂停</option>
           </select>
           <Button variant="outline" onClick={exportCsv}><Download className="mr-1 h-4 w-4" />导出</Button>
+          <Button onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建节点</Button>
         </div>
         <div className="flex items-center gap-2">
           <div className="relative">
@@ -259,6 +328,112 @@ export default function InboundsPage() {
                 ))}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ---- 新建节点 Dialog ---- */}
+      <Dialog open={createOpen} onOpenChange={(o) => { if (!o) setCreateOpen(false); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>新建节点</DialogTitle>
+            <DialogDescription>直接为用户创建节点（试用/赠送），不产生订单、不占商品库存。remark 为 null，节点自然过期/可删。</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {/* 用户选择 */}
+            <div className="space-y-2">
+              <Label>目标用户</Label>
+              {createForm.userId ? (
+                <div className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                  <span className="truncate">{createForm.selectedLabel}</span>
+                  <button type="button" className="text-xs text-muted-foreground underline"
+                    onClick={() => setCreateForm((f) => ({ ...f, userId: null, selectedLabel: '' }))}>
+                    更换
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex gap-2">
+                    <Input value={userQuery} onChange={(e) => setUserQuery(e.target.value)}
+                      placeholder="输入邮箱搜索用户"
+                      onKeyDown={(e) => e.key === 'Enter' && searchUser()} />
+                    <Button type="button" size="sm" variant="outline" onClick={searchUser} disabled={userSearching}>
+                      {userSearching ? '搜索中…' : '搜索'}
+                    </Button>
+                  </div>
+                  {userResults.length > 0 && (
+                    <div className="max-h-44 overflow-auto rounded-md border">
+                      {userResults.map((u) => (
+                        <button key={u.id} type="button"
+                          className="flex w-full items-center justify-between px-3 py-2 text-sm hover:bg-muted"
+                          onClick={() => setCreateForm((f) => ({
+                            ...f, userId: u.id, selectedLabel: `${u.email}${u.username ? ` (${u.username})` : ''}`,
+                          }))}>
+                          <span>{u.email}</span>
+                          <span className="text-xs text-muted-foreground">#{u.id}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* 服务器 */}
+            <div className="space-y-2">
+              <Label>服务器</Label>
+              <select value={createForm.serverId}
+                onChange={(e) => setCreateForm((f) => ({ ...f, serverId: e.target.value }))}
+                className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                <option value="">请选择服务器</option>
+                {servers.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}（{s.host}）</option>
+                ))}
+              </select>
+            </div>
+
+            {/* 协议 + 时长（同一行） */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>协议</Label>
+                <select value={createForm.protocol}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, protocol: e.target.value }))}
+                  className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                  <option value="vless">vless（推荐，Reality 加密）</option>
+                  <option value="vmess">vmess（WS）</option>
+                  <option value="trojan">trojan</option>
+                  <option value="shadowsocks">shadowsocks</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <Label>时长（天）</Label>
+                <Input type="number" min={1} value={createForm.durationDays}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, durationDays: Number(e.target.value) || 0 }))} />
+              </div>
+            </div>
+
+            {/* 流量 / 限速 / 设备数（三列） */}
+            <div className="grid grid-cols-3 gap-4">
+              <div className="space-y-2">
+                <Label>流量（GB）</Label>
+                <Input type="number" min={0} placeholder="0 = 不限" value={createForm.trafficGb || ''}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, trafficGb: Number(e.target.value) || 0 }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>限速（Mbps）</Label>
+                <Input type="number" min={0} placeholder="空 = 不限" value={createForm.speedLimit}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, speedLimit: e.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>设备数上限</Label>
+                <Input type="number" min={0} placeholder="0 = 不限" value={createForm.deviceLimit || ''}
+                  onChange={(e) => setCreateForm((f) => ({ ...f, deviceLimit: Number(e.target.value) || 0 }))} />
+              </div>
+            </div>
+
+            <Button className="w-full" onClick={submitCreate} disabled={createBusy}>
+              {createBusy ? '创建中…（正在建立节点 + 客户端绑定）' : '确认创建并绑定'}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -797,6 +797,149 @@ export class SocksPanelService implements OnModuleInit {
   // 后台管理（与 Inbound admin 同语义：停用=SUSPENDED / 恢复=ACTIVE / 删除=彻底删）
   // ==========================================
 
+  // ==========================================
+  // 管理端
+  // ==========================================
+
+  // 【手动建节点】管理员直接给指定用户建 SOCKS 节点（试用/赠送）。
+  // 与 deliverSocksNode 共享面板建站管线（addInbound → 重启 → 运行态断言 → 台账），
+  // 但跳过订单/商品/库存全部环节：virtualProductId/orderId/orderNo 恒 null
+  // → 不影响商品 sold，releaseNodeQuota 对 null 商品 no-op，quota 安全。
+  // remark 记 'Admin' 便于后台识别来源（非 'Order xxx'，绝不进 reconcilePlanQuota 统计）。
+  async adminCreate(userId: number, durationDays: number, serverId?: number) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('用户不存在');
+    if (!durationDays || Number(durationDays) <= 0) {
+      throw new BadRequestException('时长必须大于 0 天');
+    }
+
+    // 指定服务器走 pickServer([serverId])（成功则必须命中；不存在/停用会抛「暂无可用服务器」）
+    const server = await this.pickServer(serverId ? [serverId] : []);
+    const remark = await this.computeRemark(server);
+    const username = this.randomLowerAndNum(16);
+    const password = this.randomLowerAndNum(24);
+    let port = await this.getAvailablePort(server.id);
+    const expiryTime = Date.now() + Number(durationDays) * 24 * 3600 * 1000;
+
+    const settings = {
+      auth: 'password',
+      accounts: [{ user: username, pass: password }],
+      udp: true,
+    };
+    const streamSettings = {
+      network: 'tcp',
+      security: 'none',
+      tcpSettings: { header: { type: 'none' } },
+    };
+    const inboundData = {
+      enable: true,
+      remark,
+      listen: '',
+      port,
+      protocol: 'mixed',
+      expiryTime: 0,
+      total: 0,
+      settings,
+      streamSettings,
+      sniffing: { enabled: true, destOverride: ['http', 'tls'] },
+    };
+
+    // 1) 建入站（端口占用重试同 deliverSocksNode）
+    let xuiInboundId = 0;
+    let response: any = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      inboundData.port = port;
+      response = await this.serverService.addInbound(server.id, inboundData);
+      const id = this.extractInboundId(response);
+      if (response?.success) {
+        xuiInboundId = id;
+        if (!xuiInboundId) {
+          const located = await this.findCreatedInboundId(server.id, inboundData);
+          xuiInboundId = located.id;
+        }
+        if (xuiInboundId) break;
+        break;
+      }
+      if (!/already in use|in use/i.test(response?.msg || '')) break;
+      this.logger.warn(
+        `Port ${port} in use on server ${server.id}, retry within default high ports`,
+      );
+      port = await this.getAvailablePort(server.id);
+    }
+    if (!xuiInboundId) {
+      await this.cleanupOrphanInbound(server.id, inboundData);
+      throw new BadRequestException(
+        response?.msg || '未能获取 XUI 入站 ID，SOCKS 节点未创建',
+      );
+    }
+
+    // 2) 重载 Xray，失败回滚
+    try {
+      const restartRes = await this.serverService.restartXrayService(server.id);
+      if (!restartRes?.success) {
+        throw new Error(`Xray reload failed: ${restartRes?.msg || 'unknown'}`);
+      }
+    } catch (e) {
+      try {
+        await this.serverService.deleteInbound(server.id, xuiInboundId);
+      } catch {}
+      throw new BadRequestException(
+        `Xray 重新加载失败（SOCKS 节点未真正启用，已回滚）：${(e as Error).message}`,
+      );
+    }
+
+    // 3) 运行态最终断言，失败回滚
+    try {
+      await this.assertSocksLiveInRunningConfig(server.id, xuiInboundId, port, username);
+    } catch (e) {
+      try {
+        await this.serverService.deleteInbound(server.id, xuiInboundId);
+      } catch {}
+      try {
+        await this.serverService.restartXrayService(server.id);
+      } catch {}
+      throw new BadRequestException(
+        `SOCKS 节点未进入 Xray 运行配置（已回滚）：${(e as Error).message}`,
+      );
+    }
+
+    // 4) 本地台账落库（失败回滚面板入站）
+    const connectionUrl = `socks5://${encodeURIComponent(username)}:${encodeURIComponent(
+      password,
+    )}@${server.host}:${port}`;
+    try {
+      const node = await this.prisma.socksNode.create({
+        data: {
+          uuid: uuidv4(),
+          userId,
+          serverId: server.id,
+          inboundId: xuiInboundId,
+          host: server.host,
+          port,
+          username,
+          password,
+          connectionUrl,
+          expiryTime: new Date(expiryTime),
+          status: 'ACTIVE',
+          panelSnapshot: inboundData as any,
+          remark: 'Admin',
+        },
+      });
+      this.logger.log(
+        `[admin] SOCKS node created: uid ${userId} socks5://${server.host}:${port} on ${server.name}, expires ${new Date(expiryTime).toISOString()}`,
+      );
+      return node;
+    } catch (e) {
+      try {
+        await this.serverService.deleteInbound(server.id, xuiInboundId);
+      } catch {}
+      try {
+        await this.serverService.restartXrayService(server.id);
+      } catch {}
+      throw e;
+    }
+  }
+
   async adminList(page = 1, limit = 20, search?: string) {
     const where: any = { status: { not: 'DELETED' } };
     if (search) {

@@ -529,6 +529,53 @@ export class InboundService {
     }
   }
 
+  // ==========================================
+  // 管理端手动建节点（试用/赠送，无订单）
+  // ==========================================
+
+  /**
+   * 管理员直接给指定用户建节点（试用/赠送）：复用 createInbound 全管线
+   * （XUI 入站 → 客户端 → reality → 验证 → DB 插入），但传一个伪 plan 参数、
+   * 不传 orderNo → 节点 remark=null，绝不进 reconcilePlanQuota / sold 统计，配额安全。
+   */
+  async adminCreate(params: {
+    userId: number;
+    serverId: number;
+    protocol?: string;   // 默认 vless（唯一走完整 reality+flow 路径的协议）
+    durationDays: number;
+    trafficBytes?: bigint; // 0/缺省 = 不限流量
+    speedLimit?: number;   // Mbps；缺省 = 不限制
+    deviceLimit?: number;  // 0/缺省 = 不限设备数
+  }) {
+    const { userId, serverId, protocol, durationDays, trafficBytes, speedLimit, deviceLimit } =
+      params;
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('用户不存在');
+    if (!durationDays || Number(durationDays) <= 0) {
+      throw new BadRequestException('时长必须大于 0 天');
+    }
+    const protocolName = (protocol || 'vless').toLowerCase();
+    if (!['vless', 'vmess', 'trojan', 'shadowsocks'].includes(protocolName)) {
+      throw new BadRequestException('不支持的协议');
+    }
+
+    const pseudoPlan = {
+      duration: Number(durationDays),
+      traffic: trafficBytes ?? BigInt(0),
+      speedLimit: speedLimit ?? null,
+      deviceLimit: deviceLimit ?? 0,
+    };
+
+    // 复用完整创建管线；orderNo 不传 → remark: null（quota 安全，见方法注释）
+    return this.createInbound({
+      userId,
+      plan: pseudoPlan,
+      serverId,
+      protocol: protocolName,
+    });
+  }
+
   /**
    * 面板备注 = 服务器设置的名字 + 1-100 顺序号（如 香港1 / HK3），与手动创建一致。
    * 遍历该服务器面板上所有入站，按 remark 前缀匹配服务器名，取 1..100 中第一个空位：

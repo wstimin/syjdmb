@@ -72,6 +72,23 @@ export class SocksPanelController {
     return { success: true, data: result };
   }
 
+  // 【手动建节点】管理员直接为用户建 SOCKS 节点（试用/赠送，无订单无商品，不占库存）
+  @Post('admin')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Admin create a SOCKS node and assign to a user（手动赠送，无订单、不占库存）' })
+  async adminCreate(
+    @Body() body: { userId: number; durationDays: number; serverId?: number },
+  ) {
+    const result = await this.socksPanelService.adminCreate(
+      body.userId,
+      body.durationDays,
+      body.serverId,
+    );
+    return { success: true, data: result };
+  }
+
   @Post('admin/:id/disable')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN', 'SUPER_ADMIN')
