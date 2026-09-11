@@ -24,6 +24,7 @@ export interface VirtualProduct {
   sold: number;
   stock?: number | null; // 可售总数（null=不限量；达到 sold=stock 自动售罄）
   _count?: { keys?: number }; // 剩余未售交付码数（AUTO 商品）
+  category?: { id: number; name: string; nameEn?: string | null }; // 商城分类（null=未分类）
 }
 
 /**
@@ -113,6 +114,13 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                 <div className="flex items-start justify-between gap-2">
                   <CardTitle className="text-xl">
                     {locale === 'en' && p.nameEn ? p.nameEn : p.name}
+                    {p.category && (
+                      <span className="ml-2 align-middle text-sm font-normal">
+                        <Badge variant="outline" className="border-primary/40 bg-primary/5 px-2 py-0.5 text-xs font-medium text-primary">
+                          {locale === 'en' && p.category.nameEn ? p.category.nameEn : p.category.name}
+                        </Badge>
+                      </span>
+                    )}
                   </CardTitle>
                   <Badge variant={isSocks ? 'default' : isAuto ? 'success' : 'outline'} className="shrink-0">
                     {isSocks ? (

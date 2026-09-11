@@ -26,6 +26,7 @@ export interface Plan {
   stock?: number | null; // null / 缺省 = 不限量
   sold?: number;
   isFeatured?: boolean;
+  category?: { id: number; name: string; nameEn?: string | null }; // 商城分类（null=未分类）
 }
 
 function formatTraffic(traffic: any, unlimitedLabel: string) {
@@ -85,7 +86,16 @@ export function PlanCards({ plans }: { plans: Plan[] }) {
               </div>
             )}
             <CardHeader>
-              <CardTitle className="text-xl">{locale === 'en' && plan.nameEn ? plan.nameEn : plan.name}</CardTitle>
+              <CardTitle className="text-xl">
+                {locale === 'en' && plan.nameEn ? plan.nameEn : plan.name}
+                {plan.category && (
+                  <span className="ml-2 align-middle text-sm font-normal">
+                    <Badge variant="outline" className="border-primary/40 bg-primary/5 px-2 py-0.5 text-xs font-medium text-primary">
+                      {locale === 'en' && plan.category.nameEn ? plan.category.nameEn : plan.category.name}
+                    </Badge>
+                  </span>
+                )}
+              </CardTitle>
               <div className="flex items-baseline gap-1">
                 <span className="text-3xl font-bold">¥{Number(plan.price)}</span>
                 {plan.originalPrice && (
