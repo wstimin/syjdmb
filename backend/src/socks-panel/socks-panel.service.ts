@@ -589,6 +589,8 @@ export class SocksPanelService {
     this.logger.log(
       `SOCKS node #${node.id} auto-deleted (expired > 1 day without renewal, repurchase required)`,
     );
+    // 名额释放：到期删除 = 释放一个可售名额（与 adminDelete 同语义）
+    await this.releaseNodeQuota(node.virtualProductId);
   }
 
   // ==========================================
@@ -866,10 +868,13 @@ export class SocksPanelService {
         );
       }
     }
-    return this.prisma.socksNode.update({
+    const updated = await this.prisma.socksNode.update({
       where: { id },
       data: { status: 'DELETED' },
     });
+    // 名额释放：管理员删除节点 = 释放一个可售名额（与到期自动删除同语义）
+    await this.releaseNodeQuota(updated.virtualProductId);
+    return updated;
   }
 
   // ==========================================
@@ -972,6 +977,36 @@ export class SocksPanelService {
     }
     // 未配置范围（或面板 GET 失败）→ 保持旧行为：均匀随机返回，占用冲突由「占用重试」兜底
     return low + Math.floor(Math.random() * span);
+  }
+
+  /**
+   * 释放 SOCKS 商品的一个可售名额（sold -1）。
+   * - 与 deliverSocksNode 的 sold+1 对称补充：节点被删除（管理员删除 / 到期自动清理）后名额回归，
+   *   否则 sold 只增不减会让「已售 n/stock」虚高，且多名额商品删一单后 createOrder 的 sold>=stock
+   *   仍会拦掉后来的买家。
+   * - 幂等/并发安全：where sold > 0 保证下限不为负；同一商品多个节点并发删除各减各自份额。
+   * - sold 减到位后若商品此前因满额被自动置为 SOLD_OUT 且现在有空位 → 恢复 ACTIVE（对称于交付满额置
+   *   SOLD_OUT 的自动逻辑)；仅限 SOLD_OUT，绝不覆盖管理员的显式 HIDDEN/ARCHIVED。
+   */
+  private async releaseNodeQuota(virtualProductId: number | null) {
+    if (!virtualProductId) return;
+    await this.prisma.virtualProduct.updateMany({
+      where: { id: virtualProductId, sold: { gt: 0 } },
+      data: { sold: { decrement: 1 } },
+    });
+    const latest = await this.prisma.virtualProduct.findUnique({
+      where: { id: virtualProductId },
+      select: { sold: true, stock: true, status: true },
+    });
+    if (latest && latest.stock != null && latest.sold < latest.stock && latest.status === 'SOLD_OUT') {
+      await this.prisma.virtualProduct.updateMany({
+        where: { id: virtualProductId, status: 'SOLD_OUT' },
+        data: { status: 'ACTIVE' },
+      });
+      this.logger.log(
+        `SOCKS quota released for product #${virtualProductId}: sold ${latest.sold}/${latest.stock} — product back to ACTIVE`,
+      );
+    }
   }
 
   private extractInboundId(response: any): number {
