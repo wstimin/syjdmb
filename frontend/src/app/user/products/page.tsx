@@ -56,6 +56,7 @@ type MergedItem = { kind: 'order'; order: PurchasedProduct } | { kind: 'socks'; 
 
 // ---------- 通用小函数 ----------
 const socksStatus = (n: SocksNodeItem) => {
+  if (n.status === 'DELETED') return <Badge variant="danger">已删除</Badge>;
   if (n.status === 'SUSPENDED') return <Badge variant="warning">已暂停</Badge>;
   if (n.status === 'EXPIRED') return <Badge variant="danger">已过期</Badge>;
   return <Badge variant="success">使用中</Badge>;
