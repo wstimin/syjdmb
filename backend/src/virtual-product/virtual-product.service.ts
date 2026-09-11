@@ -27,6 +27,7 @@ export class VirtualProductService {
     status: true,
     sold: true,
     stock: true, // 可售总数（null=不限量；商城售罄判定用）
+    category: { select: { id: true, name: true, nameEn: true } }, // 商城分类（null=未分类）
     _count: { select: { keys: { where: { status: 'UNUSED' } } } },
   } as const;
 
@@ -55,6 +56,7 @@ export class VirtualProductService {
     return this.prisma.virtualProduct.findMany({
       orderBy: [{ sort: 'asc' }, { id: 'desc' }],
       include: {
+        category: { select: { id: true, name: true, nameEn: true } },
         _count: {
           select: {
             keys: { where: { status: 'UNUSED' } },

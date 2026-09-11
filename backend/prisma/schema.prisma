@@ -93,8 +93,30 @@ enum ServerStatus {
 }
 
 // ==========================================
-// Plans & Products
+// Categories & Products
 // ==========================================
+// 分类体系（商城筛选用）：PLAN=网络产品分类（香港/美国…）；VIRTUAL=NP店铺分类（账号/教程/AI工具…）。
+// 商品/方案单选绑定一个分类（categoryId 可空 = 未分类）；删除分类走 FK SetNull，已绑定商品自动回到未分类。
+
+model Category {
+  id            Int             @id @default(autoincrement())
+  name          String
+  nameEn        String? // 英文名（商城英文环境展示）
+  scope         CategoryScope   @default(VIRTUAL) // PLAN=网络产品；VIRTUAL=NP店铺
+  sort          Int             @default(0) // 排序权重（越小越靠前）
+  plans         Plan[]
+  virtualProducts VirtualProduct[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([scope, name])
+  @@index([scope, sort])
+}
+
+enum CategoryScope {
+  PLAN
+  VIRTUAL
+}
 
 model Plan {
   id            Int        @id @default(autoincrement())
@@ -111,6 +133,9 @@ model Plan {
   deviceLimit   Int        @default(1)
   protocols     String[] // ["vmess", "vless", "trojan", "ss"]
   serverIds     Int[] // which servers this plan is available on
+  // 商城分类（可空 = 未分类）：删除分类自动回未分类（onDelete SetNull）
+  categoryId    Int?
+  category      Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   sort          Int        @default(0)
   status        PlanStatus @default(ACTIVE)
   stock         Int?       // total sellable quantity, null = unlimited
@@ -123,6 +148,7 @@ model Plan {
   updatedAt     DateTime   @updatedAt
 
   @@index([status, sort])
+  @@index([categoryId])
 }
 
 enum PlanType {
@@ -171,6 +197,9 @@ model VirtualProduct {
   // 仅建节点时分配端口用，属于后台配置，不对外展示。
   portStart     Int?
   portEnd       Int?
+  // 商城分类（可空 = 未分类）：删除分类自动回未分类（onDelete SetNull）
+  categoryId    Int?
+  category      Category?            @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   keys          ProductKey[]
   orders        Order[]
   socksNodes    SocksNode[]
@@ -178,6 +207,7 @@ model VirtualProduct {
   updatedAt     DateTime             @updatedAt
 
   @@index([status, sort])
+  @@index([categoryId])
 }
 
 enum DeliveryType {

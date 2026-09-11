@@ -39,6 +39,9 @@ export class PlanService implements OnModuleInit {
     return this.prisma.plan.findMany({
       where,
       orderBy: [{ sort: 'asc' }, { createdAt: 'desc' }],
+      include: {
+        category: { select: { id: true, name: true, nameEn: true } },
+      },
     });
   }
 
@@ -47,6 +50,9 @@ export class PlanService implements OnModuleInit {
     return this.prisma.plan.findMany({
       where: { status: { in: ['ACTIVE', 'SOLD_OUT'] } },
       orderBy: [{ sort: 'asc' }, { price: 'asc' }],
+      include: {
+        category: { select: { id: true, name: true, nameEn: true } },
+      },
     });
   }
 
