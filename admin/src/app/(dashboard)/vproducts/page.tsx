@@ -43,10 +43,13 @@ export default function VirtualProductsPage() {
     duration: '', serverIds: [] as number[], // SOCKS_PANEL 交付字段
     stock: '', // SOCKS_PANEL 可售总数（可选，空=不限量）
     portStart: '', portEnd: '', // SOCKS_PANEL 端口范围（可选，都填才生效；仅后台配置不对外展示）
+    categoryId: '', // 商城分类（NP店铺，可选；空=未分类）
   });
 
   // SOCKS_PANEL 绑定服务器候选（多选）
   const [servers, setServers] = useState<any[]>([]);
+  // NP店铺分类（scope=VIRTUAL）
+  const [categories, setCategories] = useState<any[]>([]);
 
   // ---- 交付码库弹窗 ----
   const [keysTarget, setKeysTarget] = useState<any | null>(null); // 商品对象
@@ -69,6 +72,12 @@ export default function VirtualProductsPage() {
       .then((res) => setServers(Array.isArray(res.data.data) ? res.data.data : []))
       .catch(() => {});
   }, []);
+  // NP店铺分类（筛选下拉）
+  useEffect(() => {
+    api.get('/categories?scope=VIRTUAL')
+      .then((res) => setCategories(Array.isArray(res.data.data) ? res.data.data : []))
+      .catch(() => {});
+  }, []);
 
   const openCreate = () => {
     setEditing(null);
@@ -79,6 +88,7 @@ export default function VirtualProductsPage() {
       duration: '', serverIds: [] as number[],
       stock: '',
       portStart: '', portEnd: '',
+      categoryId: '',
     });
     setDialogOpen(true);
   };
@@ -96,6 +106,7 @@ export default function VirtualProductsPage() {
       stock: p.deliveryType === 'SOCKS_PANEL' ? String(p.stock ?? '') : '',
       portStart: p.deliveryType === 'SOCKS_PANEL' ? String(p.portStart ?? '') : '',
       portEnd: p.deliveryType === 'SOCKS_PANEL' ? String(p.portEnd ?? '') : '',
+      categoryId: p.categoryId ? String(p.categoryId) : '',
     });
     setDialogOpen(true);
   };
@@ -157,6 +168,8 @@ export default function VirtualProductsPage() {
       // 端口范围：仅 SOCKS_PANEL 且上下限都填写时生效（校验已在保存前完成），空=默认高位端口
       portStart: form.deliveryType === 'SOCKS_PANEL' && form.portStart.trim() && form.portEnd.trim() ? Number(form.portStart) : null,
       portEnd: form.deliveryType === 'SOCKS_PANEL' && form.portStart.trim() && form.portEnd.trim() ? Number(form.portEnd) : null,
+      // 商城分类（可选，空=未分类，保存后前台商城按此筛选）
+      categoryId: form.categoryId ? Number(form.categoryId) : null,
     };
     try {
       if (editing) {
@@ -279,6 +292,12 @@ export default function VirtualProductsPage() {
   const columns = [
     { key: 'id', header: 'ID' },
     { key: 'name', header: '商品名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
+    {
+      key: 'categoryId', header: '分类',
+      render: (p: any) => p.category
+        ? <span className="rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-600">{p.category.name}</span>
+        : <span className="text-xs text-muted-foreground">—</span>,
+    },
     { key: 'price', header: '价格', render: (p: any) => <span className="text-primary font-medium">¥{Number(p.price)}</span> },
     {
       key: 'deliveryType', header: '交付方式',
@@ -501,6 +520,22 @@ export default function VirtualProductsPage() {
                   )}
                 </div>
               </>
+            )}
+            {categories.length > 0 && (
+              <div className="space-y-2">
+                <Label>商城分类（可选）</Label>
+                <select
+                  value={form.categoryId}
+                  onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">未分类</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}{c.nameEn ? `（${c.nameEn}）` : ''}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">在商城显示为分类标签；未分类商品在「全部」里直接展示。</p>
+              </div>
             )}
             <div className="space-y-2">
               <Label>状态</Label>

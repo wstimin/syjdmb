@@ -38,7 +38,11 @@ export default function PlansPage() {
     name: '', nameEn: '', price: '', originalPrice: '', duration: '30',
     traffic: '0', deviceLimit: '1', description: '', protocols: 'vless',
     sort: '0', stock: '', serverIds: [] as number[],
+    categoryId: '', // 商城分类（网络产品，可选；空=未分类）
   });
+
+  // 网络产品分类（scope=PLAN）
+  const [categories, setCategories] = useState<any[]>([]);
 
   const fetchPlans = () => {
     api.get('/plans/admin/all')
@@ -61,10 +65,16 @@ export default function PlansPage() {
   };
 
   useEffect(() => { fetchPlans(); fetchStats(); fetchServers(); }, []);
+  // 网络产品分类（筛选下拉）
+  useEffect(() => {
+    api.get('/categories?scope=PLAN')
+      .then((res) => setCategories(Array.isArray(res.data.data) ? res.data.data : []))
+      .catch(() => {});
+  }, []);
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', sort: '0', stock: '', serverIds: [] });
+    setForm({ name: '', nameEn: '', price: '', originalPrice: '', duration: '30', traffic: '0', deviceLimit: '1', description: '', protocols: 'vless', sort: '0', stock: '', serverIds: [], categoryId: '' });
     setDialogOpen(true);
   };
 
@@ -82,6 +92,7 @@ export default function PlansPage() {
       sort: String(plan.sort ?? 0),
       stock: plan.stock != null ? String(plan.stock) : '',
       serverIds: plan.serverIds || [],
+      categoryId: plan.categoryId ? String(plan.categoryId) : '',
     });
     setDialogOpen(true);
   };
@@ -120,6 +131,8 @@ export default function PlansPage() {
       type: 'TIME_BASED',
       // 库存：留空 = 不限量（null）；售完自动变已售罄
       stock: form.stock.trim() === '' ? null : Number(form.stock),
+      // 商城分类（可选，空=未分类，保存后前台商城按此筛选）
+      categoryId: form.categoryId ? Number(form.categoryId) : null,
       // 新建时默认在售；编辑时不再携带 status —— 否则会把自动售罄/手动隐藏重置为在售
       ...(editing ? {} : { status: 'ACTIVE' }),
     };
@@ -190,6 +203,12 @@ export default function PlansPage() {
   const columns = [
     { key: 'id', header: 'ID' },
     { key: 'name', header: '产品名称', render: (p: any) => <span className="font-medium">{p.name}</span> },
+    {
+      key: 'categoryId', header: '分类',
+      render: (p: any) => p.category
+        ? <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-600">{p.category.name}</span>
+        : <span className="text-xs text-muted-foreground">—</span>,
+    },
     { key: 'price', header: '价格', render: (p: any) => <span className="text-primary font-medium">¥{Number(p.price)}</span> },
     {
       key: 'duration', header: '时长',
@@ -330,6 +349,22 @@ export default function PlansPage() {
               <Label>排序权重（越小越靠前）</Label>
               <Input type="number" value={form.sort} onChange={(e) => setForm({ ...form, sort: e.target.value })} />
             </div>
+            {categories.length > 0 && (
+              <div className="space-y-2">
+                <Label>商城分类（可选）</Label>
+                <select
+                  value={form.categoryId}
+                  onChange={(e) => setForm({ ...form, categoryId: e.target.value })}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">未分类</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>{c.name}{c.nameEn ? `（${c.nameEn}）` : ''}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">在商城显示为分类标签（如「香港」「美国」）；未分类方案在「全部」里直接展示。</p>
+              </div>
+            )}
             <div className="space-y-2">
               <Label>库存（可选）</Label>
               <Input

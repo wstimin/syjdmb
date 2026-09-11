@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation';
 import { Toaster } from 'react-hot-toast';
 import {
   LayoutDashboard, Users, Package, ShoppingCart, Server, Wifi,
-  Network, Cable, Ticket as TicketIcon, Megaphone, Settings, LogOut, CreditCard, DollarSign, Tag, Undo2, Globe,
+  Network, Cable, Ticket as TicketIcon, Megaphone, Settings, LogOut, CreditCard, DollarSign, Tag, Tags, Undo2, Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/api';
@@ -18,6 +18,7 @@ const navItems = [
   { href: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
   { href: '/users', label: '用户管理', icon: Users },
   { href: '/plans', label: '网络产品', icon: Globe },
+  { href: '/categories', label: '分类管理', icon: Tags },
   { href: '/vproducts', label: 'NP店铺', icon: Package },
   { href: '/orders', label: '订单管理', icon: ShoppingCart },
   { href: '/cards', label: '卡密管理', icon: CreditCard },
