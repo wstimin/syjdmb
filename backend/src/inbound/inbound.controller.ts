@@ -146,7 +146,8 @@ export class InboundController {
   @ApiBearerAuth()
   @ApiOperation({ summary: '[Admin] Delete inbound (彻底删除)' })
   async delete(@Param('id', ParseIntPipe) id: number) {
-    const result = await this.inboundService.delete(id);
+    // releasePlanQuota=true：管理员删除节点后释放该节点占用方案的可售名额（sold-1 + 售罄恢复）
+    const result = await this.inboundService.delete(id, { releasePlanQuota: true });
     return { success: true, data: result };
   }
 

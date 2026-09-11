@@ -8,6 +8,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { ServerService, XuiResponse } from '../server/server.service';
 import { EmailService } from '../email/email.service';
+import { PlanService } from '../plan/plan.service';
 import { v4 as uuidv4 } from 'uuid';
 
 @Injectable()
@@ -18,6 +19,7 @@ export class InboundService {
     private prisma: PrismaService,
     private serverService: ServerService,
     private emailService: EmailService,
+    private planService: PlanService,
   ) {}
 
   // ==========================================
@@ -1569,6 +1571,8 @@ export class InboundService {
     this.logger.log(
       `Node ${inbound.email} auto-deleted (expired > 1 day without renewal, repurchase required)`,
     );
+    // 名额释放：到期自动删除 = 节点消亡，占用方案的可售名额归还（与 admin 删除同语义）
+    await this.releasePlanQuotaForInbound(inbound);
   }
 
   // ==========================================
@@ -1727,7 +1731,13 @@ export class InboundService {
     }
   }
 
-  async delete(id: number) {
+  /**
+   * 删除节点（管理员/退款走此完整删除；售罄回滚走 createInbound 失败路径，见 order.service）。
+   * opts.releasePlanQuota=true 时，删除后释放该节点所属网络方案的可售名额（sold-1 + 售罄自动恢复）。
+   * 默认 false —— order.service 售罄回滚也调本方法删刚建的节点，但那次名额从未扣减（CAS 抢占失败
+   * 才走回滚），绝不能再减一次。remark 约定 `Order <orderNo>`（activateOrder 写入），据此反查订单。
+   */
+  async delete(id: number, opts?: { releasePlanQuota?: boolean }) {
     const inbound = await this.prisma.inbound.findUnique({ where: { id } });
     if (!inbound) throw new NotFoundException('节点不存在');
 
@@ -1764,7 +1774,33 @@ export class InboundService {
       this.prisma.inbound.delete({ where: { id } }),
     ]);
 
+    // 名额释放（仅在显式要求时）：节点没了、份子就该归还方案可售数
+    if (opts?.releasePlanQuota) {
+      await this.releasePlanQuotaForInbound(inbound);
+    }
+
     return { success: true, id };
+  }
+
+  /**
+   * 按节点反查其所属网络方案并释放一个可售名额。
+   * 关联约定：Inbound.remark = `Order <orderNo>`（activateOrder 创建时写入，与 createInbound 第 455
+   * 行、refunds 按 remark 找节点的模式一致）→ 查订单 → order.planId。非方案节点（remark 缺失/非
+   * 订单格式/无 planId）直接跳过，不影响普通删除。
+   */
+  private async releasePlanQuotaForInbound(inbound: any) {
+    const remark = typeof inbound?.remark === 'string' ? inbound.remark : null;
+    const m = remark?.match(/^Order\s+(\S+)/);
+    if (!m) return;
+    const order = await this.prisma.order.findUnique({
+      where: { orderNo: m[1] ?? '' },
+      select: { planId: true },
+    });
+    if (!order?.planId) return;
+    await this.planService.releasePlanQuota(order.planId);
+    this.logger.log(
+      `Quota released for plan #${order.planId} after deleting inbound #${inbound.id} (${inbound.email})`,
+    );
   }
 
   async getStats() {
