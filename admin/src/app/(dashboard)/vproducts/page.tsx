@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, KeyRound } from 'lucide-react';
+import { Plus, Pencil, Trash2, KeyRound, RefreshCw } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -194,6 +194,18 @@ export default function VirtualProductsPage() {
     }
   };
 
+  // 对账校准：按现存未删除节点数重算 SOCKS 商品的已售数（修复历史遗留的已售数清不掉/虚高）
+  const reconcileQuota = async () => {
+    try {
+      const res = await api.post('/socks-panel/admin/reconcile');
+      const d = res.data.data;
+      toast.success(`校准完成：修正 ${d.changed} 项，恢复在售 ${d.restored} 项`);
+      fetchProducts();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
   // 剩余未售交付码（AUTO）；MANUAL 恒为 -
   const remainingOf = (p: any) =>
     p.deliveryType === 'AUTO' ? Number(p._count?.keys ?? 0) : null;
@@ -362,6 +374,9 @@ export default function VirtualProductsPage() {
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
+          <Button variant="outline" onClick={reconcileQuota} title="按现存节点数重算已售数（修复历史遗留的已售数清不掉问题）">
+            <RefreshCw className="mr-1 h-4 w-4" />校准库存
+          </Button>
           <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建商品</Button>
         </div>
       </PageHeader>

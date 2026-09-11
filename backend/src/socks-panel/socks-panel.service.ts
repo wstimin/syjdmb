@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../common/prisma/prisma.service';
@@ -35,7 +36,7 @@ const SOCKS_IMPORT_TAG = 'socks-panel-import:';
 // 必须基于创建时的 panelSnapshot 重建完整 payload，漏字段会把入站配置清空。
 
 @Injectable()
-export class SocksPanelService {
+export class SocksPanelService implements OnModuleInit {
   private readonly logger = new Logger(SocksPanelService.name);
 
   constructor(
@@ -43,6 +44,25 @@ export class SocksPanelService {
     private redis: RedisService,
     private serverService: ServerService,
   ) {}
+
+  /**
+   * 启动自愈：对账 SOCKS 商品 sold 与现存节点数，修复「历史已删节点 sold 清不掉」的遗留问题。
+   * 上线释放逻辑（releaseNodeQuota）之前删除的节点是 DELETED 终态，adminDelete 会直接拒绝，
+   * sold 只增不减 → 已售虚高 + 售罄拦单。对账按「现存非 DELETED 节点数」重算即回正。
+   * 包 try/catch：对账失败绝不断服务启动。
+   */
+  async onModuleInit() {
+    try {
+      const r = await this.reconcileSocksQuota();
+      if (r.changed > 0 || r.restored > 0) {
+        this.logger.log(
+          `[reconcile] 启动校准完成: 修正 ${r.changed} 项, 恢复在售 ${r.restored} 项`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(`[reconcile] 启动对账失败: ${(e as Error).message}`);
+    }
+  }
 
   // ==========================================
   // 交付（下单激活入口：activateOrderInner 派发）
@@ -1007,6 +1027,55 @@ export class SocksPanelService {
         `SOCKS quota released for product #${virtualProductId}: sold ${latest.sold}/${latest.stock} — product back to ACTIVE`,
       );
     }
+  }
+
+  /**
+   * 对账校准 SOCKS_PANEL 商品的可售名额（手动触发 / 启动自愈共用）。
+   * 原理：sold 的权威值 = 现存未删除的节点数（ACTIVE/EXPIRED/SUSPENDED 都占着名额，
+   * 只有 DELETED 才算释放）。逐商品重数并回写，附带给「满额被置 SOLD_OUT 但名额已释放」
+   * 的商品恢复在售（镜像 releaseNodeQuota 的规则）。返回校准统计供前端展示。
+   */
+  async reconcileSocksQuota() {
+    const products = await this.prisma.virtualProduct.findMany({
+      where: { deliveryType: 'SOCKS_PANEL' },
+      select: { id: true, name: true, sold: true, stock: true, status: true },
+      orderBy: { id: 'asc' },
+    });
+    const details: any[] = [];
+    let changed = 0;
+    let restored = 0;
+    for (const p of products) {
+      const live = await this.prisma.socksNode.count({
+        where: { virtualProductId: p.id, status: { not: 'DELETED' } },
+      });
+      if (live !== p.sold) {
+        await this.prisma.virtualProduct.update({
+          where: { id: p.id },
+          data: { sold: live },
+        });
+        changed += 1;
+        this.logger.warn(
+          `[reconcile] SOCKS 商品 #${p.id}「${p.name}」sold 校准 ${p.sold} → ${live}（现存未删除节点数）`,
+        );
+      }
+      if (p.stock != null && live < p.stock && p.status === 'SOLD_OUT') {
+        await this.prisma.virtualProduct.updateMany({
+          where: { id: p.id, status: 'SOLD_OUT' },
+          data: { status: 'ACTIVE' },
+        });
+        restored += 1;
+        this.logger.log(
+          `[reconcile] SOCKS 商品 #${p.id}「${p.name}」售罄恢复在售（${live}/${p.stock}）`,
+        );
+      }
+      details.push({ id: p.id, name: p.name, sold: live, stock: p.stock, status: p.status });
+    }
+    return {
+      total: products.length,
+      changed,
+      restored,
+      details,
+    };
   }
 
   private extractInboundId(response: any): number {

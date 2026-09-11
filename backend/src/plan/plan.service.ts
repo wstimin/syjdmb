@@ -3,14 +3,33 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
 
 @Injectable()
-export class PlanService {
+export class PlanService implements OnModuleInit {
   private readonly logger = new Logger(PlanService.name);
 
   constructor(private prisma: PrismaService) {}
+
+  /**
+   * 启动自愈：对账限量方案的 sold 与现存节点数，修复「删除/退款释放逻辑上线前已删节点
+   * sold 清不掉」的遗留问题（与 SOCKS 对账同源）。按「现存非 DELETED 节点数」重算。
+   * 包 try/catch：对账失败绝不断服务启动。
+   */
+  async onModuleInit() {
+    try {
+      const r = await this.reconcilePlanQuota();
+      if (r.changed > 0 || r.restored > 0) {
+        this.logger.log(
+          `[reconcile] 启动校准完成: 修正 ${r.changed} 项, 恢复在售 ${r.restored} 项`,
+        );
+      }
+    } catch (e) {
+      this.logger.error(`[reconcile] 启动对账失败: ${(e as Error).message}`);
+    }
+  }
 
   async findAll(includeArchived = false) {
     const where: any = includeArchived
@@ -127,6 +146,76 @@ export class PlanService {
         `Plan quota released for plan #${planId}: sold ${latest.sold}/${latest.stock} — plan back to ACTIVE`,
       );
     }
+  }
+
+  /**
+   * 对账校准限量方案的可售名额（手动触发 / 启动自愈共用）。
+   * 原理：sold 的权威值 = 现存未删除的节点数。节点通过 remark `Order <orderNo>` 归属到
+   * 订单，再经 order.planId 归到方案（一个方案单恰好建一个 Inbound，见 activateOrderInner）。
+   * ACTIVE/EXPIRED/SUSPENDED 都占名额，只有 DELETED 才算释放。只对账「设置了库存」的方案
+   * （无库存方案 sold 不被扣减口径使用）。附带给满额被置 SOLD_OUT 但名额已释放的方案恢复在售。
+   * 返回校准统计供前端展示。
+   */
+  async reconcilePlanQuota() {
+    const plans = await this.prisma.plan.findMany({
+      where: { stock: { not: null } },
+      select: { id: true, name: true, sold: true, stock: true, status: true },
+      orderBy: { id: 'asc' },
+    });
+    // 无限量方案 → 没有可校准对象，直接返回
+    if (plans.length === 0) {
+      return { total: 0, changed: 0, restored: 0, details: [] };
+    }
+
+    // orderNo → planId：remark 只有 `Order <orderNo>`，没有 planId 列，需经订单反查
+    const orders = await this.prisma.order.findMany({
+      where: { planId: { not: null } },
+      select: { orderNo: true, planId: true },
+    });
+    const planByOrderNo = new Map(orders.map((o) => [o.orderNo, o.planId as number]));
+    const liveByPlan = new Map<number, number>(plans.map((p) => [p.id, 0]));
+
+    // 现存未删除的入站按归属方案归组计数（一次拉全量，避免 N+1）
+    const inbounds = await this.prisma.inbound.findMany({
+      where: { status: { not: 'DELETED' }, remark: { startsWith: 'Order ' } },
+      select: { remark: true },
+    });
+    for (const i of inbounds) {
+      const orderNo = i.remark ? i.remark.slice('Order '.length) : '';
+      if (!orderNo) continue;
+      const planId = planByOrderNo.get(orderNo);
+      if (planId == null) continue;
+      liveByPlan.set(planId, (liveByPlan.get(planId) ?? 0) + 1);
+    }
+
+    const details: any[] = [];
+    let changed = 0;
+    let restored = 0;
+    for (const p of plans) {
+      const live = liveByPlan.get(p.id) ?? 0;
+      if (live !== p.sold) {
+        await this.prisma.plan.update({ where: { id: p.id }, data: { sold: live } });
+        changed += 1;
+        this.logger.warn(
+          `[reconcile] 方案 #${p.id}「${p.name}」sold 校准 ${p.sold} → ${live}（现存未删除节点数）`,
+        );
+      }
+      if (p.stock != null && live < p.stock && p.status === 'SOLD_OUT') {
+        await this.prisma.plan.updateMany({
+          where: { id: p.id, status: 'SOLD_OUT' },
+          data: { status: 'ACTIVE' },
+        });
+        restored += 1;
+        this.logger.log(`[reconcile] 方案 #${p.id}「${p.name}」售罄恢复在售（${live}/${p.stock}）`);
+      }
+      details.push({ id: p.id, name: p.name, sold: live, stock: p.stock, status: p.status });
+    }
+    return {
+      total: plans.length,
+      changed,
+      restored,
+      details,
+    };
   }
 
   async remove(id: number) {

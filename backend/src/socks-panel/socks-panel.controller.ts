@@ -101,4 +101,14 @@ export class SocksPanelController {
     const result = await this.socksPanelService.adminDelete(id);
     return { success: true, data: result };
   }
+
+  @Post('admin/reconcile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Reconcile SOCKS product sold counts（对账修复历史遗留的已售数虚高）' })
+  async reconcile() {
+    const result = await this.socksPanelService.reconcileSocksQuota();
+    return { success: true, data: result };
+  }
 }

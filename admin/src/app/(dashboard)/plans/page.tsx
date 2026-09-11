@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, RefreshCw } from 'lucide-react';
 import { api, getErrorMessage } from '@/lib/api';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -160,6 +160,18 @@ export default function PlansPage() {
     }
   };
 
+  // 对账校准：按现存未删除节点数重算限量方案的已售数（修复历史遗留的已售数清不掉/虚高）
+  const reconcileQuota = async () => {
+    try {
+      const res = await api.post('/plans/admin/reconcile');
+      const d = res.data.data;
+      toast.success(`校准完成：修正 ${d.changed} 项，恢复在售 ${d.restored} 项`);
+      fetchPlans();
+    } catch (err: any) {
+      toast.error(getErrorMessage(err));
+    }
+  };
+
   // 客户端搜索过滤（整表在前端分页，全量过滤）
   const filteredPlans = search.trim()
     ? plans.filter((p: any) =>
@@ -247,6 +259,9 @@ export default function PlansPage() {
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
+          <Button variant="outline" onClick={reconcileQuota} title="按现存节点数重算已售数（修复历史遗留的已售数清不掉问题）">
+            <RefreshCw className="mr-1 h-4 w-4" />校准库存
+          </Button>
           <Button variant="gradient" onClick={openCreate}><Plus className="mr-1 h-4 w-4" />新建产品</Button>
         </div>
       </PageHeader>

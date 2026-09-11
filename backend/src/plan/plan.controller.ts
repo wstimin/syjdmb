@@ -93,4 +93,14 @@ export class PlanController {
     const result = await this.planService.getStats();
     return { success: true, data: result };
   }
+
+  @Post('admin/reconcile')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPER_ADMIN')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: '[Admin] Reconcile plan sold counts（对账修复历史遗留的已售数虚高）' })
+  async reconcile() {
+    const result = await this.planService.reconcilePlanQuota();
+    return { success: true, data: result };
+  }
 }
