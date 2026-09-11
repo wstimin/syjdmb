@@ -194,7 +194,11 @@ export default function PlansPage() {
         ? <span className="text-xs text-muted-foreground">不限量</span>
         : (
           <span className={`text-xs font-medium ${p.sold >= p.stock ? 'text-rose-500' : ''}`}>
-            {p.sold} / {p.stock}{p.sold >= p.stock && ' 售罄'}
+            {p.sold} / {p.stock}{' '}
+            <span className={p.sold >= p.stock ? 'text-rose-500' : 'text-emerald-600'}>
+              剩余 {Math.max(0, p.stock - p.sold)}
+            </span>
+            {p.sold >= p.stock && ' 售罄'}
           </span>
         ),
     },
@@ -319,7 +323,7 @@ export default function PlansPage() {
                 value={form.stock}
                 onChange={(e) => setForm({ ...form, stock: e.target.value })}
               />
-              <p className="text-xs text-muted-foreground">留空 = 不限量；售完自动变「已售罄」，调高库存自动恢复在售</p>
+              <p className="text-xs text-muted-foreground">留空 = 不限量；售完自动变「已售罄」，删除节点/退款会释放名额、剩余数量自动回升</p>
             </div>
             <div className="space-y-2 col-span-2">
               <Label>绑定服务器（可选多台）</Label>

@@ -49,7 +49,12 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
   return (
     <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
       {products.map((p, idx) => {
-        const remaining = p.deliveryType === 'AUTO' ? Number(p._count?.keys ?? 0) : Infinity;
+        const remaining =
+          p.deliveryType === 'AUTO'
+            ? Number(p._count?.keys ?? 0)
+            : p.stock != null
+              ? Math.max(0, p.stock - (p.sold ?? 0))
+              : Infinity;
         const soldOut =
           p.status === 'SOLD_OUT' ||
           (p.deliveryType === 'AUTO' && remaining <= 0) ||
@@ -142,7 +147,13 @@ export function VpCards({ products }: { products: VirtualProduct[] }) {
                 </p>
                 {!soldOut && (isAuto || isSocks) && (
                   <div className="mt-4 flex items-center gap-3 text-xs text-muted-foreground">
+                    {/* 仅显示剩余数量：AUTO 显示剩余交付码；SOCKS 配置了库存时显示剩余份数 */}
                     {isAuto && (
+                      <span className="text-muted-foreground/80">
+                        {t('products.leftCount').replace('{n}', String(remaining))}
+                      </span>
+                    )}
+                    {isSocks && p.stock != null && (
                       <span className="text-muted-foreground/80">
                         {t('products.leftCount').replace('{n}', String(remaining))}
                       </span>
