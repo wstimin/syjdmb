@@ -18,11 +18,12 @@ import { v4 as uuidv4 } from 'uuid';
  * 语义（与全系统口径统一）：
  * - 退款金额 = 订单实付（payAmount ?? amount，优惠券后金额），申请时快照。
  * - 退款去向 = 退回用户余额（微信/支付宝原路退回不在本站范围）。
- * - 审批通过 = 订单置 REFUNDED（终态）+ 余额入账 + REFUND 流水 + 停节点 + 回收券名额。
+ * - 审批通过 = 订单置 REFUNDED（终态）+ 余额入账 + REFUND 流水 + 删除节点 + 回收券名额。
  *
  * 已知取舍（写入代码注释）：
- * - 「先退钱、后停节点」：停节点在资金事务提交后执行，面板失败只记日志不阻断退款，
+ * - 「先退钱、后删节点」：删节点在资金事务提交后执行，失败只记日志不阻断退款，
  *   钱安全第一；节点由管理员人工核（adminNote 追加提示）。
+ * - 退款删除节点即释放该节点占用方案的可售名额（sold-1，售罄自动恢复在售）。
  * - 退款回余额而非原路退回；续费单/充值单退款走人工调整（userService.adjustBalance）。
  * - 优惠券名额回收后允许用户复用同一券——逐单人工审批，行为可见可控。
  */
@@ -261,9 +262,10 @@ export class RefundsService {
 
     // ============ 事务提交后（网络 IO / 通知不进资金事务） ============
 
-    // 停节点：按 remark contains 'Order <orderNo>' 找该订单创建的节点 → 面板停用 + 本地 SUSPENDED。
+    // 删节点：按 remark contains 'Order <orderNo>' 找该订单创建的节点 → 面板删除 + 本地物理删除，
+    // 并释放该节点占用网络方案的可售名额（退款后节点不再返还，名额回归可再售）。
     // 失败只记日志 + adminNote 提示，不阻断已提交的退款（先保钱，再保节点）。
-    this.suspendOrderNodes(committed.userId, committed.orderNo, refundId).catch(() => {});
+    this.deleteOrderNodes(committed.userId, committed.orderNo, refundId).catch(() => {});
 
     // 邮件通知用户（approve 与 reject 都有；节点被停前用户先知道原因）
     this.notifyUser(committed.userId, 'approve', committed.orderNo, committed.amount, undefined).catch(() => {});
@@ -272,10 +274,11 @@ export class RefundsService {
   }
 
   /**
-   * 停用该订单创建的所有节点（remark 约定 `Order <orderNo>`，与 activateOrder 共用同一查找模式）。
-   * 面板失败不影响已提交的退款——钱已退，节点留给管理员人工核。
+   * 删除该订单创建的所有节点（remark 约定 `Order <orderNo>`，与 activateOrder 共用同一查找模式）。
+   * 退款后节点不再归用户（钱已退、单已 REFUNDED 终态），直接物理删除 + 释放方案可售名额。
+   * 删除失败不影响已提交的退款——钱已退，节点留给管理员人工核。
    */
-  private async suspendOrderNodes(userId: number, orderNo: string, refundId: number) {
+  private async deleteOrderNodes(userId: number, orderNo: string, refundId: number) {
     if (!orderNo) return;
     try {
       const inbounds = await this.prisma.inbound.findMany({
@@ -285,16 +288,17 @@ export class RefundsService {
       let failed = 0;
       for (const inbound of inbounds) {
         try {
-          await this.inboundService.suspend(inbound.id);
+          // releasePlanQuota=true：节点删除后释放其占用方案的可售名额（sold-1 + 售罄自动恢复）
+          await this.inboundService.delete(inbound.id, { releasePlanQuota: true });
         } catch (e) {
           failed += 1;
-          this.logger.warn(`退款后停节点失败 inbound=${inbound.id}: ${(e as Error).message}`);
+          this.logger.warn(`退款后删除节点失败 inbound=${inbound.id}: ${(e as Error).message}`);
         }
       }
       if (failed > 0) {
         await this.prisma.refundRequest.update({
           where: { id: refundId },
-          data: { adminNote: '退款已完成；部分节点面板停用失败，需管理员人工核实（钱已退，请尽快处理）' },
+          data: { adminNote: '退款已完成；部分节点删除失败，需管理员人工核实（钱已退，请尽快处理）' },
         });
       }
     } catch (e) {
