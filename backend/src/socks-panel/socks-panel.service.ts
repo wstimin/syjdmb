@@ -853,6 +853,19 @@ export class SocksPanelService {
         );
       }
     }
+    // —— 同步清理该节点导出的 SOCKS 出站台账行（host:port 匹配，含用户手动同地址条目）——
+    // 用户确认：删除节点后「我的 SOCKS」不再显示该节点的连接串；导入既是死连接，快照一并移除。
+    // 仅清理本节点归属用户的台账（授权/tmp 行不受影响），不触碰其他节点的台账语义。
+    if (node.host && node.port) {
+      const cleaned = await this.prisma.socksProxy.deleteMany({
+        where: { userId: node.userId, host: node.host, port: node.port },
+      });
+      if (cleaned.count > 0) {
+        this.logger.log(
+          `Admin delete SOCKS node #${id}: cleaned ${cleaned.count} outbound ledger row(s) for ${node.host}:${node.port}`,
+        );
+      }
+    }
     return this.prisma.socksNode.update({
       where: { id },
       data: { status: 'DELETED' },
